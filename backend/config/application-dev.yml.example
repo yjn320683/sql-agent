@@ -1,0 +1,30 @@
+server:
+  port: 8382
+
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/sql_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useAffectedRows=true&serverTimezone=Asia/Shanghai
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: example_user
+    password: example_password
+
+sql-agent:
+  auth:
+    local-login-enabled: true
+  agent:
+    base-url: http://127.0.0.1:8284
+    service-token: example_agent_service_token
+    history-dir: ./run/claude/projects/-app
+
+data-compare:
+  hive-jdbc-url: jdbc:hive2://127.0.0.1:10000/default
+  hive-jdbc-user: example_user
+  hive-temp-database: sql_agent_verify_dev
+  log-dir: ./logs/data-compare
+
+app:
+  task-execution-log:
+    dir: ./logs/task-executions
+  sql-log:
+    enabled: true
+    log-all: true

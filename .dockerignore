@@ -1,0 +1,17 @@
+.git
+.idea
+.vscode
+**/.DS_Store
+**/.env
+**/.env.*
+!**/.env.example
+**/.venv
+**/__pycache__
+**/.pytest_cache
+**/*.pyc
+backend/config
+backend/target
+front/dist
+front/node_modules
+logs
+run

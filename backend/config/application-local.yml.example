@@ -1,0 +1,52 @@
+server:
+  port: 8382
+
+spring:
+  datasource:
+    url: jdbc:mysql://127.0.0.1:3306/sql_agent?useUnicode=true&characterEncoding=utf-8&zeroDateTimeBehavior=convertToNull&useAffectedRows=true&serverTimezone=Asia/Shanghai
+    driver-class-name: com.mysql.cj.jdbc.Driver
+    username: example_user
+    password: example_password
+
+sql-agent:
+  auth:
+    local-login-enabled: true
+  agent:
+    base-url: http://127.0.0.1:8284
+    service-token: example_agent_service_token
+    history-dir: ./run/claude/projects/-app
+
+data-compare:
+  hive-jdbc-url: jdbc:hive2://127.0.0.1:10000/default
+  hive-jdbc-user: example_user
+  hive-temp-database: sql_agent_verify
+  log-dir: ./logs/data-compare
+
+app:
+  realtime:
+    flink-bin: ${FLINK_BIN:flink}
+    hadoop-bin: ${HADOOP_BIN:hadoop}
+    yarn-bin: ${YARN_BIN:yarn}
+    yarn-web-url: ${YARN_WEB_URL:http://127.0.0.1:8088}
+    submit-jar: ${REALTIME_SUBMIT_JAR:../realtime-task-submit/target/realtime-task-submit.jar}
+    submission-dir: ${REALTIME_SUBMISSION_DIR:/tmp/sql-agent/realtime/submissions}
+    submission-uri-prefix: ${REALTIME_SUBMISSION_URI_PREFIX:hdfs://127.0.0.1:8020/realtime-platform/task-submit/submissions}
+    paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:./lib/paimon-flink-action-1.4.2.jar}
+    paimon-warehouse: ${PAIMON_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon}
+    paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon_debug}
+    paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
+    debug-table-suffix: ${PAIMON_DEBUG_TABLE_SUFFIX:_debug}
+    target-database: ${PAIMON_TARGET_DATABASE:ods_real}
+    checkpoint-dir: ${FLINK_CHECKPOINT_DIR:hdfs://127.0.0.1:8020/flink/checkpoints/sql-agent}
+    savepoint-dir: ${FLINK_SAVEPOINT_DIR:hdfs://127.0.0.1:8020/flink/savepoints/sql-agent}
+    catalog-conf:
+      metastore: hive
+      uri: thrift://127.0.0.1:9083
+      hive.metastore.uri.selection: SEQUENTIAL
+    mysql-default-conf:
+      server-time-zone: Asia/Shanghai
+  task-execution-log:
+    dir: ${TASK_EXECUTION_LOG_DIR:./logs/task-executions}
+  sql-log:
+    enabled: false
+    log-all: false

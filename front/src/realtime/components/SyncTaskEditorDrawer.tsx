@@ -1,0 +1,565 @@
+import { useEffect, useRef, useState } from 'react';
+import {
+  Alert,
+  Button,
+  Collapse,
+  Descriptions,
+  Form,
+  Input,
+  InputNumber,
+  Segmented,
+  Select,
+  Space,
+  Spin,
+  Steps,
+  Table,
+  Typography,
+  message,
+} from 'antd';
+import { EditOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
+import {
+  createSyncTask,
+  getCdcOptions,
+  getMysqlSchema,
+  listSyncSourceTables,
+  listServers,
+  listTaskParams,
+  previewSyncTask,
+  updateSyncTask,
+} from '../api';
+import type {
+  BusinessDomain,
+  MysqlTableSchema,
+  RealtimeServer,
+  SyncTask,
+  SyncTaskSave,
+  TablePrivateConfig,
+  TaskParam,
+  SyncSourceTableOption,
+} from '../types';
+import SyncMoreConfigRows from './SyncMoreConfigRows';
+import ComputedColumnEditorModal from './ComputedColumnEditorModal';
+import { computedColumnName } from './computedColumns';
+
+interface Props {
+  open: boolean;
+  task?: SyncTask;
+  onClose: () => void;
+  onSaved: () => void;
+}
+
+const emptyTableConfig = (): TablePrivateConfig => ({ primaryKeys: [], partitionKeys: [], computedColumns: [] });
+const sameOrderedValues = (left: string[] = [], right: string[] = []) => left.length === right.length && left.every((value, index) => value === right[index]);
+const metadataColumnOptions = ['database_name', 'table_name', 'op_ts'].map((value) => ({ label: value, value }));
+const booleanValue = (value: unknown) => value === true || String(value).toLowerCase() === 'true';
+
+const paramOptions = (param: TaskParam) => {
+  try {
+    const value = JSON.parse(param.paramValue ?? '[]') as unknown;
+    if (!Array.isArray(value)) return [];
+    return value.flatMap((item) => {
+      if (item && typeof item === 'object' && 'value' in item) {
+        const option = item as { label?: unknown; value?: unknown; default?: unknown };
+        if (!['string', 'number', 'boolean'].includes(typeof option.value)) return [];
+        return [{ label: String(option.label ?? option.value), value: String(option.value), default: option.default === true }];
+      }
+      return ['string', 'number', 'boolean'].includes(typeof item)
+        ? [{ label: String(item), value: String(item), default: false }] : [];
+    });
+  } catch { return []; }
+};
+
+const paramDefault = (param: TaskParam) => {
+  const option = paramOptions(param).find((item) => item.default);
+  if (option) return option.value;
+  try {
+    const value = JSON.parse(param.paramValue ?? '');
+    return ['string', 'number', 'boolean'].includes(typeof value) ? String(value) : undefined;
+  } catch {
+    return param.paramValue?.trim() || undefined;
+  }
+};
+
+const paramPath = (param: TaskParam): string[] => param.paramType === 'mysql_conf'
+  ? ['taskConfig', 'cdcConfig', 'mysqlConfOverrides', param.paramKey]
+  : param.paramType === 'table_conf'
+    ? ['taskConfig', 'cdcConfig', 'tableConfOverrides', param.paramKey]
+    : ['taskConfig', 'flinkConfOverrides', param.paramKey];
+
+export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: Props) {
+  const [form] = Form.useForm();
+  const [servers, setServers] = useState<RealtimeServer[]>([]);
+  const [domains, setDomains] = useState<BusinessDomain[]>([]);
+  const [params, setParams] = useState<TaskParam[]>([]);
+  const [tables, setTables] = useState<SyncSourceTableOption[]>([]);
+  const [schemas, setSchemas] = useState<Record<string, MysqlTableSchema>>({});
+  const [tableConfigs, setTableConfigs] = useState<Record<string, TablePrivateConfig>>({});
+  const [step, setStep] = useState(0);
+  const [mode, setMode] = useState<'wizard' | 'advanced'>('wizard');
+  const [loading, setLoading] = useState(false);
+  const [supportLoading, setSupportLoading] = useState(false);
+  const [supportError, setSupportError] = useState('');
+  const [metadataLoading, setMetadataLoading] = useState(false);
+  const [preview, setPreview] = useState('');
+  const [previewLoading, setPreviewLoading] = useState(false);
+  const [computedColumnTable, setComputedColumnTable] = useState<string>();
+  const initializedKeyRef = useRef('');
+  const serverId = Form.useWatch('sourceServerId', form) as number | undefined;
+  const selectedTables = Form.useWatch(['taskConfig', 'cdcConfig', 'selectedTables'], form) as string[] | undefined;
+  const targetDatabase = Form.useWatch('targetDatabase', form) as string | undefined;
+  const domainPrefix = Form.useWatch(['taskConfig', 'cdcConfig', 'domainPrefix'], form) as string | undefined;
+  const updateBlocked = Boolean(task?.editPolicy?.updateBlocked || (task?.editPolicy && !task.editPolicy.editable));
+  const structureLocked = Boolean(task?.editPolicy?.productionLocked || task?.editPolicy?.structureLocked);
+  const lockedTables = task?.editPolicy?.lockedTables ?? [];
+
+  useEffect(() => {
+    if (!open) { initializedKeyRef.current = ''; return; }
+    const initializationKey = task ? `task-${task.id}` : 'new';
+    if (initializedKeyRef.current === initializationKey) return;
+    initializedKeyRef.current = initializationKey;
+    setStep(0);
+    setMode('wizard');
+    setPreview('');
+    setSupportError('');
+    const config = task?.taskConfig;
+    const normalizedConfig = config ? {
+      ...config,
+      cdcConfig: {
+        ...config.cdcConfig,
+        ignoreIncompatible: booleanValue(config.cdcConfig.ignoreIncompatible),
+        metadataColumns: ['database_name', 'table_name', 'op_ts'],
+      },
+    } : undefined;
+    form.setFieldsValue(task ? {
+      name: task.name,
+      owner: task.owner,
+      description: task.description,
+      flinkVersion: task.flinkVersion || '2.2.1',
+      sourceServerId: task.sourceServerId,
+      targetDatabase: task.targetDatabase,
+      taskConfig: normalizedConfig,
+    } : {
+      flinkVersion: '2.2.1',
+      taskConfig: {
+        parallelism: 1,
+        taskManagerMemory: '3GB',
+        jobManagerMemory: '1GB',
+        checkpointInterval: 60,
+        alarmType: 'task-failed',
+        cdcConfig: {
+          selectedTables: [], metadataColumns: ['database_name', 'table_name', 'op_ts'], typeMappings: [],
+          mode: 'divided', ignoreIncompatible: false, mysqlConfOverrides: {}, tableConfOverrides: {},
+        },
+        flinkConfOverrides: {},
+      },
+    });
+    setTableConfigs(config?.cdcConfig?.tableConfigs ?? {});
+    setComputedColumnTable(undefined);
+    setSupportLoading(true);
+    void Promise.allSettled([listServers(), getCdcOptions(), listTaskParams()]).then(([serverResult, optionResult, paramResult]) => {
+      if (serverResult.status === 'fulfilled') setServers(serverResult.value);
+      if (paramResult.status === 'fulfilled') {
+        setParams(paramResult.value);
+        if (!task) {
+          paramResult.value.filter((param) => Boolean(param.required)).forEach((param) => {
+            const path = paramPath(param);
+            if (form.getFieldValue(path) === undefined) {
+              const value = paramDefault(param);
+              if (value !== undefined) form.setFieldValue(path, value);
+            }
+          });
+        }
+      } else {
+        setSupportError('同步参数元数据加载失败，为避免丢失或覆盖配置，当前不能预览或保存。');
+      }
+      if (optionResult.status === 'fulfilled') {
+        setDomains(optionResult.value.domains);
+        if (!task) {
+          form.setFieldValue('targetDatabase', optionResult.value.targetDatabase);
+          form.setFieldValue(['taskConfig', 'cdcConfig', 'targetDatabase'], optionResult.value.targetDatabase);
+          form.setFieldValue(['taskConfig', 'cdcConfig', 'domainPrefix'], optionResult.value.domains[0]?.code);
+        }
+      }
+      const failed = [serverResult, optionResult, paramResult].find((item) => item.status === 'rejected');
+      if (failed?.status === 'rejected') message.warning((failed.reason as Error).message);
+    }).finally(() => setSupportLoading(false));
+  }, [open, task?.id, form]);
+
+  useEffect(() => {
+    if (!open) return;
+    const selectedServer = servers.find((item) => item.id === serverId);
+    const persistedPrefix = task?.taskConfig.cdcConfig.tablePrefix;
+    const prefix = structureLocked && persistedPrefix
+      ? persistedPrefix
+      : targetDatabase && domainPrefix
+        ? [targetDatabase, domainPrefix, selectedServer?.databaseAbbr].filter(Boolean).join('_') + '_'
+        : '';
+    form.setFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix'], prefix);
+  }, [domainPrefix, form, open, serverId, servers, structureLocked, targetDatabase, task?.taskConfig.cdcConfig.tablePrefix]);
+
+  useEffect(() => {
+    if (!open || !serverId) {
+      setTables([]);
+      return;
+    }
+    const source = servers.find((item) => item.id === serverId);
+    form.setFieldValue(['taskConfig', 'cdcConfig', 'databaseName'], source?.databaseName);
+    setMetadataLoading(true);
+    void listSyncSourceTables(serverId, task?.id).then(setTables).catch((error) => message.error((error as Error).message)).finally(() => setMetadataLoading(false));
+  }, [open, serverId, servers, form, task?.id]);
+
+  useEffect(() => {
+    if (!serverId || !selectedTables?.length) return;
+    const missing = selectedTables.filter((table) => !schemas[table]);
+    if (!missing.length) return;
+    void Promise.all(missing.map((table) => getMysqlSchema(serverId, table))).then((items) => {
+      setSchemas((current) => ({ ...current, ...Object.fromEntries(items.map((item) => [item.table, item])) }));
+      setTableConfigs((current) => {
+        const next = { ...current };
+        items.forEach((item) => {
+          if (!next[item.table]) next[item.table] = emptyTableConfig();
+        });
+        return next;
+      });
+    }).catch((error) => message.error((error as Error).message));
+  }, [serverId, selectedTables, schemas]);
+
+  const setPrivate = (table: string, key: keyof TablePrivateConfig, value: string[]) => {
+    setTableConfigs((current) => ({ ...current, [table]: { ...(current[table] ?? emptyTableConfig()), [key]: value } }));
+  };
+
+  const buildRequest = async (): Promise<SyncTaskSave> => {
+    if (supportError) throw new Error(supportError);
+    const values = await form.validateFields();
+    const taskConfig = values.taskConfig ?? {};
+    for (const table of taskConfig.cdcConfig?.selectedTables ?? []) {
+      const configured = tableConfigs[table] ?? emptyTableConfig();
+      const effectivePrimaryKeys = configured.primaryKeys?.length ? configured.primaryKeys : schemas[table]?.primaryKeys ?? [];
+      const partitions = configured.partitionKeys ?? [];
+      if (partitions.length && !partitions.every((name) => effectivePrimaryKeys.includes(name))) {
+        throw new Error(`表 ${table} 的分区键必须是最终主键子集`);
+      }
+      if (effectivePrimaryKeys.length && partitions.length && effectivePrimaryKeys.every((name) => partitions.includes(name))) {
+        throw new Error(`表 ${table} 的分区键不能包含全部最终主键`);
+      }
+    }
+    taskConfig.sourceServerId = values.sourceServerId;
+    const normalizedTableConfigs = Object.fromEntries((taskConfig.cdcConfig?.selectedTables ?? []).flatMap((name: string) => {
+      if (lockedTables.includes(name) && task?.editPolicy?.lockedTableConfigs?.[name]) {
+        return [[name, task.editPolicy.lockedTableConfigs[name]]];
+      }
+      const current = tableConfigs[name] ?? emptyTableConfig();
+      const normalized: TablePrivateConfig = {};
+      if (current.primaryKeys?.length && !sameOrderedValues(current.primaryKeys, schemas[name]?.primaryKeys)) normalized.primaryKeys = current.primaryKeys;
+      if (current.partitionKeys?.length) normalized.partitionKeys = current.partitionKeys;
+      if (current.computedColumns?.length) normalized.computedColumns = current.computedColumns;
+      return Object.keys(normalized).length ? [[name, normalized]] : [];
+    }));
+    taskConfig.cdcConfig = {
+      ...(taskConfig.cdcConfig ?? {}),
+      targetDatabase: values.targetDatabase,
+      tableConfigs: normalizedTableConfigs,
+    };
+    return {
+      name: values.name,
+      owner: values.owner,
+      description: values.description,
+      flinkVersion: values.flinkVersion,
+      sourceServerId: values.sourceServerId,
+      sourceType: 'mysql-cdc',
+      targetDatabase: values.targetDatabase,
+      taskConfig,
+      expectedUpdateTime: task?.updateTime,
+    };
+  };
+
+  const save = async () => {
+    setLoading(true);
+    try {
+      const request = await buildRequest();
+      if (task) await updateSyncTask(task.id, request); else await createSyncTask(request);
+      message.success(task ? '同步任务已更新' : '同步任务已创建');
+      onSaved();
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const commandPreview = async () => {
+    setPreviewLoading(true);
+    try {
+      const result = await previewSyncTask(await buildRequest(), task?.id);
+      setPreview(result.command);
+    } catch (error) {
+      message.error((error as Error).message);
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const fieldLabel = (label: string, required = false) => (
+    <span className={required ? 'realtime-required-label' : undefined}>{label}</span>
+  );
+
+  const commonFields = (
+    <div className="realtime-editor-section">
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label={fieldLabel('任务名称', true)}><Form.Item name="name" rules={[{ required: true, message: '请输入任务名称' }]} noStyle><Input placeholder="请输入同步任务名称" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="负责人"><Form.Item name="owner" noStyle><Input placeholder="默认当前用户" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="Flink 版本"><Form.Item name="flinkVersion" noStyle><Select disabled options={[{ label: 'Flink 2.2.1', value: '2.2.1' }]} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="任务类型"><Input value="MySQL CDC → Paimon" disabled /></Descriptions.Item>
+        <Descriptions.Item label="任务描述" span={2}><Form.Item name="description" noStyle><Input.TextArea rows={3} placeholder="请输入任务用途、数据范围或其他说明" /></Form.Item></Descriptions.Item>
+      </Descriptions>
+    </div>
+  );
+
+  const alertFields = (
+    <div className="realtime-editor-section">
+      <Alert type="info" showIcon message="同步任务状态检测失败、双跑或提交失败时，将自动写入实时告警中心。" className="realtime-editor-note" />
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label="告警事件"><Form.Item name={['taskConfig', 'alarmType']} noStyle><Select options={[{ label: '任务失败', value: 'task-failed' }]} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="告警组"><Form.Item name={['taskConfig', 'alarmGroup']} noStyle><Input placeholder="输入告警接收组" /></Form.Item></Descriptions.Item>
+      </Descriptions>
+    </div>
+  );
+
+  const mappingColumns = [
+    { title: '源表', dataIndex: 'table', width: 180 },
+    {
+      title: '计算列',
+      width: 400,
+      render: (_: unknown, row: { table: string }) => {
+        const expressions = tableConfigs[row.table]?.computedColumns ?? [];
+        return <div className="mysql-private-computed-columns">
+          <div className="mysql-private-value-list">
+            {expressions.length
+              ? expressions.map((expression) => <Typography.Text key={expression} ellipsis={{ tooltip: expression }}>{expression}</Typography.Text>)
+              : <Typography.Text type="secondary">未配置</Typography.Text>}
+          </div>
+          <Button aria-label={`配置 ${row.table} 计算列`} icon={<EditOutlined />} size="small" disabled={lockedTables.includes(row.table)} onClick={() => setComputedColumnTable(row.table)} />
+        </div>;
+      },
+    },
+    {
+      title: '主键',
+      render: (_: unknown, row: { table: string }) => {
+        const configured = tableConfigs[row.table]?.primaryKeys ?? [];
+        const inherited = schemas[row.table]?.primaryKeys ?? [];
+        const computedOptions = (tableConfigs[row.table]?.computedColumns ?? []).map(computedColumnName).filter((name): name is string => Boolean(name));
+        return <Select disabled={lockedTables.includes(row.table)} mode="multiple" value={configured.length ? configured : inherited} onChange={(value) => setPrivate(row.table, 'primaryKeys', value)} options={[
+          ...(schemas[row.table]?.columns ?? []).map((column) => ({ label: `${column.name} [${column.type}]`, value: column.name })),
+          ...computedOptions.map((name) => ({ label: `${name} [计算列]`, value: name })),
+        ]} style={{ width: '100%' }} />;
+      },
+    },
+    {
+      title: '分区键',
+      render: (_: unknown, row: { table: string }) => {
+        const primaryKeys = tableConfigs[row.table]?.primaryKeys?.length ? tableConfigs[row.table].primaryKeys! : schemas[row.table]?.primaryKeys ?? [];
+        return <Select disabled={lockedTables.includes(row.table)} mode="multiple" value={tableConfigs[row.table]?.partitionKeys} onChange={(value) => setPrivate(row.table, 'partitionKeys', value)} options={primaryKeys.map((name) => ({ label: name, value: name }))} style={{ width: '100%' }} />;
+      },
+    },
+  ];
+
+  const sourceFields = (
+    <div className="realtime-editor-section">
+      <div className="realtime-subsection-heading">
+        <span>源端配置</span>
+        <Typography.Text type="secondary">选择 MySQL Server、源库与需要同步的数据表</Typography.Text>
+      </div>
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label="来源类型"><Input value="MySQL CDC" disabled /></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('MySQL Server', true)}>
+          <Form.Item name="sourceServerId" rules={[{ required: true, message: '请选择 Server' }]} noStyle>
+            <Select disabled={structureLocked} showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => ({ label: item.name, value: item.id }))} />
+          </Form.Item>
+        </Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('源数据库', true)} span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'databaseName']} noStyle><Input disabled placeholder="选择 Server 后自动获取" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('源表列表', true)} span={2}>
+          <Space.Compact block>
+            <Form.Item name={['taskConfig', 'cdcConfig', 'selectedTables']} rules={[{ required: true, message: '至少选择一张源表' }]} noStyle>
+              <Select mode="multiple" showSearch loading={metadataLoading} placeholder="请选择需要同步的源表" options={tables.map((item) => {
+                const occupiedBy = item.occupied ? `已被任务 #${item.occupiedTaskId} ${item.occupiedTaskName ?? ''} 使用`.trim() : '';
+                return { label: occupiedBy ? `${item.tableName}（${occupiedBy}）` : item.tableName, value: item.tableName, disabled: item.occupied, title: occupiedBy };
+              })} maxTagCount="responsive" />
+            </Form.Item>
+            <Button aria-label="刷新源表列表" title="刷新源表列表" icon={<ReloadOutlined />} loading={metadataLoading} onClick={async () => {
+              if (!serverId) return;
+              try { setMetadataLoading(true); setTables(await listSyncSourceTables(serverId, task?.id)); }
+              catch (error) { message.error((error as Error).message); }
+              finally { setMetadataLoading(false); }
+            }} />
+          </Space.Compact>
+        </Descriptions.Item>
+      </Descriptions>
+
+      <div className="realtime-subsection-heading">
+        <span>目标 Paimon 配置</span>
+        <Typography.Text type="secondary">设置目标库、表命名及 Schema 兼容策略</Typography.Text>
+      </div>
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label={fieldLabel('目标数据库', true)}><Form.Item name="targetDatabase" rules={[{ required: true }]} noStyle><Input disabled={structureLocked} placeholder="请输入 Paimon 目标库" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('业务域', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'domainPrefix']} rules={[{ required: true }]} noStyle><Select disabled={structureLocked} placeholder="请选择业务域" options={domains.map((item) => ({ label: `${item.name} (${item.code})`, value: item.code }))} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('目标表前缀', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'tablePrefix']} rules={[{ required: true, message: '请选择业务域以生成目标表前缀' }]} noStyle><Input disabled placeholder="目标库_业务域_库缩写_" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="排除表正则"><Form.Item name={['taskConfig', 'cdcConfig', 'excludingTables']} noStyle><Input placeholder="可选，例如 ^tmp_.*" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="目标表列表" span={2}><Input.TextArea disabled value={(selectedTables ?? []).map((table) => `${form.getFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix']) || ''}${table}`).join('\n')} autoSize={{ minRows: 2, maxRows: 6 }} /></Descriptions.Item>
+        <Descriptions.Item label="元数据列" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'metadataColumns']} noStyle><Select disabled mode="multiple" options={metadataColumnOptions} placeholder="固定同步元数据列" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="类型映射" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'typeMappings']} noStyle><Select disabled={structureLocked} mode="multiple" options={['to-nullable', 'to-string', 'char-to-string', 'tinyint1-not-bool', 'longtext-to-bytes', 'bigint-unsigned-to-bigint'].map((value) => ({ label: value, value }))} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="同步模式"><Form.Item name={['taskConfig', 'cdcConfig', 'mode']} noStyle><Select disabled={structureLocked} options={[{ label: 'combined', value: 'combined' }, { label: 'divided', value: 'divided' }]} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="忽略不兼容变更"><Form.Item name={['taskConfig', 'cdcConfig', 'ignoreIncompatible']} noStyle><Select options={[{ label: '否', value: false }, { label: '是', value: true }]} /></Form.Item></Descriptions.Item>
+      </Descriptions>
+
+      <div className="realtime-subsection-heading">
+        <span>源表私有配置</span>
+        <Typography.Text type="secondary">按表维护计算列、主键和分区键</Typography.Text>
+      </div>
+      <div className="realtime-mapping-table">
+        <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 900 }} />
+      </div>
+    </div>
+  );
+
+  const dynamicParam = (param: TaskParam, disabled = false) => {
+    const path = paramPath(param);
+    const options = paramOptions(param);
+    const numericRule = {
+      validator: (_: unknown, input: unknown) => {
+        if (input === undefined || input === null || input === '') return Promise.resolve();
+        const value = Number(input);
+        const label = param.keyDesc || param.paramKey;
+        if (!Number.isFinite(value)) return Promise.reject(new Error(`${label}必须是数字`));
+        if (param.minValue !== undefined && value < param.minValue) return Promise.reject(new Error(`${label}必须大于等于 ${param.minValue}`));
+        if (param.maxValue !== undefined && value > param.maxValue) return Promise.reject(new Error(`${label}必须小于等于 ${param.maxValue}`));
+        if (param.precisionValue !== undefined && (String(input).split('.')[1]?.length ?? 0) > param.precisionValue) return Promise.reject(new Error(`${label}最多保留 ${param.precisionValue} 位小数`));
+        if (param.stepValue && Math.abs(((value - (param.minValue ?? 0)) / param.stepValue) - Math.round((value - (param.minValue ?? 0)) / param.stepValue)) > 1e-9) return Promise.reject(new Error(`${label}必须按步长 ${param.stepValue} 递增`));
+        return Promise.resolve();
+      },
+    };
+    const rules = [...(param.required ? [{ required: true, message: `请输入${param.keyDesc || param.paramKey}` }] : []), ...(param.inputType === 'input_number' ? [numericRule] : [])];
+    return (
+      <Form.Item key={`${param.paramType}-${param.paramKey}`} name={path} label={`${param.keyDesc}（${param.paramKey}）`} rules={rules.length ? rules : undefined} className="realtime-dynamic-param">
+        {param.inputType === 'select' && options.length
+          ? <Select disabled={disabled} allowClear options={options} />
+          : param.inputType === 'switch'
+            ? <Select disabled={disabled} options={[{ label: '否', value: 'false' }, { label: '是', value: 'true' }]} />
+            : param.inputType === 'input_number'
+              ? <InputNumber disabled={disabled} min={param.minValue} max={param.maxValue} step={param.stepValue} precision={param.precisionValue} style={{ width: '100%' }} />
+              : <Input disabled={disabled} placeholder={param.paramKey} />}
+      </Form.Item>
+    );
+  };
+
+  const runtimeFields = (
+    <div className="realtime-editor-section">
+      <div className="realtime-subsection-heading realtime-subsection-heading-first">
+        <span>基础资源配置</span>
+        <Typography.Text type="secondary">配置作业并行度、内存与 Checkpoint 周期</Typography.Text>
+      </div>
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label={fieldLabel('并行度', true)}><Form.Item name={['taskConfig', 'parallelism']} rules={[{ required: true, message: '请输入并行度' }, { type: 'number', min: 1, max: 128, message: '并行度必须在 1-128 之间' }]} noStyle><InputNumber min={1} max={128} style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('Checkpoint 间隔', true)}><Form.Item name={['taskConfig', 'checkpointInterval']} rules={[{ required: true, message: '请输入 Checkpoint 间隔' }, { type: 'number', min: 10, max: 600, message: 'Checkpoint 间隔必须在 10-600 秒之间' }]} noStyle><InputNumber min={10} max={600} addonAfter="秒" style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('TaskManager 内存', true)}><Form.Item name={['taskConfig', 'taskManagerMemory']} rules={[{ required: true }]} noStyle><Input placeholder="3GB" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('JobManager 内存', true)}><Form.Item name={['taskConfig', 'jobManagerMemory']} rules={[{ required: true }]} noStyle><Input placeholder="1GB" /></Form.Item></Descriptions.Item>
+      </Descriptions>
+      <Collapse className="realtime-param-collapse" items={[
+        { key: 'mysql', label: 'MySQL CDC 参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div><SyncMoreConfigRows paramType="mysql_conf" formNamePath={['taskConfig', 'cdcConfig', 'mysqlConfOverrides']} taskParams={params} readOnly={structureLocked} /></> },
+        { key: 'table', label: 'Paimon Table 参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div><SyncMoreConfigRows paramType="table_conf" formNamePath={['taskConfig', 'cdcConfig', 'tableConfOverrides']} taskParams={params} readOnly={structureLocked} /></> },
+        { key: 'flink', label: 'Flink 与高可用参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map((item) => dynamicParam(item))}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['taskConfig', 'flinkConfOverrides']} taskParams={params} /></> },
+      ]} />
+      <div className="task-command-preview">
+        <Button type="link" icon={<EyeOutlined />} loading={previewLoading} onClick={() => void commandPreview()}>预览</Button>
+        <Input.TextArea
+          className="task-command-preview-textarea"
+          value={preview}
+          placeholder="点击预览生成 Paimon Action 等价命令"
+          readOnly
+          rows={10}
+          wrap="off"
+        />
+      </div>
+    </div>
+  );
+
+  const sections = [
+    { title: '基础信息', description: '定义同步任务的名称、负责人和基础属性', content: commonFields },
+    { title: '告警配置', description: '配置同步任务异常时的告警方式', content: alertFields },
+    { title: '源端与目标 Paimon', description: '选择源表并配置 Paimon 目标与表映射', content: sourceFields },
+    { title: '资源与运行', description: '设置 Flink 资源、Checkpoint 与高级参数', content: runtimeFields },
+  ];
+
+  const sectionContent = (section: typeof sections[number]) => (
+    <div className="realtime-editor-panel">
+      <div className="realtime-editor-panel-title">
+        <Typography.Title level={5}>{section.title}</Typography.Title>
+        <Typography.Text type="secondary">{section.description}</Typography.Text>
+      </div>
+      {section.content}
+    </div>
+  );
+
+  return (<>
+    <div className="realtime-sync-editor-page">
+      <header className="realtime-sync-editor-page-header">
+        <div>
+          <Typography.Title level={4}>{task ? `编辑同步任务 · ${task.name}` : '新建实时同步任务'}</Typography.Title>
+          <Typography.Text type="secondary">MySQL CDC → Paimon 全链路配置</Typography.Text>
+        </div>
+        <Space><Button onClick={onClose}>返回任务列表</Button><Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button></Space>
+      </header>
+      <div className="realtime-sync-editor-page-body">
+        <Spin spinning={supportLoading}>
+        {supportError && <Alert type="error" showIcon message={supportError} className="realtime-editor-warning" />}
+        {task?.editPolicy && !task.editPolicy.editable && <Alert type="warning" showIcon message={task.editPolicy.reason} className="realtime-editor-warning" />}
+        {structureLocked && !updateBlocked && <Alert type="info" showIcon message="该任务已有生产实例，保留表的私有配置以及源端、目标 Paimon 公共结构配置不可修改；仍可新增或移除源表，并调整告警及运行资源。" className="realtime-editor-warning" />}
+        <div className="realtime-editor-toolbar"><Segmented className="ui-flat-segmented" value={mode} onChange={(value) => setMode(value as 'wizard' | 'advanced')} options={[{ label: '分步向导', value: 'wizard' }, { label: '高级配置', value: 'advanced' }]} /></div>
+        <Form form={form} layout="vertical" preserve disabled={updateBlocked || Boolean(supportError)} onValuesChange={() => { if (preview) setPreview(''); }}>
+          {mode === 'wizard' ? (
+            <div className="realtime-wizard">
+              <Steps direction="vertical" current={step} items={sections.map((item) => ({ title: item.title }))} onChange={setStep} />
+              <div className="realtime-wizard-content">
+                {sectionContent(sections[step])}
+                <div className="realtime-wizard-actions">
+                  <Button disabled={step === 0} onClick={() => setStep((value) => value - 1)}>上一步</Button>
+                  {step < sections.length - 1 && <Button type="primary" onClick={() => void form.validateFields().then(() => setStep((value) => value + 1))}>下一步</Button>}
+                  {step === sections.length - 1 && <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div className="realtime-advanced-content">
+              {sections.map((item) => (
+                <section className="realtime-advanced-section" key={item.title}>
+                  {sectionContent(item)}
+                </section>
+              ))}
+              <div className="realtime-advanced-actions">
+                <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>
+              </div>
+            </div>
+          )}
+        </Form>
+        </Spin>
+      </div>
+    </div>
+    <ComputedColumnEditorModal
+      open={Boolean(computedColumnTable)}
+      tableName={computedColumnTable}
+      expressions={computedColumnTable ? tableConfigs[computedColumnTable]?.computedColumns ?? [] : []}
+      columns={computedColumnTable ? schemas[computedColumnTable]?.columns ?? [] : []}
+      protectedKeys={computedColumnTable ? [
+        ...(tableConfigs[computedColumnTable]?.primaryKeys?.length
+          ? tableConfigs[computedColumnTable].primaryKeys!
+          : schemas[computedColumnTable]?.primaryKeys ?? []),
+        ...(tableConfigs[computedColumnTable]?.partitionKeys ?? []),
+      ] : []}
+      onSave={(expressions) => {
+        if (computedColumnTable) setPrivate(computedColumnTable, 'computedColumns', expressions);
+        setComputedColumnTable(undefined);
+        setPreview('');
+      }}
+      onCancel={() => setComputedColumnTable(undefined)}
+    />
+  </>);
+}

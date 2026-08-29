@@ -1,0 +1,115 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yjn.sqlagent.mapper.SqlTaskVersionMapper">
+  <resultMap id="versionMap" type="com.yjn.sqlagent.model.entity.SqlTaskVersion">
+    <id column="id" property="id"/>
+    <result column="task_id" property="taskId"/>
+    <result column="version_no" property="versionNo"/>
+    <result column="base_effective_version_no" property="baseEffectiveVersionNo"/>
+    <result column="base_effective_checksum" property="baseEffectiveChecksum"/>
+    <result column="name" property="name"/>
+    <result column="description" property="description"/>
+    <result column="sql_content" property="sqlContent"/>
+    <result column="ddl_content" property="ddlContent"/>
+    <result column="parameter_schema" property="parameterSchema"/>
+    <result column="sql_checksum" property="sqlChecksum"/>
+    <result column="version_note" property="versionNote"/>
+    <result column="status" property="status"/>
+    <result column="revision" property="revision"/>
+    <result column="created_by" property="createdBy"/>
+    <result column="updated_by" property="updatedBy"/>
+    <result column="effective_by" property="effectiveBy"/>
+    <result column="effective_time" property="effectiveTime"/>
+    <result column="create_time" property="createTime"/>
+    <result column="update_time" property="updateTime"/>
+  </resultMap>
+
+  <select id="nextVersionNo" resultType="int">
+    SELECT COALESCE(MAX(version_no), 0) + 1
+    FROM sql_task_version
+    WHERE task_id = #{taskId}
+  </select>
+
+  <select id="countVersions" resultType="long">
+    SELECT COUNT(*)
+    FROM sql_task_version
+    WHERE task_id = #{taskId}
+    <if test="keyword != null and keyword != ''">
+      AND (CAST(version_no AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(version_note, '') LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(updated_by, '') LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(created_by, '') LIKE CONCAT('%', #{keyword}, '%'))
+    </if>
+  </select>
+
+  <select id="listVersions" resultMap="versionMap">
+    SELECT id, task_id, version_no, base_effective_version_no, base_effective_checksum,
+           name, description, parameter_schema, sql_checksum, version_note, status, revision,
+           created_by, updated_by, effective_by, effective_time, create_time, update_time
+    FROM sql_task_version
+    WHERE task_id = #{taskId}
+    <if test="keyword != null and keyword != ''">
+      AND (CAST(version_no AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(version_note, '') LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(updated_by, '') LIKE CONCAT('%', #{keyword}, '%')
+        OR COALESCE(created_by, '') LIKE CONCAT('%', #{keyword}, '%'))
+    </if>
+    ORDER BY version_no DESC
+    LIMIT #{offset}, #{pageSize}
+  </select>
+
+  <select id="selectVersion" resultMap="versionMap">
+    SELECT id, task_id, version_no, base_effective_version_no, base_effective_checksum,
+           name, description, sql_content, ddl_content, parameter_schema, sql_checksum, version_note, status, revision,
+           created_by, updated_by, effective_by, effective_time, create_time, update_time
+    FROM sql_task_version
+    WHERE task_id = #{taskId} AND version_no = #{versionNo}
+  </select>
+
+  <select id="selectVersionForUpdate" resultMap="versionMap">
+    SELECT id, task_id, version_no, base_effective_version_no, base_effective_checksum,
+           name, description, sql_content, ddl_content, parameter_schema, sql_checksum, version_note, status, revision,
+           created_by, updated_by, effective_by, effective_time, create_time, update_time
+    FROM sql_task_version
+    WHERE task_id = #{taskId} AND version_no = #{versionNo}
+    FOR UPDATE
+  </select>
+
+  <select id="selectLatest" resultMap="versionMap">
+    SELECT id, task_id, version_no, base_effective_version_no, base_effective_checksum,
+           name, description, sql_content, ddl_content, parameter_schema, sql_checksum, version_note, status, revision,
+           created_by, updated_by, effective_by, effective_time, create_time, update_time
+    FROM sql_task_version WHERE task_id = #{taskId} ORDER BY version_no DESC LIMIT 1
+  </select>
+
+  <update id="updateDraftOptimistically">
+    UPDATE sql_task_version
+    SET name = #{version.name}, description = #{version.description}, sql_content = #{version.sqlContent},
+        ddl_content = #{version.ddlContent},
+        parameter_schema = #{version.parameterSchema}, sql_checksum = #{version.sqlChecksum},
+        version_note = #{version.versionNote}, updated_by = #{version.updatedBy},
+        revision = revision + 1, update_time = NOW()
+    WHERE task_id = #{version.taskId} AND version_no = #{version.versionNo}
+      AND revision = #{expectedRevision} AND status = 'DRAFT'
+  </update>
+
+  <update id="markPreviousEffectiveHistorical">
+    UPDATE sql_task_version
+    SET status = 'HISTORICAL', updated_by = #{operator}, revision = revision + 1, update_time = NOW()
+    WHERE task_id = #{taskId} AND version_no != #{effectiveVersionNo} AND status = 'EFFECTIVE'
+  </update>
+
+  <update id="markOtherDraftsStale">
+    UPDATE sql_task_version
+    SET status = 'STALE', updated_by = #{operator}, revision = revision + 1, update_time = NOW()
+    WHERE task_id = #{taskId} AND version_no != #{effectiveVersionNo} AND status = 'DRAFT'
+  </update>
+
+  <update id="markEffective">
+    UPDATE sql_task_version
+    SET status = 'EFFECTIVE', effective_by = #{operator}, effective_time = NOW(),
+        updated_by = #{operator}, revision = revision + 1, update_time = NOW()
+    WHERE task_id = #{taskId} AND version_no = #{versionNo}
+      AND revision = #{expectedRevision} AND status = 'DRAFT'
+  </update>
+</mapper>

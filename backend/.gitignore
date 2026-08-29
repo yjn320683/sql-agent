@@ -1,0 +1,9 @@
+target/
+*.iml
+.idea/
+logs/
+config/application-*.yml
+!config/application-*.yml.example
+src/main/resources/application-local.yml
+src/main/resources/application-dev.yml
+!.mvn/wrapper/maven-wrapper.jar

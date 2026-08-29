@@ -1,0 +1,37 @@
+spring:
+  application:
+    name: sql-agent-backend
+  profiles:
+    active: local
+  servlet:
+    encoding:
+      charset: UTF-8
+      enabled: true
+      force: true
+
+server:
+  port: 8382
+
+logging:
+  config: classpath:logback-spring.xml
+
+app:
+  realtime:
+    enabled: ${REALTIME_ENABLED:true}
+    default-project-id: ${REALTIME_DEFAULT_PROJECT_ID:1}
+    flink-bin: ${FLINK_BIN:flink}
+    yarn-bin: ${YARN_BIN:yarn}
+    yarn-web-url: ${YARN_WEB_URL:}
+    submit-jar: ${REALTIME_SUBMIT_JAR:../realtime-task-submit/target/realtime-task-submit.jar}
+    submission-dir: ${REALTIME_SUBMISSION_DIR:/tmp/sql-agent-realtime/submissions}
+    submission-uri-prefix: ${REALTIME_SUBMISSION_URI_PREFIX:}
+    paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:}
+    paimon-warehouse: ${PAIMON_WAREHOUSE:}
+    paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:}
+    paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
+    debug-table-suffix: ${PAIMON_DEBUG_TABLE_SUFFIX:_debug}
+    target-database: ${PAIMON_TARGET_DATABASE:}
+    checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
+    savepoint-dir: ${FLINK_SAVEPOINT_DIR:}
+    sync-delay-ms: ${REALTIME_SYNC_DELAY_MS:10000}
+    state-sync-enabled: ${REALTIME_STATE_SYNC_ENABLED:true}

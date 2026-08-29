@@ -1,0 +1,17 @@
+services:
+  sql-agent-mcp-server:
+    container_name: sql-agent-mcp-server
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sql-agent-mcp-server:latest
+    restart: unless-stopped
+    env_file:
+      - ${APP_ENV_FILE:-.env}
+    environment:
+      MCP_HTTP_HOST: 0.0.0.0
+      MCP_HTTP_PORT: ${MCP_HTTP_PORT:-8820}
+    ports:
+      - "${MCP_HTTP_PORT:-8820}:${MCP_HTTP_PORT:-8820}"
+    volumes:
+      - "${HOST_LOG_DIR:-./logs}:/app/logs"

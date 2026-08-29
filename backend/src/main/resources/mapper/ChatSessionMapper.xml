@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yjn.sqlagent.mapper.ChatSessionMapper">
+
+    <resultMap id="chatSessionMap" type="com.yjn.sqlagent.model.entity.ChatSession">
+        <id column="session_id" property="sessionId"/>
+        <result column="ob_id" property="obId"/>
+        <result column="title" property="title"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="last_active_at" property="lastActiveAt"/>
+        <result column="archived" property="archived"/>
+    </resultMap>
+
+    <select id="listActive" resultMap="chatSessionMap">
+        SELECT session_id, ob_id, title, created_at, last_active_at, archived
+        FROM chat_session
+        WHERE ob_id = #{obId}
+          AND archived = 0
+        ORDER BY last_active_at DESC
+        <if test="limit != null">
+            LIMIT #{limit}
+        </if>
+    </select>
+
+    <sql id="managedConditions">
+        WHERE ob_id = #{obId}
+        <choose>
+            <when test="status == 'active'">
+                AND archived = 0
+            </when>
+            <when test="status == 'archived'">
+                AND archived = 1
+            </when>
+        </choose>
+        <if test="keyword != null and keyword != ''">
+            AND (
+                INSTR(LOWER(COALESCE(title, '')), LOWER(#{keyword})) &gt; 0
+                OR INSTR(session_id, #{keyword}) &gt; 0
+            )
+        </if>
+    </sql>
+
+    <select id="countManaged" resultType="long">
+        SELECT COUNT(*)
+        FROM chat_session
+        <include refid="managedConditions"/>
+    </select>
+
+    <select id="listManaged" resultMap="chatSessionMap">
+        SELECT session_id, ob_id, title, created_at, last_active_at, archived
+        FROM chat_session
+        <include refid="managedConditions"/>
+        ORDER BY
+        <choose>
+            <when test="sortBy == 'createdAt'">created_at</when>
+            <otherwise>last_active_at</otherwise>
+        </choose>
+        <choose>
+            <when test="sortOrder == 'asc'">ASC</when>
+            <otherwise>DESC</otherwise>
+        </choose>
+        , session_id ASC
+        LIMIT #{pageSize} OFFSET #{offset}
+    </select>
+
+</mapper>

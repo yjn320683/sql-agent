@@ -1,0 +1,123 @@
+CREATE TABLE IF NOT EXISTS data_compare_job_detail (
+  id                         BIGINT        NOT NULL AUTO_INCREMENT COMMENT '验数任务ID',
+  compare_type               VARCHAR(16)   NOT NULL COMMENT 'VERSION、TABLE',
+  plan_token                 VARCHAR(64)   NULL COMMENT '不可变验数计划令牌',
+  task_id                    BIGINT        NULL COMMENT 'SQL任务ID，表对比时为空',
+  baseline_version_no        INT           NULL COMMENT '基线版本号',
+  candidate_version_no       INT           NULL COMMENT '候选版本号',
+  baseline_checksum          CHAR(64)      NULL COMMENT '提交时基线校验和',
+  candidate_checksum         CHAR(64)      NULL COMMENT '提交时候选校验和',
+  union_id                   BIGINT        NULL COMMENT '联合版本ID',
+  union_ddl_checksum         CHAR(64)      NULL COMMENT '联合DDL校验和',
+  baseline_table             VARCHAR(512)  NULL COMMENT '直接表对比的基线表',
+  candidate_table            VARCHAR(512)  NULL COMMENT '直接表对比的候选表',
+  original_baseline_sql      LONGTEXT      NULL COMMENT '基线版本SQL快照',
+  original_candidate_sql     LONGTEXT      NULL COMMENT '候选版本SQL快照',
+  generated_baseline_sql     LONGTEXT      NULL COMMENT '改写后的基线执行SQL',
+  generated_candidate_sql    LONGTEXT      NULL COMMENT '改写后的候选执行SQL',
+  temporary_tables           LONGTEXT      NULL COMMENT '唯一调测表JSON数组，不自动删除',
+  cleanup_at                 DATETIME      NULL COMMENT '历史兼容字段，不启用自动清理',
+  baseline_steps             LONGTEXT      NULL COMMENT '选择的基线Step JSON数组',
+  candidate_steps            LONGTEXT      NULL COMMENT '选择的候选Step JSON数组',
+  only_compare_same_column   TINYINT(1)    NOT NULL COMMENT '是否只比较同名列',
+  status                     VARCHAR(16)   NOT NULL COMMENT 'PENDING、RUNNING、PASSED、NOT_PASSED、FORCE_PASSED、NEEDS_RERUN、FAILED、CANCELLING、CANCELLED',
+  error_message              VARCHAR(4000) NULL COMMENT '脱敏错误摘要',
+  operator_ob_id             VARCHAR(20)   NOT NULL COMMENT '操作人obId',
+  executor_instance_id       VARCHAR(64)   NULL COMMENT '执行器实例ID',
+  heartbeat_at               DATETIME      NULL COMMENT '执行心跳',
+  started_at                 DATETIME      NULL COMMENT '开始时间',
+  finished_at                DATETIME      NULL COMMENT '结束时间',
+  create_time                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  update_time                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_compare_plan_token (plan_token),
+  KEY idx_compare_task_time (task_id, create_time),
+  KEY idx_compare_union_member (union_id, task_id, candidate_version_no, create_time),
+  KEY idx_compare_status_time (status, update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SQL任务与数据表验数记录';
+
+CREATE TABLE IF NOT EXISTS data_compare_tbl_verify (
+  id                         BIGINT        NOT NULL AUTO_INCREMENT COMMENT '表级验数ID',
+  job_id                     BIGINT        NOT NULL COMMENT '验数任务ID',
+  original_tbl_name          VARCHAR(512)  NULL COMMENT '原始输出表名',
+  baseline_source_tbl_name   VARCHAR(512)  NULL COMMENT '基线原始输出表',
+  candidate_source_tbl_name  VARCHAR(512)  NULL COMMENT '候选原始输出表',
+  baseline_tbl_name          VARCHAR(512)  NOT NULL COMMENT '基线结果表',
+  candidate_tbl_name         VARCHAR(512)  NOT NULL COMMENT '候选结果表',
+  compare_rule               LONGTEXT      NULL COMMENT '主键、对比列、探查列等JSON规则',
+  rule_revision              BIGINT        NOT NULL DEFAULT 1 COMMENT '规则修订号',
+  verified_rule_revision     BIGINT        NULL COMMENT '最近完成验数的规则修订号',
+  result_stale               TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '规则变化后需重新验数',
+  rerun_count                INT           NOT NULL DEFAULT 0 COMMENT '单表重跑次数',
+  force_pass                 TINYINT(1)    NOT NULL DEFAULT 0 COMMENT '是否强制通过',
+  force_reason               VARCHAR(1000) NULL COMMENT '强制通过原因',
+  force_operator_ob_id       VARCHAR(20)   NULL COMMENT '强制通过操作人',
+  force_time                 DATETIME      NULL COMMENT '强制通过时间',
+  is_part_tab                TINYINT(1)    NULL COMMENT '是否分区表',
+  part_nums                  VARCHAR(128)  NULL COMMENT '两侧分区数量',
+  partition_scope            LONGTEXT      NULL COMMENT '实际验证分区及覆盖范围JSON',
+  meta_data_is_same          TINYINT(1)    NULL COMMENT '元数据是否一致',
+  meta_data_diff             LONGTEXT      NULL COMMENT '字段及分区元数据差异JSON',
+  row_num_is_same            TINYINT(1)    NULL COMMENT '行数是否一致',
+  row_nums                   LONGTEXT      NULL COMMENT '行数结果JSON',
+  crc32_value_is_same        TINYINT(1)    NULL COMMENT 'CRC32是否一致',
+  crc32_values               LONGTEXT      NULL COMMENT 'CRC32结果JSON',
+  col_probe_detail           LONGTEXT      NULL COMMENT '字段探查结果JSON',
+  diff_detail                LONGTEXT      NULL COMMENT '差异计数和有限样例JSON',
+  diff_tbl_name              VARCHAR(512)  NULL COMMENT '唯一Hive差异表，不自动删除',
+  log_file                   VARCHAR(1024) NULL COMMENT '脱敏验证日志文件',
+  status                     VARCHAR(16)   NOT NULL COMMENT 'PENDING、RUNNING、PASSED、NOT_PASSED、FAILED、CANCELLED',
+  error_message              VARCHAR(4000) NULL COMMENT '脱敏错误摘要',
+  operator_ob_id             VARCHAR(20)   NOT NULL COMMENT '操作人obId',
+  started_at                 DATETIME      NULL COMMENT '开始时间',
+  finished_at                DATETIME      NULL COMMENT '结束时间',
+  create_time                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  update_time                DATETIME      NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '更新时间',
+  PRIMARY KEY (id),
+  KEY idx_tbl_verify_job (job_id),
+  KEY idx_tbl_verify_status_time (status, update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='表级验数结果';
+
+CREATE TABLE IF NOT EXISTS data_compare_plan (
+  plan_token VARCHAR(64) NOT NULL, task_id BIGINT NOT NULL, baseline_version_no INT NULL,
+  candidate_version_no INT NOT NULL, baseline_checksum CHAR(64) NOT NULL,
+  candidate_checksum CHAR(64) NOT NULL, union_id BIGINT NULL, union_ddl_checksum CHAR(64) NULL,
+  original_baseline_sql LONGTEXT NOT NULL, original_candidate_sql LONGTEXT NOT NULL,
+  generated_baseline_sql LONGTEXT NOT NULL, generated_candidate_sql LONGTEXT NOT NULL,
+  baseline_steps LONGTEXT NOT NULL, candidate_steps LONGTEXT NOT NULL,
+  table_mappings LONGTEXT NOT NULL, temporary_tables LONGTEXT NOT NULL,
+  operator_ob_id VARCHAR(20) NOT NULL, consumed_job_id BIGINT NULL, expires_at DATETIME NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (plan_token), KEY idx_compare_plan_task (task_id,candidate_version_no,create_time),
+  KEY idx_compare_plan_expiry (expires_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='版本验数不可变执行计划';
+
+CREATE TABLE IF NOT EXISTS sql_task_version_union (
+  id BIGINT NOT NULL AUTO_INCREMENT, union_ddl LONGTEXT NULL, union_ddl_checksum CHAR(64) NOT NULL,
+  status VARCHAR(24) NOT NULL DEFAULT 'DRAFT', revision BIGINT NOT NULL DEFAULT 1,
+  error_message VARCHAR(4000) NULL, created_by VARCHAR(20) NOT NULL, updated_by VARCHAR(20) NOT NULL,
+  published_by VARCHAR(20) NULL, published_time DATETIME NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id), KEY idx_version_union_status (status,update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务联合版本';
+
+CREATE TABLE IF NOT EXISTS sql_task_version_union_member (
+  id BIGINT NOT NULL AUTO_INCREMENT, union_id BIGINT NOT NULL, task_id BIGINT NOT NULL,
+  version_no INT NOT NULL, version_revision BIGINT NOT NULL, version_checksum CHAR(64) NOT NULL,
+  baseline_checksum CHAR(64) NOT NULL, latest_compare_job_id BIGINT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id), UNIQUE KEY uk_union_task (union_id,task_id),
+  UNIQUE KEY uk_union_task_version (task_id,version_no), KEY idx_union_member_job (latest_compare_job_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='联合版本成员';
+
+CREATE TABLE IF NOT EXISTS sql_task_version_union_publish_log (
+  id BIGINT NOT NULL AUTO_INCREMENT, union_id BIGINT NOT NULL, statement_order INT NOT NULL,
+  statement_checksum CHAR(64) NOT NULL, ddl_statement LONGTEXT NOT NULL, status VARCHAR(16) NOT NULL,
+  error_message VARCHAR(4000) NULL, operator_ob_id VARCHAR(20) NOT NULL,
+  started_at DATETIME NULL, finished_at DATETIME NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id), UNIQUE KEY uk_union_statement (union_id,statement_checksum),
+  KEY idx_union_publish_log (union_id,statement_order)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='联合发布DDL逐条审计';

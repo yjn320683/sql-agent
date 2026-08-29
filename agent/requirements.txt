@@ -1,0 +1,8 @@
+claude-agent-sdk==0.2.111
+fastapi==0.139.0
+pydantic==2.13.4
+uvicorn==0.50.2
+sse-starlette==3.4.5
+python-dotenv==1.2.2
+sqlglot==30.0.3
+langsmith==0.9.8

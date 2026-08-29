@@ -1,0 +1,82 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yjn.sqlagent.mapper.SqlTaskExecutionMapper">
+  <sql id="globalExecutionFilters">
+    <choose>
+      <when test="status == 'active'">
+        AND status IN ('PENDING', 'QUEUED', 'RUNNING', 'CANCELLING')
+      </when>
+      <when test="status == 'cancelled'">
+        AND status = 'CANCELLED'
+      </when>
+      <when test="status != null and status != '' and status != 'all'">
+        AND status = #{status}
+      </when>
+    </choose>
+    <if test="keyword != null and keyword != ''">
+      AND (
+        CAST(id AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+        OR CAST(task_id AS CHAR) LIKE CONCAT('%', #{keyword}, '%')
+        OR task_name_snapshot LIKE CONCAT('%', #{keyword}, '%')
+        OR requested_by LIKE CONCAT('%', #{keyword}, '%')
+        OR query_id LIKE CONCAT('%', #{keyword}, '%')
+        OR application_ids LIKE CONCAT('%', #{keyword}, '%')
+        OR job_ids LIKE CONCAT('%', #{keyword}, '%')
+      )
+    </if>
+  </sql>
+
+  <select id="countByTask" resultType="long">
+    SELECT COUNT(*) FROM sql_task_execution
+    WHERE task_id = #{taskId}
+    <include refid="globalExecutionFilters" />
+  </select>
+
+  <select id="listByTask" resultType="com.yjn.sqlagent.model.entity.SqlTaskExecution">
+    SELECT id, task_id, task_name_snapshot, sql_snapshot, parameter_schema_snapshot, rendered_sql_snapshot, parameter_values,
+           business_date, source_type, task_version_no, task_revision, status, current_step_no,
+           total_steps, succeeded_steps, failed_step_no, requested_by,
+           executor_instance_id, query_id, application_ids, job_ids, error_message,
+           submitted_at, started_at, finished_at, heartbeat_at, update_time
+    FROM sql_task_execution
+    WHERE task_id = #{taskId}
+    <include refid="globalExecutionFilters" />
+    ORDER BY submitted_at DESC, id DESC
+    LIMIT #{offset}, #{pageSize}
+  </select>
+
+  <select id="countAll" resultType="long">
+    SELECT COUNT(*)
+    FROM sql_task_execution
+    WHERE 1 = 1
+    <include refid="globalExecutionFilters" />
+  </select>
+
+  <select id="listAll" resultType="com.yjn.sqlagent.model.entity.SqlTaskExecution">
+    SELECT id, task_id, task_name_snapshot, sql_snapshot, parameter_schema_snapshot, rendered_sql_snapshot, parameter_values,
+           business_date, source_type, task_version_no, task_revision, status, current_step_no,
+           total_steps, succeeded_steps, failed_step_no, requested_by,
+           executor_instance_id, query_id, application_ids, job_ids, error_message,
+           submitted_at, started_at, finished_at, heartbeat_at, update_time
+    FROM sql_task_execution
+    WHERE 1 = 1
+    <include refid="globalExecutionFilters" />
+    ORDER BY submitted_at DESC, id DESC
+    LIMIT #{offset}, #{pageSize}
+  </select>
+
+  <select id="summarize" resultType="com.yjn.sqlagent.model.vo.ExecutionSummaryVO">
+    SELECT COUNT(*) AS total,
+           COALESCE(SUM(CASE WHEN status IN ('PENDING', 'QUEUED', 'RUNNING', 'CANCELLING') THEN 1 ELSE 0 END), 0) AS active,
+           COALESCE(SUM(CASE WHEN status = 'SUCCEEDED' AND submitted_at &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END), 0) AS succeeded24h,
+           COALESCE(SUM(CASE WHEN status = 'FAILED' AND submitted_at &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END), 0) AS failed24h,
+           COALESCE(SUM(CASE WHEN status = 'CANCELLED' AND submitted_at &gt;= DATE_SUB(NOW(), INTERVAL 24 HOUR) THEN 1 ELSE 0 END), 0) AS cancelled24h
+    FROM sql_task_execution
+  </select>
+
+  <update id="failPending">
+    UPDATE sql_task_execution
+    SET status = 'FAILED', error_message = #{message}, finished_at = NOW()
+    WHERE id = #{id} AND status = 'PENDING'
+  </update>
+</mapper>
