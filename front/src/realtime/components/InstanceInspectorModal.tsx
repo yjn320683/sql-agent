@@ -91,6 +91,42 @@ const item = (label: string, value: unknown, span = 1) => <Descriptions.Item key
 export function InstanceConfigView({ value }: { value: unknown }) {
   const root = normalizeTaskSnapshot(value);
   const taskConfig = asRecord(root.taskConfig ?? root.config);
+  const taskType = String(root.taskType ?? '');
+  const computeConfig = asRecord(taskConfig.computeConfig);
+  const exportConfig = asRecord(taskConfig.exportConfig);
+  const flinkConf = asRecord(root.flinkConf);
+  const alarmConfig = asRecord(root.alarmConfig);
+  const tableReferences = Array.isArray(root.tableReferences) ? root.tableReferences : [];
+  if (taskType === 'compute' || taskType === 'export') {
+    return <div className="realtime-instance-config-view">
+      <Section title="基础信息">
+        <Descriptions bordered size="small" column={2}>
+          {item('任务 ID', root.id ?? root.taskId)}{item('任务类型', taskType === 'compute' ? '实时计算' : '实时出仓')}
+          {item('任务名称', root.name)}{item('负责人', root.owner)}{item('描述', root.description, 2)}
+          {item('状态', root.status)}{item('Flink 版本', root.flinkVersion)}
+        </Descriptions>
+      </Section>
+      <Section title="告警配置"><Descriptions bordered size="small" column={2}>{item('告警类型', alarmConfig.alarmType)}{item('告警组', alarmConfig.alarmGroup)}</Descriptions></Section>
+      {taskType === 'compute' ? <Section title="SQL 编辑">
+        <Descriptions bordered size="small" column={2}>{item('默认 Paimon 数据库', computeConfig.defaultDatabase, 2)}{item('受管表依赖', tableReferences, 2)}</Descriptions>
+        <Typography.Text strong>Flink SQL</Typography.Text>
+        <pre className="managed-task-json-detail">{String(computeConfig.sql ?? '') || '-'}</pre>
+      </Section> : <Section title="出仓设置">
+        <Descriptions bordered size="small" column={2}>
+          {item('Paimon 源数据库', exportConfig.sourceDatabase)}{item('目标 MySQL Server ID', exportConfig.targetServerId)}
+          {item('受管表依赖', tableReferences, 2)}{item('表映射', exportConfig.mappings, 2)}{item('Sink 参数', exportConfig.sink, 2)}
+        </Descriptions>
+      </Section>}
+      <Section title="资源与运行">
+        <Descriptions bordered size="small" column={2}>
+          {item('并行度', flinkConf.parallelism)}{item('Checkpoint 周期', flinkConf.checkpointIntervalSeconds == null ? undefined : `${String(flinkConf.checkpointIntervalSeconds)}s`)}
+          {item('TaskManager 内存', flinkConf.taskManagerMemoryGb == null ? undefined : `${String(flinkConf.taskManagerMemoryGb)}GB`)}
+          {item('JobManager 内存', flinkConf.jobManagerMemoryGb == null ? undefined : `${String(flinkConf.jobManagerMemoryGb)}GB`)}
+        </Descriptions>
+        {Object.keys(asRecord(flinkConf.flinkConfOverrides)).length > 0 && <div className="realtime-instance-flink-params"><StructuredKeyValueTable value={flinkConf.flinkConfOverrides} /></div>}
+      </Section>
+    </div>;
+  }
   const cdc = asRecord(taskConfig.cdcConfig);
   const selectedTables = Array.isArray(cdc.selectedTables) ? cdc.selectedTables.map(String) : [];
   const targetTables = Array.isArray(cdc.targetTableList) && cdc.targetTableList.length

@@ -53,6 +53,24 @@ const sameOrderedValues = (left: string[] = [], right: string[] = []) => left.le
 const metadataColumnOptions = ['database_name', 'table_name', 'op_ts'].map((value) => ({ label: value, value }));
 const booleanValue = (value: unknown) => value === true || String(value).toLowerCase() === 'true';
 
+const platformParamDefaults: Record<string, string> = {
+  'table_conf.bucket': '2',
+  'table_conf.sink.parallelism': '2',
+  'table_conf.changelog-producer': 'input',
+  'table_conf.consumer.expiration-time': '1 d',
+};
+
+const platformParamLabels: Record<string, string> = {
+  'table_conf.bucket': '目标 Paimon 表 Bucket',
+  'table_conf.sink.parallelism': '目标 Paimon 表 Sink 并行度',
+  'table_conf.changelog-producer': '目标 Paimon 表 Changelog Producer',
+  'table_conf.consumer.expiration-time': 'Consumer 过期时间',
+};
+
+const paramLabel = (param: TaskParam) => platformParamLabels[`${param.paramType}.${param.paramKey}`]
+  ?? param.keyDesc
+  ?? param.paramKey;
+
 const paramOptions = (param: TaskParam) => {
   try {
     const value = JSON.parse(param.paramValue ?? '[]') as unknown;
@@ -70,6 +88,8 @@ const paramOptions = (param: TaskParam) => {
 };
 
 const paramDefault = (param: TaskParam) => {
+  const platformDefault = platformParamDefaults[`${param.paramType}.${param.paramKey}`];
+  if (platformDefault !== undefined) return platformDefault;
   const option = paramOptions(param).find((item) => item.default);
   if (option) return option.value;
   try {
@@ -86,7 +106,7 @@ const paramPath = (param: TaskParam): string[] => param.paramType === 'mysql_con
     ? ['taskConfig', 'cdcConfig', 'tableConfOverrides', param.paramKey]
     : ['taskConfig', 'flinkConfOverrides', param.paramKey];
 
-export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: Props) {
+export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   const [form] = Form.useForm();
   const [servers, setServers] = useState<RealtimeServer[]>([]);
   const [domains, setDomains] = useState<PaimonTablePrefixOption[]>([]);
@@ -310,7 +330,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         <Descriptions.Item label={fieldLabel('任务名称', true)}><Form.Item name="name" rules={[{ required: true, message: '请输入任务名称' }]} noStyle><Input placeholder="请输入同步任务名称" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('负责人', true)}><Form.Item name="owner" rules={[{ required: true, whitespace: true, message: '请输入负责人' }]} noStyle><Input placeholder="请输入负责人" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="描述" span={2}><Form.Item name="description" noStyle><Input.TextArea rows={3} placeholder="请输入任务用途、数据范围或其他说明" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="flink版本" span={2}><Form.Item name="flinkVersion" noStyle><Select disabled options={[{ label: '2.2.1', value: '2.2.1' }]} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="Flink 版本" span={2}><Form.Item name="flinkVersion" noStyle><Select disabled options={[{ label: '2.2.1', value: '2.2.1' }]} /></Form.Item></Descriptions.Item>
       </Descriptions>
     </div>
   );
@@ -369,7 +389,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
       validator: (_: unknown, input: unknown) => {
         if (input === undefined || input === null || input === '') return Promise.resolve();
         const value = Number(input);
-        const label = param.keyDesc || param.paramKey;
+        const label = paramLabel(param);
         if (!Number.isFinite(value)) return Promise.reject(new Error(`${label}必须是数字`));
         if (param.minValue !== undefined && value < param.minValue) return Promise.reject(new Error(`${label}必须大于等于 ${param.minValue}`));
         if (param.maxValue !== undefined && value > param.maxValue) return Promise.reject(new Error(`${label}必须小于等于 ${param.maxValue}`));
@@ -378,9 +398,10 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         return Promise.resolve();
       },
     };
-    const rules = [...(param.required ? [{ required: true, message: `请输入${param.keyDesc || param.paramKey}` }] : []), ...(param.inputType === 'input_number' ? [numericRule] : [])];
+    const label = paramLabel(param);
+    const rules = [...(param.required ? [{ required: true, message: `请输入${label}` }] : []), ...(param.inputType === 'input_number' ? [numericRule] : [])];
     return (
-      <Form.Item key={`${param.paramType}-${param.paramKey}`} name={path} label={`${param.keyDesc}（${param.paramKey}）`} rules={rules.length ? rules : undefined} className="realtime-dynamic-param">
+      <Form.Item key={`${param.paramType}-${param.paramKey}`} name={path} label={label} tooltip={param.paramKey} rules={rules.length ? rules : undefined} className="realtime-dynamic-param">
         {param.inputType === 'select' && options.length
           ? <Select disabled={disabled} allowClear options={options} />
           : param.inputType === 'switch'
@@ -398,7 +419,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         <span>公共配置</span>
       </div>
       <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
-        <Descriptions.Item label="源端类型"><Input value="Mysql CDC" disabled /></Descriptions.Item>
+        <Descriptions.Item label="源端类型"><Input value="MySQL CDC" disabled /></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('Server', true)}>
           <Form.Item name="sourceServerId" rules={[{ required: true, message: '请选择 Server' }]} noStyle>
             <Select disabled={structureLocked} showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => ({ label: item.name, value: item.id }))} />
@@ -422,7 +443,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
             }} />
           </Space.Compact>
         </Descriptions.Item>
-        <Descriptions.Item label="Mysql配置" span={2}>
+        <Descriptions.Item label="MySQL 配置" span={2}>
           <div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div>
           <SyncMoreConfigRows paramType="mysql_conf" formNamePath={['taskConfig', 'cdcConfig', 'mysqlConfOverrides']} taskParams={params} readOnly={structureLocked} />
         </Descriptions.Item>
@@ -495,15 +516,8 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
   );
 
   return (<>
-    <div className="realtime-sync-editor-page">
-      <header className="realtime-sync-editor-page-header">
-        <div>
-          <Typography.Title level={4}>{task ? `编辑同步任务 · ${task.name}` : '新建实时同步任务'}</Typography.Title>
-          <Typography.Text type="secondary">MySQL CDC → Paimon 全链路配置</Typography.Text>
-        </div>
-        <Space><Button onClick={onClose}>返回任务列表</Button><Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button></Space>
-      </header>
-      <div className="realtime-sync-editor-page-body">
+    <div className="realtime-sync-editor-page realtime-editor-page-compact">
+      <div className={`realtime-sync-editor-page-body realtime-editor-page-body-compact mode-${mode}`}>
         <Spin spinning={supportLoading}>
         {supportError && <Alert type="error" showIcon message={supportError} className="realtime-editor-warning" />}
         {task?.editPolicy && !task.editPolicy.editable && <Alert type="warning" showIcon message={task.editPolicy.reason} className="realtime-editor-warning" />}
@@ -514,7 +528,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
           items={[{ key: 'wizard', label: '分步向导' }, { key: 'advanced', label: '高级配置' }]}
           onChange={(value) => setMode(value as 'wizard' | 'advanced')}
         />
-        <Form form={form} layout="vertical" preserve disabled={updateBlocked || Boolean(supportError)} onValuesChange={() => { if (preview) setPreview(''); }}>
+        <Form className={`realtime-editor-form mode-${mode}`} form={form} layout="vertical" preserve disabled={updateBlocked || Boolean(supportError)} onValuesChange={() => { if (preview) setPreview(''); }}>
           {mode === 'wizard' ? (
             <div className="realtime-wizard">
               <Steps direction="vertical" current={step} items={sections.map((item) => ({ title: item.title }))} onChange={setStep} />
@@ -523,7 +537,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
                 <div className="realtime-wizard-actions">
                   <Button disabled={step === 0} onClick={() => setStep((value) => value - 1)}>上一步</Button>
                   {step < sections.length - 1 && <Button type="primary" onClick={() => void form.validateFields().then(() => setStep((value) => value + 1))}>下一步</Button>}
-                  {step === sections.length - 1 && <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>}
+                  <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>
                 </div>
               </div>
             </div>

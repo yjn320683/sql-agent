@@ -319,9 +319,9 @@ INSERT IGNORE INTO rt_task_param
 VALUES
   ('sync','mysql_conf','scan.snapshot.fetch.size','快照单次拉取行数','[{"label":"128","value":"128"},{"label":"256","value":"256"},{"label":"512","value":"512"},{"label":"1024（官网默认）","value":"1024","default":true}]','list','select',1,1,10),
   ('sync','mysql_conf','scan.incremental.snapshot.chunk.size','快照分片行数','[{"label":"1024","value":"1024"},{"label":"2048","value":"2048"},{"label":"4096","value":"4096"},{"label":"8096（官网默认）","value":"8096","default":true}]','list','select',1,1,20),
-  ('sync','table_conf','bucket','目标Paimon表Bucket',NULL,'number','input_number',1,1,10),
-  ('sync','table_conf','sink.parallelism','目标Paimon表Sink并行度',NULL,'number','input_number',1,1,20),
-  ('sync','table_conf','changelog-producer','目标Paimon表 Changelog Producer','[{"label":"none（官网默认）","value":"none","default":true},{"label":"input","value":"input"},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]','list','select',1,1,30),
+  ('sync','table_conf','bucket','目标 Paimon 表 Bucket','2','number','input_number',1,1,10),
+  ('sync','table_conf','sink.parallelism','目标 Paimon 表 Sink 并行度','2','number','input_number',1,1,20),
+  ('sync','table_conf','changelog-producer','目标 Paimon 表 Changelog Producer','[{"label":"none","value":"none"},{"label":"input（平台默认）","value":"input","default":true},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]','list','select',1,1,30),
   ('sync','table_conf','dynamic-bucket.target-row-num','动态 Bucket 目标行数','2000000','number','input_number',0,1,42),
   ('sync','table_conf','consumer.expiration-time','Consumer 过期时间','1 d','string','input',1,1,104),
   ('sync','flink_conf','taskmanager.memory.managed.fraction','TaskManager Managed Memory 比例','0.4','number','input_number',1,1,10),
@@ -357,3 +357,13 @@ UPDATE rt_task_param SET min_value=1,max_value=128,step_value=1,precision_value=
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='sink.parallelism';
 UPDATE rt_task_param SET min_value=100000,step_value=100000,precision_value=0
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='dynamic-bucket.target-row-num';
+
+-- 对已初始化环境同步平台推荐默认值和展示文案，避免新建任务出现空必填项。
+UPDATE rt_task_param SET key_desc='目标 Paimon 表 Bucket',param_value='2'
+ WHERE task_type='sync' AND param_type='table_conf' AND param_key='bucket';
+UPDATE rt_task_param SET key_desc='目标 Paimon 表 Sink 并行度',param_value='2'
+ WHERE task_type='sync' AND param_type='table_conf' AND param_key='sink.parallelism';
+UPDATE rt_task_param
+ SET key_desc='目标 Paimon 表 Changelog Producer',
+     param_value='[{"label":"none","value":"none"},{"label":"input（平台默认）","value":"input","default":true},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]'
+ WHERE task_type='sync' AND param_type='table_conf' AND param_key='changelog-producer';
