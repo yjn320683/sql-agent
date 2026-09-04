@@ -8,13 +8,13 @@ CREATE TABLE IF NOT EXISTS rt_project (
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_rt_project_name (project_name)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时同步项目';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务项目';
 
 CREATE TABLE IF NOT EXISTS rt_task (
   id BIGINT NOT NULL AUTO_INCREMENT COMMENT '任务ID',
   project_id BIGINT NOT NULL COMMENT '所属项目ID',
   task_name VARCHAR(180) NOT NULL COMMENT '任务名称',
-  task_type VARCHAR(16) NOT NULL DEFAULT 'sync' COMMENT '首期固定为sync',
+  task_type VARCHAR(16) NOT NULL DEFAULT 'sync' COMMENT 'sync/compute/export',
   flink_version VARCHAR(32) NULL,
   owner VARCHAR(64) NOT NULL,
   description VARCHAR(1024) NULL,
@@ -25,20 +25,20 @@ CREATE TABLE IF NOT EXISTS rt_task (
   UNIQUE KEY uk_rt_task_name (project_id, task_name),
   KEY idx_rt_task_list (task_type, status, update_time),
   KEY idx_rt_task_owner (owner)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时同步任务';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务';
 
 CREATE TABLE IF NOT EXISTS rt_task_version (
   id BIGINT NOT NULL AUTO_INCREMENT,
   task_id BIGINT NOT NULL,
   version_no INT NOT NULL,
-  config LONGTEXT NOT NULL COMMENT '完整同步配置JSON',
+  config LONGTEXT NOT NULL COMMENT '完整任务配置JSON',
   operator VARCHAR(64) NOT NULL,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_rt_task_version (task_id, version_no),
   KEY idx_rt_task_version_current (task_id, version_no)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务版本';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务版本';
 
 CREATE TABLE IF NOT EXISTS rt_sync_task_config (
   task_id BIGINT NOT NULL,
@@ -60,6 +60,7 @@ CREATE TABLE IF NOT EXISTS rt_sync_task_table_mapping (
   source_table VARCHAR(64) COLLATE utf8mb4_bin NOT NULL,
   target_database VARCHAR(128) NOT NULL,
   target_table VARCHAR(128) NOT NULL,
+  realtime_table_id BIGINT NULL COMMENT '受管实时表ID',
   sort_order INT NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
@@ -68,8 +69,103 @@ CREATE TABLE IF NOT EXISTS rt_sync_task_table_mapping (
   UNIQUE KEY uk_sync_mapping_source (source_server_id, source_table),
   KEY idx_sync_mapping_server (source_server_id, task_id),
   KEY idx_sync_mapping_source_table (task_id, source_table),
-  KEY idx_sync_mapping_target_table (task_id, target_table)
+  KEY idx_sync_mapping_target_table (task_id, target_table),
+  KEY idx_sync_mapping_realtime_table (realtime_table_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='源表与Paimon表映射';
+
+CREATE TABLE IF NOT EXISTS rt_realtime_table (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  catalog_name VARCHAR(64) NOT NULL DEFAULT 'paimon',
+  database_name VARCHAR(128) NOT NULL,
+  table_name VARCHAR(128) NOT NULL,
+  table_comment VARCHAR(512) NULL,
+  table_type VARCHAR(32) NOT NULL DEFAULT 'primary_key' COMMENT 'primary_key/append_only',
+  creation_source VARCHAR(32) NOT NULL DEFAULT 'manual' COMMENT 'manual/sync',
+  producer_task_id BIGINT NULL,
+  physical_status VARCHAR(32) NOT NULL DEFAULT 'declared' COMMENT 'declared/active/error',
+  table_options_json LONGTEXT NOT NULL,
+  last_error VARCHAR(2000) NULL,
+  last_synced_at DATETIME NULL,
+  operator VARCHAR(64) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_realtime_table_identity (catalog_name,database_name,table_name),
+  KEY idx_realtime_table_status (physical_status,creation_source,update_time),
+  KEY idx_realtime_table_producer (producer_task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='受管Paimon实时表';
+
+CREATE TABLE IF NOT EXISTS rt_realtime_table_column (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  realtime_table_id BIGINT NOT NULL,
+  column_name VARCHAR(128) NOT NULL,
+  data_type VARCHAR(128) NOT NULL,
+  nullable_flag TINYINT(1) NOT NULL DEFAULT 1,
+  primary_key_flag TINYINT(1) NOT NULL DEFAULT 0,
+  partition_key_flag TINYINT(1) NOT NULL DEFAULT 0,
+  column_comment VARCHAR(512) NULL,
+  sort_order INT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_realtime_table_column (realtime_table_id,column_name),
+  UNIQUE KEY uk_realtime_table_column_order (realtime_table_id,sort_order),
+  KEY idx_realtime_column_table (realtime_table_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='受管实时表字段';
+
+CREATE TABLE IF NOT EXISTS rt_task_table_reference (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  realtime_table_id BIGINT NOT NULL,
+  reference_role VARCHAR(16) NOT NULL COMMENT 'INPUT/OUTPUT',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_task_table_reference (task_id,realtime_table_id,reference_role),
+  KEY idx_task_table_reference_table (realtime_table_id,reference_role),
+  KEY idx_task_table_reference_task (task_id,reference_role)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务表依赖';
+
+CREATE TABLE IF NOT EXISTS rt_compute_task_config (
+  task_id BIGINT NOT NULL,
+  default_database VARCHAR(128) NOT NULL,
+  sql_text LONGTEXT NOT NULL,
+  config_json LONGTEXT NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时计算任务配置';
+
+CREATE TABLE IF NOT EXISTS rt_export_task_config (
+  task_id BIGINT NOT NULL,
+  source_database VARCHAR(128) NOT NULL,
+  target_server_id BIGINT NOT NULL,
+  config_json LONGTEXT NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (task_id),
+  KEY idx_export_config_server (target_server_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时出仓任务配置';
+
+CREATE TABLE IF NOT EXISTS rt_export_task_table_mapping (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  realtime_table_id BIGINT NOT NULL,
+  target_server_id BIGINT NOT NULL,
+  target_database VARCHAR(128) NOT NULL,
+  target_table VARCHAR(128) NOT NULL,
+  column_mapping_json LONGTEXT NOT NULL,
+  primary_keys_json LONGTEXT NOT NULL,
+  write_mode VARCHAR(16) NOT NULL DEFAULT 'upsert',
+  sort_order INT NOT NULL DEFAULT 0,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_export_mapping_order (task_id,sort_order),
+  UNIQUE KEY uk_export_mapping_source (task_id,realtime_table_id),
+  UNIQUE KEY uk_export_mapping_target (target_server_id,target_database,target_table),
+  KEY idx_export_mapping_task (task_id),
+  KEY idx_export_mapping_table (realtime_table_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时出仓表映射';
 
 CREATE TABLE IF NOT EXISTS rt_task_param (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -92,7 +188,7 @@ CREATE TABLE IF NOT EXISTS rt_task_param (
   PRIMARY KEY (id),
   UNIQUE KEY uk_task_param_key (task_type, param_type, param_key),
   KEY idx_task_param_type (task_type, param_type, enabled_flag, sort_order)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步动态参数';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务动态参数';
 
 CREATE TABLE IF NOT EXISTS rt_server (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -109,7 +205,7 @@ CREATE TABLE IF NOT EXISTS rt_server (
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_server_type_database_identity (type, database_name, database_prefix)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步MySQL Server';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务MySQL Server';
 
 CREATE TABLE IF NOT EXISTS rt_task_instance (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -138,7 +234,7 @@ CREATE TABLE IF NOT EXISTS rt_task_instance (
   KEY idx_task_instance_task_mode_create (task_id, execution_mode, create_time),
   KEY idx_task_instance_task_create (task_id, create_time),
   KEY idx_task_instance_yarn_application (yarn_application_id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务运行实例';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务运行实例';
 
 CREATE TABLE IF NOT EXISTS rt_task_operation (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -161,7 +257,7 @@ CREATE TABLE IF NOT EXISTS rt_task_operation (
   KEY idx_task_operation_task (task_id, create_time),
   KEY idx_task_operation_instance (task_instance_id, create_time),
   KEY idx_task_operation_deadline (operation_status, deadline_at)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务操作上下文';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务操作上下文';
 
 CREATE TABLE IF NOT EXISTS rt_task_change_log (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -182,7 +278,7 @@ CREATE TABLE IF NOT EXISTS rt_task_change_log (
   KEY idx_task_change_log_after_version (after_version_id),
   KEY idx_task_change_log_instance (task_instance_id),
   KEY idx_task_change_log_task_id (task_id, id)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务变更记录';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务变更记录';
 
 CREATE TABLE IF NOT EXISTS rt_alert (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -196,7 +292,7 @@ CREATE TABLE IF NOT EXISTS rt_alert (
   PRIMARY KEY (id),
   KEY idx_alert_status (status, severity),
   KEY idx_alert_task (task_id, status, update_time)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步任务告警';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务告警';
 
 CREATE TABLE IF NOT EXISTS rt_paimon_business_domain (
   id BIGINT NOT NULL AUTO_INCREMENT,

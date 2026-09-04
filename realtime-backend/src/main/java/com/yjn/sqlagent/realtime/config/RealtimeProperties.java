@@ -22,7 +22,6 @@ public class RealtimeProperties {
     private String paimonWarehouse = "";
     private String paimonDebugWarehouse = "";
     private String paimonDebugTargetDatabase = "paimon_debug";
-    private String debugTableSuffix = "_debug";
     private String targetDatabase = "";
     private String checkpointDir = "";
     private String savepointDir = "";
@@ -61,8 +60,6 @@ public class RealtimeProperties {
     public void setPaimonDebugWarehouse(String value) { paimonDebugWarehouse = value; }
     public String getPaimonDebugTargetDatabase() { return paimonDebugTargetDatabase; }
     public void setPaimonDebugTargetDatabase(String value) { paimonDebugTargetDatabase = value; }
-    public String getDebugTableSuffix() { return debugTableSuffix; }
-    public void setDebugTableSuffix(String value) { debugTableSuffix = value; }
     public String getTargetDatabase() { return targetDatabase; }
     public void setTargetDatabase(String value) { targetDatabase = value; }
     public String getCheckpointDir() { return checkpointDir; }

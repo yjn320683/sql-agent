@@ -17,17 +17,19 @@ class RealtimeSchemaContractTest {
     private static final Set<String> REQUIRED_TABLES = Set.of(
             "rt_project", "rt_task", "rt_task_version", "rt_sync_task_config",
             "rt_sync_task_table_mapping", "rt_task_param", "rt_server", "rt_task_instance",
-            "rt_task_operation", "rt_task_change_log", "rt_alert", "rt_paimon_business_domain");
+            "rt_task_operation", "rt_task_change_log", "rt_alert", "rt_paimon_business_domain",
+            "rt_realtime_table", "rt_realtime_table_column", "rt_task_table_reference",
+            "rt_compute_task_config", "rt_export_task_config", "rt_export_task_table_mapping");
 
     @Test
-    void schemaContainsOnlyTheTwelveSyncTablesAndPrunedFields() throws Exception {
+    void schemaContainsUnifiedRealtimeTablesAndPrunedFields() throws Exception {
         String schema = resource("db/realtime_sync_schema.sql");
         Matcher matcher = Pattern.compile("CREATE TABLE IF NOT EXISTS (rt_[a-z_]+)").matcher(schema);
         List<String> tables = new java.util.ArrayList<>();
         while (matcher.find()) tables.add(matcher.group(1));
 
         assertEquals(REQUIRED_TABLES, tables.stream().collect(Collectors.toSet()));
-        assertEquals(12, tables.size());
+        assertEquals(18, tables.size());
         assertTrue(schema.contains("managed_flag TINYINT(1) NOT NULL DEFAULT 1"));
         assertTrue(schema.contains("idx_task_instance_managed_status"));
         assertTrue(schema.contains("idx_task_instance_task_mode_create"));
@@ -48,6 +50,9 @@ class RealtimeSchemaContractTest {
         assertTrue(schema.contains("'sync','table_conf','changelog-producer'"));
         assertTrue(schema.contains("'sync','flink_conf','high-availability.type'"));
         assertTrue(schema.contains("INSERT IGNORE INTO rt_paimon_business_domain"));
+        assertTrue(schema.contains("realtime_table_id BIGINT NULL"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_compute_task_config"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_export_task_config"));
     }
 
     @Test

@@ -5,8 +5,10 @@ import com.yjn.sqlagent.realtime.common.RealtimeResponse;
 import com.yjn.sqlagent.realtime.model.TaskActionRequest;
 import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
+import com.yjn.sqlagent.realtime.repository.RealtimeTaskDefinitionRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
+import com.yjn.sqlagent.realtime.service.RealtimeTaskDefinitionService;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,8 +21,9 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.beans.factory.annotation.Autowired;
 
-/** 对齐参考项目 v1 统一任务接口，当前仅注册同步任务实现。 */
+/** 实时同步、计算和出仓任务的统一入口。 */
 @RestController
 @RequestMapping("/v1/api/tasks")
 public class RealtimeUnifiedTaskController {
@@ -29,6 +32,8 @@ public class RealtimeUnifiedTaskController {
     private final RealtimeRuntimeService runtime;
     private final RealtimeSyncConfigValidator validator;
     private final RealtimeActorProvider actors;
+    @Autowired private RealtimeTaskDefinitionService definitions;
+    @Autowired private RealtimeTaskDefinitionRepository definitionRepository;
 
     public RealtimeUnifiedTaskController(RealtimeSyncRepository repository, RealtimeRuntimeService runtime,
             RealtimeSyncConfigValidator validator, RealtimeActorProvider actors) {
@@ -37,12 +42,12 @@ public class RealtimeUnifiedTaskController {
 
     @GetMapping("/params")
     public RealtimeResponse<List<Map<String, Object>>> params(@RequestParam String taskType) {
-        requireSync(taskType); actors.requireActor(); return RealtimeResponse.success(repository.params());
+        requireTaskType(taskType); actors.requireActor(); return RealtimeResponse.success(repository.params());
     }
 
     @PostMapping("/page")
     public RealtimeResponse<Map<String, Object>> page(@RequestBody Map<String, Object> input) {
-        requireSync(text(input.get("taskType"))); actors.requireActor();
+        String taskType = text(input.get("taskType")).toLowerCase(); requireTaskType(taskType); actors.requireActor();
         Map<String, String> query = new LinkedHashMap<>();
         put(query, "page", input.get("pageNo")); put(query, "pageSize", input.get("pageSize"));
         put(query, "keyword", input.get("keyword")); put(query, "status", input.get("status"));
@@ -55,6 +60,7 @@ public class RealtimeUnifiedTaskController {
         if (!target.isEmpty()) query.put("targetKeyword", target);
         else if (!legacyPaimon.isEmpty()) query.put("targetKeyword", legacyPaimon);
         put(query, "sort", input.get("sortField")); put(query, "order", input.get("sortOrder"));
+        if (!"sync".equals(taskType)) return RealtimeResponse.success(definitionRepository.page(taskType, query));
         Map<String, Object> oldPage = repository.taskPage(query);
         @SuppressWarnings("unchecked") List<Map<String, Object>> records = (List<Map<String, Object>>) oldPage.get("items");
         for (Map<String, Object> record : records) {
@@ -72,49 +78,71 @@ public class RealtimeUnifiedTaskController {
 
     @PostMapping("/create")
     public RealtimeResponse<Long> create(@Valid @RequestBody UnifiedTaskRequest input) {
-        String actor = actors.requireActor(); validator.validate(input.toSyncTaskRequest());
-        return RealtimeResponse.success(repository.createTask(input.toSyncTaskRequest(), actor));
+        String actor = actors.requireActor();
+        if (!"sync".equalsIgnoreCase(input.getTaskType())) return RealtimeResponse.success(definitions.create(input, actor));
+        validator.validate(input.toSyncTaskRequest()); return RealtimeResponse.success(repository.createTask(input.toSyncTaskRequest(), actor));
     }
 
     @PostMapping("/{id}/update")
     public RealtimeResponse<Long> update(@PathVariable long id, @Valid @RequestBody UnifiedTaskRequest input) {
-        String actor = actors.requireActor(); validator.validate(input.toSyncTaskRequest());
-        repository.updateTask(id, input.toSyncTaskRequest(), actor); return RealtimeResponse.success(id);
+        String actor = actors.requireActor();
+        if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.update(id,input,actor); return RealtimeResponse.success(id); }
+        validator.validate(input.toSyncTaskRequest()); repository.updateTask(id, input.toSyncTaskRequest(), actor); return RealtimeResponse.success(id);
     }
 
     @PostMapping("/{id}/delete")
     public RealtimeResponse<Void> delete(@PathVariable long id) {
-        repository.deleteTask(id, actors.requireActor()); return RealtimeResponse.success(null);
+        String actor=actors.requireActor(); String type=taskType(id); if("sync".equals(type))repository.deleteTask(id,actor);else definitionRepository.delete(id,actor);return RealtimeResponse.success(null);
     }
 
     @GetMapping("/{id}/detail")
     public RealtimeResponse<Map<String, Object>> detail(@PathVariable long id) {
-        actors.requireActor(); return RealtimeResponse.success(unifiedDetail(repository.requiredTask(id)));
+        actors.requireActor(); return RealtimeResponse.success("sync".equals(taskType(id))?unifiedDetail(repository.requiredTask(id)):definitionRepository.required(id));
+    }
+
+    @GetMapping("/{id}/versions")
+    public RealtimeResponse<List<Map<String, Object>>> versions(@PathVariable long id) {
+        actors.requireActor(); taskType(id); return RealtimeResponse.success(repository.versions(id));
+    }
+
+    @GetMapping("/{id}/versions/{versionId}/config")
+    public RealtimeResponse<Map<String, Object>> versionConfig(@PathVariable long id,
+            @PathVariable long versionId) {
+        actors.requireActor(); taskType(id); return RealtimeResponse.success(repository.versionConfig(id, versionId));
+    }
+
+    @PostMapping("/analyze-sql")
+    public RealtimeResponse<Map<String,Object>> analyzeSql(@Valid @RequestBody UnifiedTaskRequest input) {
+        actors.requireActor(); return RealtimeResponse.success(definitions.analyze(input));
     }
 
     @PostMapping("/command-preview")
     public RealtimeResponse<Map<String, Object>> preview(@Valid @RequestBody UnifiedTaskRequest input,
             @RequestParam(required = false) Long excludeTaskId) {
-        actors.requireActor(); validator.validate(input.toSyncTaskRequest());
+        actors.requireActor();
+        if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.validate(input, excludeTaskId); return RealtimeResponse.success(runtime.previewUnifiedRequest(input,excludeTaskId)); }
+        validator.validate(input.toSyncTaskRequest());
         return RealtimeResponse.success(runtime.previewRequest(input.toSyncTaskRequest(), excludeTaskId));
     }
 
     @GetMapping("/{id}/command-preview")
     public RealtimeResponse<Map<String, Object>> preview(@PathVariable long id) {
-        actors.requireActor(); validator.validateTask(repository.requiredTask(id));
+        actors.requireActor(); if("sync".equals(taskType(id)))validator.validateTask(repository.requiredTask(id));
         return RealtimeResponse.success(runtime.previewSaved(id, new TaskActionRequest(), false));
     }
 
     @PostMapping("/debug")
     public RealtimeResponse<Map<String, Object>> debug(@Valid @RequestBody UnifiedTaskRequest input) {
         if (input.getTaskId() == null) throw new IllegalArgumentException("调试任务 ID 不能为空");
-        String actor = actors.requireActor(); validator.validateTask(repository.requiredTask(input.getTaskId()));
-        return RealtimeResponse.success(runtime.start(input.getTaskId(), input.toActionRequest(), actor, true));
+        String actor = actors.requireActor(); if("sync".equals(taskType(input.getTaskId())))validator.validateTask(repository.requiredTask(input.getTaskId()));else definitions.validate(input,input.getTaskId());
+        TaskActionRequest action = input.toActionRequest();
+        if (!"sync".equals(taskType(input.getTaskId()))) action.setDryRun(true);
+        return RealtimeResponse.success(runtime.start(input.getTaskId(), action, actor, true));
     }
 
     @PostMapping("/{id}/can-enable")
     public RealtimeResponse<Map<String, Object>> canEnable(@PathVariable long id) {
-        actors.requireActor(); validator.validateTask(repository.requiredTask(id));
+        actors.requireActor(); if("sync".equals(taskType(id)))validator.validateTask(repository.requiredTask(id));
         String reason = enableBlockedReason(id);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("canEnable", reason.isEmpty());
@@ -125,11 +153,11 @@ public class RealtimeUnifiedTaskController {
     @PostMapping("/{id}/enable")
     public RealtimeResponse<Map<String, Object>> enable(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest input) {
-        String actor = actors.requireActor(); validator.validateTask(repository.requiredTask(id));
+        String actor = actors.requireActor(); if("sync".equals(taskType(id)))validator.validateTask(repository.requiredTask(id));
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
         String reason = enableBlockedReason(id);
         if (!reason.isEmpty()) throw new IllegalStateException(reason);
-        validateRequiredRecovery(id, action);
+        if("sync".equals(taskType(id))) validateRequiredRecovery(id, action);
         return RealtimeResponse.success(runtime.start(id, action, actor, false));
     }
 
@@ -228,6 +256,7 @@ public class RealtimeUnifiedTaskController {
         throw new IllegalStateException("任务没有本平台管理的活动实例");
     }
     private String enableBlockedReason(long taskId) {
+        String type = taskType(taskId);
         if (repository.hasActiveProductionInstance(taskId)) return "任务已有活动正式实例，不能重复启用";
         Long latestVersionId = repository.latestVersionId(taskId);
         Map<String, Object> latestDebug = null;
@@ -242,7 +271,10 @@ public class RealtimeUnifiedTaskController {
         String status = text(latestDebug.get("status")).toLowerCase();
         if ("running".equals(status) || "debug_success_running".equals(status)) return "调试已成功但仍在运行，请先停止调试";
         if (List.of("submitting", "stopping", "restarting").contains(status)) return "调试实例正在处理中，请稍后刷新";
-        if (!"killed_success".equals(status)) return "最新调试实例未成功，请重新调试";
+        boolean successful = "killed_success".equals(status)
+                || (!"sync".equals(type) && "finished".equals(status));
+        if (!successful) return "最新调试实例未成功，请重新调试";
+        if (!"sync".equals(type)) return "";
         Map<String, Object> policy = repository.editPolicy(taskId);
         if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))
                 && text(policy.get("requiredStatePath")).isEmpty()) {
@@ -268,7 +300,11 @@ public class RealtimeUnifiedTaskController {
         result.put("productionStopMode", "compatibility"); result.put("runtimeMode", "compatibility");
         return result;
     }
-    private void requireSync(String taskType) { if (!"sync".equalsIgnoreCase(taskType)) throw new IllegalArgumentException("当前统一接口仅支持 sync"); }
+    private String taskType(long id) {
+        try { String type=text(repository.requiredTask(id).get("taskType")).toLowerCase(); return type.isEmpty()?"sync":type; }
+        catch (IllegalArgumentException ignored) { return text(definitionRepository.required(id).get("taskType")).toLowerCase(); }
+    }
+    private void requireTaskType(String taskType) { if (!List.of("sync","compute","export").contains(text(taskType).toLowerCase())) throw new IllegalArgumentException("任务类型必须是 sync、compute 或 export"); }
     private String filterKeyword(Object value, String label) {
         String normalized = text(value);
         if (normalized.length() > MAX_FILTER_KEYWORD_LENGTH) {

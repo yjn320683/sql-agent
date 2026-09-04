@@ -41,7 +41,6 @@ interface Props {
 
 const ACTIVE = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
 const DEBUG_TARGET_DATABASE = 'paimon_debug';
-const DEBUG_TABLE_SUFFIX = '_debug';
 const statusLabel: Record<string, string> = {
   submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
   canceled: '已取消', killed_success: '已停止(调试成功)', finished: '已完成', failed: '失败', not_running: '未运行',
@@ -79,8 +78,7 @@ const debugTarget = (task: SyncTask, servers: RealtimeServer[]) => {
     ? [DEBUG_TARGET_DATABASE, server?.databasePrefix, cdc.databaseName || server?.databaseName, cdc.domainPrefix].filter(Boolean).join('_') + '_'
     : '';
   const targets = cdc.selectedTables.map((table) => {
-    const name = `${prefix}${table}`;
-    return name.endsWith(DEBUG_TABLE_SUFFIX) ? name : `${name}${DEBUG_TABLE_SUFFIX}`;
+    return `${prefix}${table}${cdc.tableSuffix ?? ''}`;
   });
   return { server, prefix, targets };
 };

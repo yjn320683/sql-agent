@@ -7,6 +7,7 @@ import com.yjn.sqlagent.realtime.common.SubmissionSpec;
 import com.yjn.sqlagent.realtime.config.RealtimeProperties;
 import com.yjn.sqlagent.realtime.model.SyncTaskRequest;
 import com.yjn.sqlagent.realtime.model.TaskActionRequest;
+import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
@@ -84,12 +85,31 @@ public class RealtimeRuntimeService {
         return preview(spec(task, null, null, new TaskActionRequest(), "PRODUCTION"));
     }
 
+    public Map<String, Object> previewUnifiedRequest(UnifiedTaskRequest request, Long taskId) {
+        Map<String, Object> task = new LinkedHashMap<>();
+        task.put("id", taskId == null ? 0L : taskId); task.put("name", request.getName()); task.put("taskType", request.getTaskType());
+        task.put("sourceType", "export".equalsIgnoreCase(request.getTaskType()) ? "paimon" : "paimon");
+        task.put("targetType", "export".equalsIgnoreCase(request.getTaskType()) ? "mysql" : "paimon");
+        Map<String, Object> config = new LinkedHashMap<>(request.getTaskConfig());
+        config.put("parallelism", request.getFlinkConf().get("parallelism"));
+        config.put("checkpointInterval", request.getFlinkConf().get("checkpointIntervalSeconds"));
+        config.put("taskManagerMemory", memory(request.getFlinkConf().get("taskManagerMemoryGb")));
+        config.put("jobManagerMemory", memory(request.getFlinkConf().get("jobManagerMemoryGb")));
+        config.put("flinkConfOverrides", request.getFlinkConf().getOrDefault("flinkConfOverrides", Map.of()));
+        task.put("taskConfig", config);
+        if ("export".equalsIgnoreCase(request.getTaskType())) {
+            Map<String, Object> export = objectMap(config.get("exportConfig"));
+            task.put("sourceServerId", export.get("targetServerId"));
+        }
+        return preview(spec(task, null, null, new TaskActionRequest(), "PRODUCTION"));
+    }
+
     public Map<String, Object> start(long taskId, TaskActionRequest action, String actor, boolean debug) {
         Map<String, Object> task = repository.requiredTask(taskId);
         Map<String, Object> effectiveTask = effectiveTask(task, action, debug);
         validateStart(action);
         validateStatePath(taskId, action);
-        if (!debug) validateRequiredRecovery(taskId, action);
+        if (!debug && "sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateRequiredRecovery(taskId, action);
         if (debug && repository.hasActiveManagedDebugInstance(taskId)) {
             throw new IllegalStateException("当前任务已有正在提交或运行的调试实例");
         }
@@ -102,7 +122,7 @@ public class RealtimeRuntimeService {
         if (!debug) {
             List<String> liveApplications = liveSyncApplications(taskId);
             if (liveApplications.size() > 1) {
-                repository.addAlertIfOpenAbsent(taskId, "critical", "同步任务疑似双跑",
+                repository.addAlertIfOpenAbsent(taskId, "critical", taskLabel(task) + "疑似双跑",
                         "按任务名前缀检测到多个存活 YARN Application：" + liveApplications);
                 throw new IllegalStateException("检测到多个旧实例仍在运行，请先处理残留实例或刷新状态");
             }
@@ -132,7 +152,7 @@ public class RealtimeRuntimeService {
             }
             repository.completeOperation(operationId, "FAILED", null, safe(ex));
             repository.changeTaskStatus(taskId, debug ? text(task.get("status"), "not_running") : "failed");
-            repository.addAlert(taskId, "critical", "同步任务提交失败", safe(ex));
+            repository.addAlert(taskId, "critical", taskLabel(task) + "提交失败", safe(ex));
             throw ex;
         }
     }
@@ -736,13 +756,17 @@ public class RealtimeRuntimeService {
     }
 
     private Map<String, Object> preview(SubmissionSpec spec) {
-        PaimonSyncCommandBuilder.Command action = new PaimonSyncCommandBuilder().build(spec);
         List<String> submitCommand = flinkCommand(spec,
                 new StoredSpec(previewSubmissionFile(spec), "<config-sha256>"), false);
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("command", shell(submitCommand));
-        result.put("arguments", action.maskedArguments());
-        result.put("paimonActionJar", action.getJarPath());
+        if ("sync".equalsIgnoreCase(spec.getTask().getTaskType())) {
+            PaimonSyncCommandBuilder.Command action = new PaimonSyncCommandBuilder().build(spec);
+            result.put("arguments", action.maskedArguments()); result.put("paimonActionJar", action.getJarPath());
+        } else {
+            result.put("arguments", List.of("--submission-file", "<submission-spec>", "--config-sha256", "<config-sha256>"));
+            result.put("runner", spec.getTask().getTaskType());
+        }
         result.put("submission", Map.of(
                 "taskId", spec.getTaskId(),
                 "versionId", spec.getVersionId() == null ? "" : spec.getVersionId(),
@@ -760,6 +784,9 @@ public class RealtimeRuntimeService {
         spec.setStatePath(text(action.getStatePath())); spec.setExecutionMode(mode);
         SubmissionSpec.TaskSpec taskSpec = new SubmissionSpec.TaskSpec();
         taskSpec.setId(number(task.get("id"))); taskSpec.setTaskConfig(objectMap(task.get("taskConfig")));
+        taskSpec.setTaskType(text(task.get("taskType"), "sync"));
+        taskSpec.setSourceType(text(task.get("sourceType"), "sync".equalsIgnoreCase(taskSpec.getTaskType()) ? "mysql-cdc" : "paimon"));
+        taskSpec.setTargetType(text(task.get("targetType"), "export".equalsIgnoreCase(taskSpec.getTaskType()) ? "mysql" : "paimon"));
         Object parallelism = taskSpec.getTaskConfig().get("parallelism");
         if (parallelism instanceof Number) taskSpec.setParallelism(((Number) parallelism).intValue());
         Object checkpoint = taskSpec.getTaskConfig().get("checkpointInterval");
@@ -772,13 +799,13 @@ public class RealtimeRuntimeService {
         runtime.setTargetDatabase(text(task.get("targetDatabase"), properties.getTargetDatabase()));
         runtime.setCatalogConf(properties.getCatalogConf()); runtime.setDefaultTableConf(properties.getDefaultTableConf());
         runtime.setMysqlDefaultConf(properties.getMysqlDefaultConf()); spec.setRuntimeConfig(runtime);
-        long serverId = number(task.get("sourceServerId"));
-        Map<String, Object> source = repository.requiredServer(serverId, true);
-        SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
-        server.setId(serverId); server.setName(text(source.get("name"))); server.setAddress(text(source.get("address")));
-        server.setDatabaseName(text(source.get("databaseName"))); server.setDatabasePrefix(text(source.get("databasePrefix")));
-        server.setAccount(text(source.get("account"))); server.setPassword(text(source.get("password")));
-        spec.setServers(List.of(server));
+        if (task.get("sourceServerId") != null) {
+            long serverId = number(task.get("sourceServerId")); Map<String, Object> source = repository.requiredServer(serverId, true);
+            SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
+            server.setId(serverId); server.setName(text(source.get("name"))); server.setAddress(text(source.get("address")));
+            server.setDatabaseName(text(source.get("databaseName"))); server.setDatabasePrefix(text(source.get("databasePrefix")));
+            server.setAccount(text(source.get("account"))); server.setPassword(text(source.get("password"))); spec.setServers(List.of(server));
+        }
         spec.setConfigHash(sha256(json(spec).getBytes(StandardCharsets.UTF_8)));
         return spec;
     }
@@ -794,6 +821,7 @@ public class RealtimeRuntimeService {
         config.put("startType", text(action.getStartType(), "direct"));
         if (!text(action.getStatePath()).isEmpty()) config.put("statePath", action.getStatePath());
         else config.remove("statePath");
+        if (!"sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) { result.put("taskConfig", config); return result; }
         Map<String, Object> cdc = new LinkedHashMap<>(objectMap(config.get("cdcConfig")));
         if (action.getMysqlConfOverrides() != null) cdc.put("mysqlConfOverrides", action.getMysqlConfOverrides());
         if (action.getTableConfOverrides() != null) cdc.put("tableConfOverrides", action.getTableConfOverrides());
@@ -805,7 +833,7 @@ public class RealtimeRuntimeService {
     private void applyDebugTarget(Map<String, Object> task, Map<String, Object> config,
             Map<String, Object> cdc) {
         String debugDatabase = text(properties.getPaimonDebugTargetDatabase(), "paimon_debug");
-        String suffix = text(properties.getDebugTableSuffix(), "_debug");
+        String suffix = text(cdc.get("tableSuffix"));
         String domain = text(cdc.get("domainPrefix"));
         String databasePrefix = "";
         String sourceDatabase = text(cdc.get("databaseName"));
@@ -827,8 +855,7 @@ public class RealtimeRuntimeService {
         }
         List<String> targets = new ArrayList<>();
         for (Object table : objectList(cdc.get("selectedTables"))) {
-            String name = prefix + text(table);
-            targets.add(name.endsWith(suffix) ? name : name + suffix);
+            targets.add(prefix + text(table) + suffix);
         }
         cdc.put("targetDatabase", debugDatabase);
         if (!prefix.isEmpty()) cdc.put("tablePrefix", prefix);
@@ -1377,6 +1404,24 @@ public class RealtimeRuntimeService {
     }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
     private String text(Object value, String fallback) { return text(value).isEmpty() ? fallback : text(value); }
+    private String memory(Object value) {
+        if (value == null) return null;
+        String raw = String.valueOf(value).trim().replaceAll("(?i)gb?$", "");
+        try {
+            java.math.BigDecimal gb = new java.math.BigDecimal(raw).stripTrailingZeros();
+            if (gb.scale() <= 0) return gb.toPlainString() + "GB";
+            return gb.multiply(java.math.BigDecimal.valueOf(1024)).setScale(0,
+                    java.math.RoundingMode.HALF_UP).toPlainString() + "MB";
+        } catch (NumberFormatException ignored) {
+            return raw + "GB";
+        }
+    }
+    private String taskLabel(Map<String, Object> task) {
+        String type = text(task.get("taskType"), "sync");
+        if ("compute".equalsIgnoreCase(type)) return "实时计算任务";
+        if ("export".equalsIgnoreCase(type)) return "实时出仓任务";
+        return "实时同步任务";
+    }
 
     private static final class StoredSpec {
         private final String uri; private final String sha256;

@@ -2,10 +2,12 @@ package com.yjn.sqlagent.realtime.model;
 
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.math.BigDecimal;
+import java.math.RoundingMode;
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.NotNull;
 
-/** 统一任务接口请求；当前平台只接受 sync 类型。 */
+/** 统一任务接口请求。 */
 public class UnifiedTaskRequest {
     private Long taskId;
     @NotBlank(message = "任务类型不能为空")
@@ -24,7 +26,7 @@ public class UnifiedTaskRequest {
     private Map<String, Object> alarmConfig = new LinkedHashMap<>();
     @NotNull(message = "Flink 配置不能为空")
     private Map<String, Object> flinkConf = new LinkedHashMap<>();
-    @NotNull(message = "同步任务配置不能为空")
+    @NotNull(message = "任务配置不能为空")
     private Map<String, Object> taskConfig = new LinkedHashMap<>();
 
     public SyncTaskRequest toSyncTaskRequest() {
@@ -85,7 +87,16 @@ public class UnifiedTaskRequest {
     }
     private static Long number(Object value) { try { return value == null ? null : Long.valueOf(String.valueOf(value)); } catch (NumberFormatException ex) { return null; } }
     private static Integer integer(Object value) { try { return value == null ? null : Integer.valueOf(String.valueOf(value)); } catch (NumberFormatException ex) { return null; } }
-    private static String memory(Object value) { return String.valueOf(value).replaceAll("(?i)gb?$", "") + "GB"; }
+    private static String memory(Object value) {
+        String raw = String.valueOf(value).trim().replaceAll("(?i)gb?$", "");
+        try {
+            BigDecimal gb = new BigDecimal(raw).stripTrailingZeros();
+            if (gb.scale() <= 0) return gb.toPlainString() + "GB";
+            return gb.multiply(BigDecimal.valueOf(1024)).setScale(0, RoundingMode.HALF_UP).toPlainString() + "MB";
+        } catch (NumberFormatException ignored) {
+            return raw + "GB";
+        }
+    }
     private static String memoryOrNull(Object value) { return value == null ? null : memory(value); }
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 

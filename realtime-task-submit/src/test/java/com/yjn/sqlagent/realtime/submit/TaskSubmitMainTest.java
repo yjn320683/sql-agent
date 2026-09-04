@@ -52,7 +52,7 @@ class TaskSubmitMainTest {
     }
 
     @Test
-    void rejectsChangedSnapshotAndUnimplementedTaskType() throws Exception {
+    void rejectsChangedSnapshotAndUnknownTaskType() throws Exception {
         SubmissionSpec spec = validSpec();
         byte[] bytes = new ObjectMapper().writeValueAsBytes(spec);
         Path file = tempDir.resolve("job-config.json");
@@ -61,7 +61,7 @@ class TaskSubmitMainTest {
                 "--submission-file", file.toUri().toString(), "--config-sha256", "0".repeat(64), "--dry-run"
         }, System.out));
 
-        spec.getTask().setTaskType("compute");
+        spec.getTask().setTaskType("unknown");
         Files.write(file, new ObjectMapper().writeValueAsBytes(spec));
         assertThrows(IllegalArgumentException.class, () -> TaskSubmitMain.run(new String[] {
                 "--submission-file", file.toUri().toString(), "--dry-run"

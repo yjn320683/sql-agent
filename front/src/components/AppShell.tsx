@@ -77,6 +77,7 @@ const realtimeNavigation: NavigationGroup[] = [
   {
     key: 'sources', label: '数据源管理', icon: <DatabaseOutlined />, items: [
       { path: '/realtime/servers', label: 'Server 管理', icon: <CloudServerOutlined /> },
+      { path: '/realtime/paimon-tables', label: '实时表管理', icon: <DatabaseOutlined /> },
     ],
   },
 ];

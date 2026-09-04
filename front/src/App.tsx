@@ -19,6 +19,8 @@ const TaskVersionUnionPage = lazy(() => import('./components/tasks/TaskVersionUn
 const RealtimeSyncWorkspacePage = lazy(() => import('./realtime/pages/RealtimeSyncWorkspacePage'));
 const RealtimeServersPage = lazy(() => import('./realtime/pages/RealtimeServersPage'));
 const RealtimeAlertsPage = lazy(() => import('./realtime/pages/RealtimeAlertsPage'));
+const RealtimeTablesPage = lazy(() => import('./realtime/pages/RealtimeTablesPage'));
+const RealtimeManagedTaskWorkspacePage = lazy(() => import('./realtime/pages/RealtimeManagedTaskWorkspacePage'));
 const RealtimeTodoPage = lazy(() => import('./realtime/pages/RealtimeTodoPage'));
 
 export default function App() {
@@ -36,6 +38,15 @@ export default function App() {
     return () => {
       active = false;
     };
+  }, []);
+
+  useEffect(() => {
+    const unauthorized = () => {
+      setUser(null);
+      antdMessage.error({ key: 'auth-required', content: '登录状态已失效，请重新登录' });
+    };
+    window.addEventListener('sql-agent:unauthorized', unauthorized);
+    return () => window.removeEventListener('sql-agent:unauthorized', unauthorized);
   }, []);
 
   const handleLogout = async () => {
@@ -97,10 +108,14 @@ export default function App() {
           <Route path="/realtime/sync-tasks/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
           <Route path="/realtime/servers" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeServersPage /></Suspense>} />
           <Route path="/realtime/alerts" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeAlertsPage /></Suspense>} />
-          <Route path="/realtime/paimon-tables" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTodoPage title="Paimon 表管理" /></Suspense>} />
+          <Route path="/realtime/paimon-tables" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTablesPage /></Suspense>} />
           <Route path="/realtime/topics" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTodoPage title="Topic 管理" /></Suspense>} />
-          <Route path="/realtime/compute" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTodoPage title="实时计算任务" /></Suspense>} />
-          <Route path="/realtime/export" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTodoPage title="实时出仓任务" /></Suspense>} />
+          <Route path="/realtime/compute" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
+          <Route path="/realtime/compute/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
+          <Route path="/realtime/compute/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
+          <Route path="/realtime/export" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
+          <Route path="/realtime/export/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
+          <Route path="/realtime/export/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="*" element={<Navigate to="/chat" replace />} />
         </Route>
       </Routes>

@@ -9429,3 +9429,109 @@ body.is-resizing-inspector {
     grid-template-columns: 1fr;
   }
 }
+.realtime-tables-page .realtime-filter-card {
+  margin-bottom: 14px;
+}
+
+.realtime-managed-task-editor {
+  min-height: calc(100vh - 150px);
+  background: #fff;
+  display: flex;
+  flex-direction: column;
+}
+
+.realtime-managed-editor-title {
+  padding: 18px 28px 12px;
+  border-bottom: 1px solid #edf0f5;
+}
+
+.realtime-managed-editor-title h4.ant-typography {
+  margin: 0 0 4px;
+}
+
+.realtime-managed-editor-body {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 36px;
+  padding: 28px 36px;
+  flex: 1;
+}
+
+.realtime-managed-editor-body > main {
+  min-width: 0;
+}
+
+.realtime-managed-editor-footer {
+  position: sticky;
+  bottom: 0;
+  padding: 14px 32px;
+  border-top: 1px solid #e7eaf0;
+  background: rgba(255, 255, 255, .96);
+  text-align: center;
+  z-index: 4;
+}
+
+.managed-task-form-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(180px, 1fr));
+  gap: 18px;
+}
+
+.managed-sql-layout {
+  display: flex;
+  min-height: 420px;
+  border: 1px solid #e4e8ef;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.managed-sql-toolbar {
+  align-items: end;
+  margin-bottom: 8px;
+}
+
+.managed-sql-toolbar .ant-form-item {
+  margin-bottom: 0;
+}
+
+.managed-sql-metadata {
+  width: 280px;
+  min-width: 180px;
+  max-width: 520px;
+  padding: 14px;
+  border-right: 1px solid #e4e8ef;
+  resize: horizontal;
+  overflow: auto;
+}
+
+.managed-sql-metadata .ant-typography {
+  margin-bottom: 6px;
+}
+
+.managed-sql-table-item {
+  margin-top: 8px;
+  padding: 7px 9px;
+  border-radius: 5px;
+  color: #44516a;
+  background: #f6f8fb;
+}
+
+.managed-sql-editor {
+  min-width: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.managed-task-json-detail {
+  max-height: 620px;
+  overflow: auto;
+  padding: 14px;
+  border-radius: 6px;
+  background: #f6f8fb;
+  white-space: pre-wrap;
+}
+
+@media (max-width: 1100px) {
+  .realtime-managed-editor-body { grid-template-columns: 190px minmax(0, 1fr); gap: 20px; padding: 22px; }
+  .managed-task-form-grid { grid-template-columns: 1fr 1fr; }
+}

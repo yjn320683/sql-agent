@@ -29,7 +29,6 @@ app:
     paimon-warehouse: ${PAIMON_WAREHOUSE:}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:}
     paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
-    debug-table-suffix: ${PAIMON_DEBUG_TABLE_SUFFIX:_debug}
     target-database: ${PAIMON_TARGET_DATABASE:}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:}

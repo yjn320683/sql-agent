@@ -294,3 +294,40 @@ export interface TaskChangeLog { id: number; taskId: number; taskName: string; o
 export interface MysqlColumn { name: string; type: string; nullable: boolean; comment?: string }
 export interface MysqlTableSchema { table: string; columns: MysqlColumn[]; primaryKeys: string[] }
 export interface SyncSourceTableOption { tableName: string; occupied: boolean; occupiedTaskId?: number; occupiedTaskName?: string }
+
+export type ManagedTaskType = 'compute' | 'export';
+export interface RealtimeTableColumn {
+  id?: number; name: string; dataType: string; nullable: boolean; primaryKey?: boolean;
+  partitionKey?: boolean; comment?: string; sortOrder?: number;
+}
+export interface RealtimeTable {
+  id: number; catalogName: string; databaseName: string; tableName: string; tableComment?: string;
+  tableType: 'primary_key' | 'append_only'; creationSource: 'manual' | 'sync';
+  producerTaskId?: number; producerTaskName?: string; physicalStatus: 'declared' | 'active' | 'error';
+  options: Record<string, string>; columns?: RealtimeTableColumn[]; dependencies?: ManagedTableReference[];
+  columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string;
+}
+export interface ManagedTableReference {
+  realtimeTableId?: number; referenceRole: 'INPUT' | 'OUTPUT'; databaseName?: string; tableName?: string;
+  physicalStatus?: string; taskId?: number; taskName?: string; taskType?: string; status?: string;
+}
+export interface ExportTableMapping {
+  realtimeTableId: number; sourceDatabase?: string; sourceTable?: string; targetTable: string;
+  columnMappings?: { sourceColumn: string; targetColumn: string }[]; primaryKeys?: string[];
+}
+export interface ManagedTaskConfig {
+  computeConfig?: { defaultDatabase: string; sql: string };
+  exportConfig?: { sourceDatabase: string; targetServerId: number; mappings: ExportTableMapping[]; sink?: { batchSize?: number; flushIntervalMs?: number; maxRetries?: number } };
+}
+export interface ManagedTaskSave {
+  taskId?: number; taskType: ManagedTaskType; name: string; owner: string; description?: string; flinkVersion: string;
+  expectedUpdateTime?: string; startType?: string; statePath?: string;
+  alarmConfig: { alarmType?: string; alarmGroup?: string };
+  flinkConf: { parallelism: number; checkpointIntervalSeconds: number; taskManagerMemoryGb: number; jobManagerMemoryGb: number; flinkConfOverrides?: Record<string, string> };
+  taskConfig: ManagedTaskConfig;
+}
+export interface ManagedTask extends ManagedTaskSave {
+  id: number; status: RealtimeTaskStatus; createTime?: string; updateTime?: string;
+  latestInstanceId?: number; latestInstanceStatus?: string; latestInstanceExecutionMode?: string;
+  tableReferences?: ManagedTableReference[];
+}

@@ -323,7 +323,6 @@ def render_backend_config(values: dict[str, str]) -> str:
             f"    paimon-warehouse: {quote_yaml_value(values['app.realtime.paimon-warehouse'])}",
             f"    paimon-debug-warehouse: {quote_yaml_value(values['app.realtime.paimon-debug-warehouse'])}",
             "    paimon-debug-target-database: paimon_debug",
-            "    debug-table-suffix: _debug",
             "    target-database: ods_real",
             f"    checkpoint-dir: {quote_yaml_value(values['app.realtime.checkpoint-dir'])}",
             f"    savepoint-dir: {quote_yaml_value(values['app.realtime.savepoint-dir'])}",

@@ -1,9 +1,12 @@
 import React from 'react';
 import ReactDOM from 'react-dom/client';
-import { ConfigProvider } from 'antd';
+import { ConfigProvider, message } from 'antd';
 import zhCN from 'antd/locale/zh_CN';
 import App from './App';
 import './styles.css';
+
+// 并发接口失败时只保留一条全局提示，避免登录失效等同一错误叠成通知墙。
+message.config({ maxCount: 1 });
 
 ReactDOM.createRoot(document.getElementById('root')!).render(
   <React.StrictMode>

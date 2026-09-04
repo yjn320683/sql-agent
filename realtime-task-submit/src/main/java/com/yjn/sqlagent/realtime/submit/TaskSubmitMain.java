@@ -21,7 +21,7 @@ import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.paimon.flink.action.Action;
 import org.apache.paimon.flink.action.ActionFactory;
 
-/** 独立同步任务提交入口；计算和出仓任务在首期明确拒绝。 */
+/** 实时同步、计算和出仓任务的统一提交入口。 */
 public final class TaskSubmitMain {
 
     private TaskSubmitMain() {
@@ -43,21 +43,23 @@ public final class TaskSubmitMain {
         }
         SubmissionSpec spec = new ObjectMapper().readValue(bytes, SubmissionSpec.class);
         validate(spec);
-        PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(spec);
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("taskId", spec.getTaskId());
         snapshot.put("taskInstanceId", spec.getTaskInstanceId());
         snapshot.put("startType", spec.getStartType());
-        snapshot.put("jarPath", command.getJarPath());
-        snapshot.put("args", command.maskedArguments());
+        snapshot.put("taskType", spec.getTask().getTaskType());
+        if ("sync".equals(spec.getTask().getTaskType())) {
+            PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(spec);
+            snapshot.put("jarPath", command.getJarPath()); snapshot.put("args", command.maskedArguments());
+        } else snapshot.put("runner", spec.getTask().getTaskType());
         output.println(new ObjectMapper().writeValueAsString(snapshot));
+        TaskRunner runner = runner(spec);
         if (parsed.dryRun) {
+            runner.validate(spec);
             if (executeDryRunJob) runDryRunJob(spec);
             return;
         }
-        Optional<Action> action = ActionFactory.createAction(command.getArguments().toArray(new String[0]));
-        if (action.isEmpty()) throw new IllegalArgumentException("无法创建 Paimon mysql_sync_database Action");
-        action.get().run();
+        runner.execute(spec);
     }
 
     private static void runDryRunJob(SubmissionSpec spec) throws Exception {
@@ -72,7 +74,7 @@ public final class TaskSubmitMain {
             throw new IllegalArgumentException("提交标识不能为空");
         }
         String taskType = spec.getTask() == null ? "" : spec.getTask().getTaskType();
-        if (!"sync".equals(taskType)) {
+        if (!java.util.List.of("sync", "compute", "export").contains(taskType)) {
             throw new IllegalArgumentException("任务类型暂未实现：" + taskType);
         }
         String startType = text(spec.getStartType()).toLowerCase(Locale.ROOT);
@@ -82,6 +84,21 @@ public final class TaskSubmitMain {
         if (!"direct".equals(startType) && text(spec.getStatePath()).isEmpty()) {
             throw new IllegalArgumentException("恢复启动必须指定 statePath");
         }
+    }
+
+    private static TaskRunner runner(SubmissionSpec spec) {
+        String type = spec.getTask().getTaskType();
+        if ("compute".equals(type)) return new ComputeTaskRunner();
+        if ("export".equals(type)) return new ExportTaskRunner();
+        return new TaskRunner() {
+            @Override public void validate(SubmissionSpec value) { new PaimonSyncCommandBuilder().build(value); }
+            @Override public void execute(SubmissionSpec value) throws Exception {
+                PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(value);
+                Optional<Action> action = ActionFactory.createAction(command.getArguments().toArray(new String[0]));
+                if (action.isEmpty()) throw new IllegalArgumentException("无法创建 Paimon mysql_sync_database Action");
+                action.get().run();
+            }
+        };
     }
 
     private static byte[] read(String location) throws Exception {

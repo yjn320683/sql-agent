@@ -431,12 +431,17 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         action.setParallelism(6); action.setCheckpointInterval(90);
         action.setTaskManagerMemory("4GB"); action.setJobManagerMemory("3GB");
 
-        String command = String.valueOf(previewService.previewSaved(8L, action, true).get("command"));
+        Map<String, Object> preview = previewService.previewSaved(8L, action, true);
+        String command = String.valueOf(preview.get("command"));
+        String arguments = String.valueOf(preview.get("arguments"));
 
         assertTrue(command.contains("-Dparallelism.default=6"));
         assertTrue(command.contains("-Dexecution.checkpointing.interval=90s"));
         assertTrue(command.contains("-Dtaskmanager.memory.process.size=4GB"));
         assertTrue(command.contains("-Djobmanager.memory.process.size=3GB"));
+        assertTrue(arguments.contains("paimon_debug"));
+        assertTrue(arguments.contains("paimon_debug_sale_sales_trade_"));
+        assertFalse(arguments.contains("--table_suffix, _debug"));
     }
 
     @Test

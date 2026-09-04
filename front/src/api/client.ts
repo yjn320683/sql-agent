@@ -18,6 +18,9 @@ export async function requestJson<T>(url: string, init?: RequestInit): Promise<T
   });
   const body = await resp.json().catch(() => null) as BaseResponse<T> | null;
   if (!resp.ok) {
+    if (resp.status === 401 && typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('sql-agent:unauthorized'));
+    }
     throw new ApiError(body?.message || `请求失败（HTTP ${resp.status}）`, resp.status, body?.code);
   }
   if (!body) throw new ApiError('服务返回了无法解析的数据', resp.status);

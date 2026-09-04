@@ -14,6 +14,7 @@ import type {
   TaskMapping,
   TaskParam,
   SyncSourceTableOption,
+  ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable,
 } from './types';
 
 const json = (method: string, body?: unknown): RequestInit => ({
@@ -33,8 +34,10 @@ type UnifiedTaskWire = {
 };
 
 const memoryGb = (value?: string) => {
-  const parsed = Number(String(value ?? '').replace(/\s*(?:gb?|mb?)$/i, ''));
-  return Number.isFinite(parsed) ? parsed : undefined;
+  const raw = String(value ?? '').trim();
+  const parsed = Number(raw.replace(/\s*(?:gb?|mb?)$/i, ''));
+  if (!Number.isFinite(parsed)) return undefined;
+  return /mb$/i.test(raw) ? parsed / 1024 : parsed;
 };
 
 const toUnifiedTask = (value: SyncTaskSave): UnifiedTaskWire => ({
@@ -105,8 +108,8 @@ export const canEnableSyncTask = (id: number) => requestJson<{ canEnable: boolea
 export const refreshSyncTask = (id: number) => requestJson<TaskInstance>(`/api/realtime/sync-tasks/${id}/refresh-status`, { method: 'POST' });
 export const listMappings = (id: number) => requestJson<TaskMapping[]>(`/api/realtime/sync-tasks/${id}/table-mappings`);
 export const listInstances = (id: number, executionMode: 'PRODUCTION' | 'DEBUG' = 'PRODUCTION') => requestJson<TaskInstance[]>(`/v1/api/tasks/${id}/instances?executionMode=${executionMode}`);
-export const listVersions = (id: number) => requestJson<Record<string, unknown>[]>(`/api/realtime/sync-tasks/${id}/versions`);
-export const getVersionConfig = (id: number, versionId: number) => requestJson<Record<string, unknown>>(`/api/realtime/sync-tasks/${id}/versions/${versionId}/config`);
+export const listVersions = (id: number) => requestJson<Record<string, unknown>[]>(`/v1/api/tasks/${id}/versions`);
+export const getVersionConfig = (id: number, versionId: number) => requestJson<Record<string, unknown>>(`/v1/api/tasks/${id}/versions/${versionId}/config`);
 export const getStateHistory = (id: number, type: string) => requestJson<Record<string, unknown>[]>(`/v1/api/flink-common/${type === 'checkpoint' ? 'listcheckpoint' : 'listsavepoint'}?taskId=${id}`);
 export const getInstanceInfo = (taskId: number, instanceId: number, kind: 'config' | 'startup-log' | 'runtime-log' | 'runtime' | 'resources' | 'checkpoints' | 'log-components') => requestJson<unknown>(`/v1/api/tasks/${taskId}/instances/${instanceId}/${kind}`);
 export const getInstanceLogs = (taskId: number, instanceId: number, component?: string, file?: string) => {
@@ -148,3 +151,29 @@ export const listAlerts = () => requestJson<RealtimeAlert[]>('/api/alerts');
 export const acknowledgeAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
 export const listChangeLogs = (taskId?: number) => requestJson<TaskChangeLog[]>(`/api/task-change-logs${taskId ? `?taskId=${taskId}` : ''}`);
 export const getChangeLogDetail = (id: number) => requestJson<Record<string, unknown>>(`/api/task-change-logs/${id}/detail`);
+
+export const listRealtimeTables = (query = new URLSearchParams()) => requestJson<{ records: RealtimeTable[]; total: number; page: number; pageSize: number }>(`/api/realtime/tables?${query}`);
+export const listAvailableRealtimeTables = () => requestJson<RealtimeTable[]>('/api/realtime/tables/available');
+export const listRealtimeDatabases = () => requestJson<string[]>('/api/realtime/tables/databases');
+export const getRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}`);
+export const createRealtimeTable = (value: Omit<RealtimeTable, 'id' | 'catalogName' | 'creationSource' | 'physicalStatus' | 'options'> & { comment?: string; options?: Record<string, string> }) => requestJson<RealtimeTable>('/api/realtime/tables', json('POST', value));
+export const refreshRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/refresh`, json('POST'));
+export const safeUpdateRealtimeTable = (id: number, value: { comment?: string; addColumns?: RealtimeTable['columns']; columnComments?: Array<{ name: string; comment: string }>; options?: Record<string, string> }) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/safe-update`, json('POST', value));
+
+export const listManagedTasks = async (taskType: ManagedTaskType, query: URLSearchParams) => {
+  const page = await requestJson<{ records: ManagedTask[]; total: number; pageNo: number; pageSize: number }>('/v1/api/tasks/page', json('POST', {
+    taskType, pageNo: Number(query.get('page') || 1), pageSize: Number(query.get('pageSize') || 20),
+    keyword: query.get('keyword') || undefined, status: query.get('status') || undefined,
+    owner: query.get('owner') || undefined, lastOperator: query.get('lastOperator') || undefined,
+    sourceKeyword: query.get('sourceKeyword') || undefined,
+  }));
+  return page;
+};
+export const getManagedTask = (id: number) => requestJson<ManagedTask>(`/v1/api/tasks/${id}/detail`);
+export const createManagedTask = (value: ManagedTaskSave) => requestJson<number>('/v1/api/tasks/create', json('POST', value));
+export const updateManagedTask = (id: number, value: ManagedTaskSave) => requestJson<number>(`/v1/api/tasks/${id}/update`, json('POST', value));
+export const deleteManagedTask = (id: number) => requestJson<void>(`/v1/api/tasks/${id}/delete`, json('POST'));
+export const analyzeManagedSql = (value: ManagedTaskSave) => requestJson<{ valid: boolean; inputs: string[]; outputs: string[]; inputTableIds: number[]; outputTableIds: number[]; plan: string }>('/v1/api/tasks/analyze-sql', json('POST', value));
+export const debugManagedTask = async (id: number) => { const task = await getManagedTask(id); return requestJson<TaskInstance>('/v1/api/tasks/debug', json('POST', { ...task, taskId: id })); };
+export const enableManagedTask = (id: number) => requestJson<TaskInstance>(`/v1/api/tasks/${id}/enable`, json('POST', { startType: 'direct' }));
+export const stopManagedTask = (id: number) => requestJson<TaskInstance>(`/v1/api/tasks/${id}/stop`, json('POST', { stopType: 'savepoint' }));

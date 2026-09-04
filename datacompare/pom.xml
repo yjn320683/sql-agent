@@ -55,6 +55,8 @@
                 <exclusion><groupId>org.slf4j</groupId><artifactId>slf4j-log4j12</artifactId></exclusion>
                 <exclusion><groupId>org.apache.logging.log4j</groupId><artifactId>log4j-slf4j-impl</artifactId></exclusion>
                 <exclusion><groupId>com.google.guava</groupId><artifactId>guava</artifactId></exclusion>
+                <!-- 避免 ORC 经 Hive JDBC 带入 Hadoop 2.2 的 hadoop-hdfs，与实时 Paimon 的 Hadoop client 冲突。 -->
+                <exclusion><groupId>org.apache.hadoop</groupId><artifactId>hadoop-hdfs</artifactId></exclusion>
                 <!-- jetty-runner 内含旧版 Tomcat 工具类，会与 Backend 的嵌入式 Tomcat 冲突。 -->
                 <exclusion><groupId>org.eclipse.jetty</groupId><artifactId>jetty-runner</artifactId></exclusion>
             </exclusions>

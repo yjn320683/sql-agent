@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSyncTask, getStateHistory, getSyncTask, listSyncTasks } from './api';
+import { createSyncTask, getStateHistory, getSyncTask, listManagedTasks, listSyncTasks } from './api';
 import type { SyncTaskSave } from './types';
 
 const response = (data: unknown) => Promise.resolve({
@@ -78,5 +78,17 @@ describe('实时同步统一接口契约', () => {
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit?]>;
     expect(calls[0]?.[0]).toBe('/v1/api/flink-common/listcheckpoint?taskId=31');
     expect(calls[1]?.[0]).toBe('/v1/api/flink-common/listsavepoint?taskId=31');
+  });
+
+  it('计算与出仓列表完整发送同步布局中的筛选条件', async () => {
+    const fetchMock = vi.fn(() => response({ records: [], total: 0, pageNo: 2, pageSize: 50 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await listManagedTasks('compute', new URLSearchParams('page=2&pageSize=50&keyword=agg&status=running&owner=owner-a&lastOperator=operator-b&sourceKeyword=ods.orders'));
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/v1/api/tasks/page');
+    expect(JSON.parse(String(init.body))).toEqual({
+      taskType: 'compute', pageNo: 2, pageSize: 50, keyword: 'agg', status: 'running',
+      owner: 'owner-a', lastOperator: 'operator-b', sourceKeyword: 'ods.orders',
+    });
   });
 });

@@ -35,7 +35,6 @@ app:
     paimon-warehouse: ${PAIMON_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon_debug}
     paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
-    debug-table-suffix: ${PAIMON_DEBUG_TABLE_SUFFIX:_debug}
     target-database: ${PAIMON_TARGET_DATABASE:ods_real}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:hdfs://127.0.0.1:8020/flink/checkpoints/sql-agent}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:hdfs://127.0.0.1:8020/flink/savepoints/sql-agent}
