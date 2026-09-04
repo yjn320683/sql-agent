@@ -307,6 +307,10 @@ export interface RealtimeTable {
   options: Record<string, string>; columns?: RealtimeTableColumn[]; dependencies?: ManagedTableReference[];
   columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string; ddl?: string; ddlError?: string;
 }
+export interface RealtimeTableCreateRequest {
+  catalogName?: string; databaseName: string; tableName: string; tableComment?: string; comment?: string;
+  tableType: 'primary_key' | 'append_only'; columns: RealtimeTableColumn[]; options: Record<string, string>;
+}
 export interface ManagedTableReference {
   realtimeTableId?: number; referenceRole: 'INPUT' | 'OUTPUT'; databaseName?: string; tableName?: string;
   physicalStatus?: string; taskId?: number; taskName?: string; taskType?: string; status?: string;

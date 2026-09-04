@@ -28,7 +28,8 @@ public class RealtimePaimonCatalogService {
     private static final Pattern PARAMETERIZED = Pattern.compile("^(DECIMAL|CHAR|VARCHAR|BINARY|VARBINARY|TIME|TIMESTAMP)\\s*\\((\\d+)(?:\\s*,\\s*(\\d+))?\\)$");
     private static final Set<String> SAFE_OPTIONS = Set.of("bucket", "changelog-producer", "snapshot.time-retained",
             "snapshot.num-retained.min", "snapshot.num-retained.max", "compaction.min.file-num",
-            "compaction.max.file-num", "target-file-size", "write-buffer-size");
+            "compaction.max.file-num", "target-file-size", "write-buffer-size", "sink.parallelism",
+            "consumer.expiration-time");
     private static final Set<String> SAFE_ALTER_OPTIONS = Set.of("snapshot.time-retained",
             "snapshot.num-retained.min", "snapshot.num-retained.max", "compaction.min.file-num",
             "compaction.max.file-num", "target-file-size", "write-buffer-size");

@@ -12,8 +12,10 @@ class RealtimePaimonCatalogServiceTest {
 
     @Test
     void onlyAcceptsManagedTableOptionWhitelist() {
-        assertEquals(Map.of("bucket", "4", "changelog-producer", "input"),
-                service.safeOptions(Map.of("bucket", 4, "changelog-producer", "input")));
+        assertEquals(Map.of("bucket", "4", "changelog-producer", "input", "sink.parallelism", "2",
+                        "consumer.expiration-time", "1 d"),
+                service.safeOptions(Map.of("bucket", 4, "changelog-producer", "input", "sink.parallelism", 2,
+                        "consumer.expiration-time", "1 d")));
         assertEquals("不允许配置 Paimon 参数：path",
                 assertThrows(IllegalArgumentException.class,
                         () -> service.safeOptions(Map.of("path", "file:///tmp"))).getMessage());

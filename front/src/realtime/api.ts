@@ -14,7 +14,7 @@ import type {
   TaskMapping,
   TaskParam,
   SyncSourceTableOption,
-  ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable,
+  ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable, RealtimeTableCreateRequest,
 } from './types';
 
 const json = (method: string, body?: unknown): RequestInit => ({
@@ -156,7 +156,7 @@ export const listRealtimeTables = (query = new URLSearchParams()) => requestJson
 export const listAvailableRealtimeTables = () => requestJson<RealtimeTable[]>('/api/realtime/tables/available');
 export const listRealtimeDatabases = () => requestJson<string[]>('/api/realtime/tables/databases');
 export const getRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}`);
-export const createRealtimeTable = (value: Omit<RealtimeTable, 'id' | 'catalogName' | 'creationSource' | 'physicalStatus' | 'options'> & { comment?: string; options?: Record<string, string> }) => requestJson<RealtimeTable>('/api/realtime/tables', json('POST', value));
+export const createRealtimeTable = (value: RealtimeTableCreateRequest) => requestJson<RealtimeTable>('/api/realtime/tables', json('POST', value));
 export const refreshRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/refresh`, json('POST'));
 export const safeUpdateRealtimeTable = (id: number, value: { comment?: string; addColumns?: RealtimeTable['columns']; columnComments?: Array<{ name: string; comment: string }>; options?: Record<string, string> }) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/safe-update`, json('POST', value));
 
