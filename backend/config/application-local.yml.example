@@ -12,7 +12,7 @@ sql-agent:
   auth:
     local-login-enabled: true
   agent:
-    base-url: http://127.0.0.1:8284
+    base-url: http://127.0.0.1:8285
     service-token: example_agent_service_token
     history-dir: ./run/claude/projects/-app
 

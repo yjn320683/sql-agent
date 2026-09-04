@@ -7,12 +7,12 @@ import {
   Form,
   Input,
   InputNumber,
-  Segmented,
   Select,
   Space,
   Spin,
   Steps,
   Table,
+  Tabs,
   Typography,
   message,
 } from 'antd';
@@ -28,7 +28,7 @@ import {
   updateSyncTask,
 } from '../api';
 import type {
-  BusinessDomain,
+  PaimonTablePrefixOption,
   MysqlTableSchema,
   RealtimeServer,
   SyncTask,
@@ -89,7 +89,7 @@ const paramPath = (param: TaskParam): string[] => param.paramType === 'mysql_con
 export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: Props) {
   const [form] = Form.useForm();
   const [servers, setServers] = useState<RealtimeServer[]>([]);
-  const [domains, setDomains] = useState<BusinessDomain[]>([]);
+  const [domains, setDomains] = useState<PaimonTablePrefixOption[]>([]);
   const [params, setParams] = useState<TaskParam[]>([]);
   const [tables, setTables] = useState<SyncSourceTableOption[]>([]);
   const [schemas, setSchemas] = useState<Record<string, MysqlTableSchema>>({});
@@ -148,7 +148,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         alarmType: 'task-failed',
         cdcConfig: {
           selectedTables: [], metadataColumns: ['database_name', 'table_name', 'op_ts'], typeMappings: [],
-          mode: 'divided', ignoreIncompatible: false, mysqlConfOverrides: {}, tableConfOverrides: {},
+          mode: 'combined', ignoreIncompatible: false, mysqlConfOverrides: {}, tableConfOverrides: {},
         },
         flinkConfOverrides: {},
       },
@@ -173,11 +173,11 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         setSupportError('同步参数元数据加载失败，为避免丢失或覆盖配置，当前不能预览或保存。');
       }
       if (optionResult.status === 'fulfilled') {
-        setDomains(optionResult.value.domains);
+        setDomains(optionResult.value.tablePrefixes);
         if (!task) {
           form.setFieldValue('targetDatabase', optionResult.value.targetDatabase);
           form.setFieldValue(['taskConfig', 'cdcConfig', 'targetDatabase'], optionResult.value.targetDatabase);
-          form.setFieldValue(['taskConfig', 'cdcConfig', 'domainPrefix'], optionResult.value.domains[0]?.code);
+          form.setFieldValue(['taskConfig', 'cdcConfig', 'domainPrefix'], optionResult.value.tablePrefixes[0]?.value);
         }
       }
       const failed = [serverResult, optionResult, paramResult].find((item) => item.status === 'rejected');
@@ -192,7 +192,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
     const prefix = structureLocked && persistedPrefix
       ? persistedPrefix
       : targetDatabase && domainPrefix
-        ? [targetDatabase, domainPrefix, selectedServer?.databaseAbbr].filter(Boolean).join('_') + '_'
+        ? [targetDatabase, selectedServer?.databasePrefix, selectedServer?.databaseName, domainPrefix].filter(Boolean).join('_') + '_'
         : '';
     form.setFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix'], prefix);
   }, [domainPrefix, form, open, serverId, servers, structureLocked, targetDatabase, task?.taskConfig.cdcConfig.tablePrefix]);
@@ -205,14 +205,15 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
     const source = servers.find((item) => item.id === serverId);
     form.setFieldValue(['taskConfig', 'cdcConfig', 'databaseName'], source?.databaseName);
     setMetadataLoading(true);
-    void listSyncSourceTables(serverId, task?.id).then(setTables).catch((error) => message.error((error as Error).message)).finally(() => setMetadataLoading(false));
+    void listSyncSourceTables(serverId, source?.databaseName ?? '', task?.id).then(setTables).catch((error) => message.error((error as Error).message)).finally(() => setMetadataLoading(false));
   }, [open, serverId, servers, form, task?.id]);
 
   useEffect(() => {
     if (!serverId || !selectedTables?.length) return;
     const missing = selectedTables.filter((table) => !schemas[table]);
     if (!missing.length) return;
-    void Promise.all(missing.map((table) => getMysqlSchema(serverId, table))).then((items) => {
+    const sourceDatabase = servers.find((item) => item.id === serverId)?.databaseName ?? '';
+    void Promise.all(missing.map((table) => getMysqlSchema(serverId, sourceDatabase, table))).then((items) => {
       setSchemas((current) => ({ ...current, ...Object.fromEntries(items.map((item) => [item.table, item])) }));
       setTableConfigs((current) => {
         const next = { ...current };
@@ -222,7 +223,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         return next;
       });
     }).catch((error) => message.error((error as Error).message));
-  }, [serverId, selectedTables, schemas]);
+  }, [serverId, selectedTables, schemas, servers]);
 
   const setPrivate = (table: string, key: keyof TablePrivateConfig, value: string[]) => {
     setTableConfigs((current) => ({ ...current, [table]: { ...(current[table] ?? emptyTableConfig()), [key]: value } }));
@@ -307,20 +308,18 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
     <div className="realtime-editor-section">
       <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
         <Descriptions.Item label={fieldLabel('任务名称', true)}><Form.Item name="name" rules={[{ required: true, message: '请输入任务名称' }]} noStyle><Input placeholder="请输入同步任务名称" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="负责人"><Form.Item name="owner" noStyle><Input placeholder="默认当前用户" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="Flink 版本"><Form.Item name="flinkVersion" noStyle><Select disabled options={[{ label: 'Flink 2.2.1', value: '2.2.1' }]} /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="任务类型"><Input value="MySQL CDC → Paimon" disabled /></Descriptions.Item>
-        <Descriptions.Item label="任务描述" span={2}><Form.Item name="description" noStyle><Input.TextArea rows={3} placeholder="请输入任务用途、数据范围或其他说明" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('负责人', true)}><Form.Item name="owner" rules={[{ required: true, whitespace: true, message: '请输入负责人' }]} noStyle><Input placeholder="请输入负责人" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="描述" span={2}><Form.Item name="description" noStyle><Input.TextArea rows={3} placeholder="请输入任务用途、数据范围或其他说明" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="flink版本" span={2}><Form.Item name="flinkVersion" noStyle><Select disabled options={[{ label: '2.2.1', value: '2.2.1' }]} /></Form.Item></Descriptions.Item>
       </Descriptions>
     </div>
   );
 
   const alertFields = (
     <div className="realtime-editor-section">
-      <Alert type="info" showIcon message="同步任务状态检测失败、双跑或提交失败时，将自动写入实时告警中心。" className="realtime-editor-note" />
       <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
-        <Descriptions.Item label="告警事件"><Form.Item name={['taskConfig', 'alarmType']} noStyle><Select options={[{ label: '任务失败', value: 'task-failed' }]} /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="告警组"><Form.Item name={['taskConfig', 'alarmGroup']} noStyle><Input placeholder="输入告警接收组" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="报警设置类型"><Form.Item name={['taskConfig', 'alarmType']} noStyle><Select options={[{ label: '任务失败', value: 'task-failed' }]} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('告警组', true)}><Form.Item name={['taskConfig', 'alarmGroup']} noStyle><Input placeholder="输入告警接收组" /></Form.Item></Descriptions.Item>
       </Descriptions>
     </div>
   );
@@ -363,65 +362,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
     },
   ];
 
-  const sourceFields = (
-    <div className="realtime-editor-section">
-      <div className="realtime-subsection-heading">
-        <span>源端配置</span>
-        <Typography.Text type="secondary">选择 MySQL Server、源库与需要同步的数据表</Typography.Text>
-      </div>
-      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
-        <Descriptions.Item label="来源类型"><Input value="MySQL CDC" disabled /></Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('MySQL Server', true)}>
-          <Form.Item name="sourceServerId" rules={[{ required: true, message: '请选择 Server' }]} noStyle>
-            <Select disabled={structureLocked} showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => ({ label: item.name, value: item.id }))} />
-          </Form.Item>
-        </Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('源数据库', true)} span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'databaseName']} noStyle><Input disabled placeholder="选择 Server 后自动获取" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('源表列表', true)} span={2}>
-          <Space.Compact block>
-            <Form.Item name={['taskConfig', 'cdcConfig', 'selectedTables']} rules={[{ required: true, message: '至少选择一张源表' }]} noStyle>
-              <Select mode="multiple" showSearch loading={metadataLoading} placeholder="请选择需要同步的源表" options={tables.map((item) => {
-                const occupiedBy = item.occupied ? `已被任务 #${item.occupiedTaskId} ${item.occupiedTaskName ?? ''} 使用`.trim() : '';
-                return { label: occupiedBy ? `${item.tableName}（${occupiedBy}）` : item.tableName, value: item.tableName, disabled: item.occupied, title: occupiedBy };
-              })} maxTagCount="responsive" />
-            </Form.Item>
-            <Button aria-label="刷新源表列表" title="刷新源表列表" icon={<ReloadOutlined />} loading={metadataLoading} onClick={async () => {
-              if (!serverId) return;
-              try { setMetadataLoading(true); setTables(await listSyncSourceTables(serverId, task?.id)); }
-              catch (error) { message.error((error as Error).message); }
-              finally { setMetadataLoading(false); }
-            }} />
-          </Space.Compact>
-        </Descriptions.Item>
-      </Descriptions>
-
-      <div className="realtime-subsection-heading">
-        <span>目标 Paimon 配置</span>
-        <Typography.Text type="secondary">设置目标库、表命名及 Schema 兼容策略</Typography.Text>
-      </div>
-      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
-        <Descriptions.Item label={fieldLabel('目标数据库', true)}><Form.Item name="targetDatabase" rules={[{ required: true }]} noStyle><Input disabled={structureLocked} placeholder="请输入 Paimon 目标库" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('业务域', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'domainPrefix']} rules={[{ required: true }]} noStyle><Select disabled={structureLocked} placeholder="请选择业务域" options={domains.map((item) => ({ label: `${item.name} (${item.code})`, value: item.code }))} /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('目标表前缀', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'tablePrefix']} rules={[{ required: true, message: '请选择业务域以生成目标表前缀' }]} noStyle><Input disabled placeholder="目标库_业务域_库缩写_" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="排除表正则"><Form.Item name={['taskConfig', 'cdcConfig', 'excludingTables']} noStyle><Input placeholder="可选，例如 ^tmp_.*" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="目标表列表" span={2}><Input.TextArea disabled value={(selectedTables ?? []).map((table) => `${form.getFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix']) || ''}${table}`).join('\n')} autoSize={{ minRows: 2, maxRows: 6 }} /></Descriptions.Item>
-        <Descriptions.Item label="元数据列" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'metadataColumns']} noStyle><Select disabled mode="multiple" options={metadataColumnOptions} placeholder="固定同步元数据列" /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="类型映射" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'typeMappings']} noStyle><Select disabled={structureLocked} mode="multiple" options={['to-nullable', 'to-string', 'char-to-string', 'tinyint1-not-bool', 'longtext-to-bytes', 'bigint-unsigned-to-bigint'].map((value) => ({ label: value, value }))} /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="同步模式"><Form.Item name={['taskConfig', 'cdcConfig', 'mode']} noStyle><Select disabled={structureLocked} options={[{ label: 'combined', value: 'combined' }, { label: 'divided', value: 'divided' }]} /></Form.Item></Descriptions.Item>
-        <Descriptions.Item label="忽略不兼容变更"><Form.Item name={['taskConfig', 'cdcConfig', 'ignoreIncompatible']} noStyle><Select options={[{ label: '否', value: false }, { label: '是', value: true }]} /></Form.Item></Descriptions.Item>
-      </Descriptions>
-
-      <div className="realtime-subsection-heading">
-        <span>源表私有配置</span>
-        <Typography.Text type="secondary">按表维护计算列、主键和分区键</Typography.Text>
-      </div>
-      <div className="realtime-mapping-table">
-        <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 900 }} />
-      </div>
-    </div>
-  );
-
-  const dynamicParam = (param: TaskParam, disabled = false) => {
+  function dynamicParam(param: TaskParam, disabled = false) {
     const path = paramPath(param);
     const options = paramOptions(param);
     const numericRule = {
@@ -449,7 +390,63 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
               : <Input disabled={disabled} placeholder={param.paramKey} />}
       </Form.Item>
     );
-  };
+  }
+
+  const sourceFields = (
+    <div className="realtime-editor-section">
+      <div className="realtime-subsection-heading">
+        <span>公共配置</span>
+      </div>
+      <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
+        <Descriptions.Item label="源端类型"><Input value="Mysql CDC" disabled /></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('Server', true)}>
+          <Form.Item name="sourceServerId" rules={[{ required: true, message: '请选择 Server' }]} noStyle>
+            <Select disabled={structureLocked} showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => ({ label: item.name, value: item.id }))} />
+          </Form.Item>
+        </Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('源库', true)} span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'databaseName']} noStyle><Input disabled placeholder="选择 Server 后自动获取" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('源表列表', true)} span={2}>
+          <Space.Compact block>
+            <Form.Item name={['taskConfig', 'cdcConfig', 'selectedTables']} rules={[{ required: true, message: '至少选择一张源表' }]} noStyle>
+              <Select mode="multiple" showSearch loading={metadataLoading} placeholder="请选择需要同步的源表" options={tables.map((item) => {
+                const occupiedBy = item.occupied ? `已被任务 #${item.occupiedTaskId} ${item.occupiedTaskName ?? ''} 使用`.trim() : '';
+                return { label: occupiedBy ? `${item.tableName}（${occupiedBy}）` : item.tableName, value: item.tableName, disabled: item.occupied, title: occupiedBy };
+              })} maxTagCount="responsive" />
+            </Form.Item>
+            <Button aria-label="刷新源表列表" title="刷新源表列表" icon={<ReloadOutlined />} loading={metadataLoading} onClick={async () => {
+              if (!serverId) return;
+              const source = servers.find((item) => item.id === serverId);
+              try { setMetadataLoading(true); setTables(await listSyncSourceTables(serverId, source?.databaseName ?? '', task?.id)); }
+              catch (error) { message.error((error as Error).message); }
+              finally { setMetadataLoading(false); }
+            }} />
+          </Space.Compact>
+        </Descriptions.Item>
+        <Descriptions.Item label="Mysql配置" span={2}>
+          <div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div>
+          <SyncMoreConfigRows paramType="mysql_conf" formNamePath={['taskConfig', 'cdcConfig', 'mysqlConfOverrides']} taskParams={params} readOnly={structureLocked} />
+        </Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('目标Paimon库', true)}><Form.Item name="targetDatabase" rules={[{ required: true }]} noStyle><Input disabled placeholder="ods_real" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('目标Paimon表所属域', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'domainPrefix']} rules={[{ required: true }]} noStyle><Select disabled={structureLocked} placeholder="请选择业务域" options={domains} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('目标Paimon表前缀', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'tablePrefix']} rules={[{ required: true, message: '请选择业务域以生成目标Paimon表前缀' }]} noStyle><Input disabled placeholder="目标Paimon库_[库前缀_]库名_业务域_" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={(selectedTables ?? []).map((table) => `${form.getFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix']) || ''}${table}`).join('\n')} autoSize={{ minRows: 2, maxRows: 6 }} /></Descriptions.Item>
+        <Descriptions.Item label="目标Paimon表同步元数据列" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'metadataColumns']} noStyle><Select disabled mode="multiple" options={metadataColumnOptions} placeholder="固定同步元数据列" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="目标Paimon表类型映射" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'typeMappings']} noStyle><Select disabled={structureLocked} mode="multiple" options={['to-nullable', 'to-string', 'char-to-string', 'tinyint1-not-bool', 'longtext-to-bytes', 'bigint-unsigned-to-bigint'].map((value) => ({ label: value, value }))} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="目标Paimon表配置" span={2}>
+          <div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div>
+          <SyncMoreConfigRows paramType="table_conf" formNamePath={['taskConfig', 'cdcConfig', 'tableConfOverrides']} taskParams={params} readOnly={structureLocked} />
+        </Descriptions.Item>
+        <Descriptions.Item label="整库模式" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'mode']} noStyle><Select disabled options={[{ label: 'combined（固定）', value: 'combined' }]} /></Form.Item></Descriptions.Item>
+      </Descriptions>
+
+      <div className="realtime-subsection-heading">
+        <span>私有配置</span>
+      </div>
+      <div className="realtime-mapping-table">
+        <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 900 }} />
+      </div>
+    </div>
+  );
 
   const runtimeFields = (
     <div className="realtime-editor-section">
@@ -464,8 +461,6 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         <Descriptions.Item label={fieldLabel('JobManager 内存', true)}><Form.Item name={['taskConfig', 'jobManagerMemory']} rules={[{ required: true }]} noStyle><Input placeholder="1GB" /></Form.Item></Descriptions.Item>
       </Descriptions>
       <Collapse className="realtime-param-collapse" items={[
-        { key: 'mysql', label: 'MySQL CDC 参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div><SyncMoreConfigRows paramType="mysql_conf" formNamePath={['taskConfig', 'cdcConfig', 'mysqlConfOverrides']} taskParams={params} readOnly={structureLocked} /></> },
-        { key: 'table', label: 'Paimon Table 参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div><SyncMoreConfigRows paramType="table_conf" formNamePath={['taskConfig', 'cdcConfig', 'tableConfOverrides']} taskParams={params} readOnly={structureLocked} /></> },
         { key: 'flink', label: 'Flink 与高可用参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map((item) => dynamicParam(item))}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['taskConfig', 'flinkConfOverrides']} taskParams={params} /></> },
       ]} />
       <div className="task-command-preview">
@@ -485,7 +480,7 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
   const sections = [
     { title: '基础信息', description: '定义同步任务的名称、负责人和基础属性', content: commonFields },
     { title: '告警配置', description: '配置同步任务异常时的告警方式', content: alertFields },
-    { title: '源端与目标 Paimon', description: '选择源表并配置 Paimon 目标与表映射', content: sourceFields },
+    { title: '源端&目标Paimon配置', description: '选择源表并配置 Paimon 目标与表映射', content: sourceFields },
     { title: '资源与运行', description: '设置 Flink 资源、Checkpoint 与高级参数', content: runtimeFields },
   ];
 
@@ -513,7 +508,12 @@ export default function SyncTaskEditorDrawer({ open, task, onClose, onSaved }: P
         {supportError && <Alert type="error" showIcon message={supportError} className="realtime-editor-warning" />}
         {task?.editPolicy && !task.editPolicy.editable && <Alert type="warning" showIcon message={task.editPolicy.reason} className="realtime-editor-warning" />}
         {structureLocked && !updateBlocked && <Alert type="info" showIcon message="该任务已有生产实例，保留表的私有配置以及源端、目标 Paimon 公共结构配置不可修改；仍可新增或移除源表，并调整告警及运行资源。" className="realtime-editor-warning" />}
-        <div className="realtime-editor-toolbar"><Segmented className="ui-flat-segmented" value={mode} onChange={(value) => setMode(value as 'wizard' | 'advanced')} options={[{ label: '分步向导', value: 'wizard' }, { label: '高级配置', value: 'advanced' }]} /></div>
+        <Tabs
+          className="realtime-editor-mode-tabs ui-flat-tabs"
+          activeKey={mode}
+          items={[{ key: 'wizard', label: '分步向导' }, { key: 'advanced', label: '高级配置' }]}
+          onChange={(value) => setMode(value as 'wizard' | 'advanced')}
+        />
         <Form form={form} layout="vertical" preserve disabled={updateBlocked || Boolean(supportError)} onValuesChange={() => { if (preview) setPreview(''); }}>
           {mode === 'wizard' ? (
             <div className="realtime-wizard">

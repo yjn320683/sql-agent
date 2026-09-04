@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
@@ -26,17 +26,16 @@ import {
   UpOutlined,
 } from '@ant-design/icons';
 import {
+  canEnableSyncTask,
   deleteSyncTask,
   getStateHistory,
   getSyncTask,
   listMappings,
-  listServers,
   listSyncTasks,
   startSyncTask,
   stopSyncTask,
 } from '../api';
 import type {
-  RealtimeServer,
   SyncTask,
   SyncTaskListItem,
   TaskMapping,
@@ -54,25 +53,28 @@ const statusLabel: Record<string, string> = {
   not_running: '未运行', canceled: '已取消', finished: '已完成',
 };
 
-const emptyQuery = { keyword: '', status: 'all', sourceServerId: '', owner: '', lastOperator: '', tableScope: 'all', tableKeyword: '' };
+const emptyQuery = { keyword: '', status: 'all', paimonTableKeyword: '', owner: '', lastOperator: '' };
 const positiveNumber = (value: string | null, fallback: number) => {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : fallback;
 };
 
-export default function RealtimeSyncTasksPage() {
+interface Props {
+  workspace?: boolean;
+}
+
+export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [query, setQuery] = useState(() => ({
     ...emptyQuery,
-    keyword: searchParams.get('keyword') ?? '', status: searchParams.get('status') ?? 'all',
-    sourceServerId: searchParams.get('sourceServerId') ?? '', owner: searchParams.get('owner') ?? '',
-    lastOperator: searchParams.get('lastOperator') ?? '', tableScope: searchParams.get('tableScope') ?? 'all',
-    tableKeyword: searchParams.get('tableKeyword') ?? '',
+    keyword: searchParams.get('q') ?? searchParams.get('keyword') ?? '', status: searchParams.get('status') ?? 'all',
+    paimonTableKeyword: searchParams.get('paimonTable') ?? searchParams.get('paimonTableKeyword') ?? searchParams.get('tableKeyword') ?? '',
+    owner: searchParams.get('owner') ?? '', lastOperator: searchParams.get('operator') ?? searchParams.get('lastOperator') ?? '',
   }));
   const [submittedQuery, setSubmittedQuery] = useState(query);
-  const [filtersExpanded, setFiltersExpanded] = useState(() => Boolean(query.owner || query.lastOperator || query.tableKeyword || query.tableScope !== 'all'));
+  const [filtersExpanded, setFiltersExpanded] = useState(() => Boolean(query.owner || query.lastOperator));
   const [page, setPage] = useState(() => positiveNumber(searchParams.get('page'), 1));
   const [pageSize, setPageSize] = useState(() => positiveNumber(searchParams.get('pageSize'), 20));
   const [sortField, setSortField] = useState(() => searchParams.get('sort') || 'lastOperationTime');
@@ -80,7 +82,6 @@ export default function RealtimeSyncTasksPage() {
   const [rows, setRows] = useState<SyncTaskListItem[]>([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(false);
-  const [servers, setServers] = useState<RealtimeServer[]>([]);
   const [detail, setDetail] = useState<SyncTask>();
   const [detailLoading, setDetailLoading] = useState(false);
   const [mappingTask, setMappingTask] = useState<SyncTaskListItem>();
@@ -89,9 +90,13 @@ export default function RealtimeSyncTasksPage() {
   const [actionLoading, setActionLoading] = useState(false);
   const [debugTask, setDebugTask] = useState<SyncTask>();
   const [taskStopTarget, setTaskStopTarget] = useState<SyncTaskListItem>();
-  const [taskStopType, setTaskStopType] = useState('direct');
+  const [taskStopType] = useState('savepoint');
   const [actionForm] = Form.useForm();
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
+  const submitActionRef = useRef(false);
+  const detailRequestRef = useRef(0);
+  const actionRequestRef = useRef(0);
+  const debugRequestRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,12 +112,16 @@ export default function RealtimeSyncTasksPage() {
     }
   }, [page, pageSize, sortField, sortOrder, submittedQuery]);
 
-  useEffect(() => { void listServers().then(setServers).catch(() => undefined); }, []);
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
     const next = new URLSearchParams();
     next.set('page', String(page)); next.set('pageSize', String(pageSize)); next.set('sort', sortField); next.set('order', sortOrder);
-    Object.entries(submittedQuery).forEach(([key, value]) => { if (value && value !== 'all') next.set(key, value); });
+    const urlKeys: Record<keyof typeof submittedQuery, string> = {
+      keyword: 'q', status: 'status', paimonTableKeyword: 'paimonTable', owner: 'owner', lastOperator: 'operator',
+    };
+    Object.entries(submittedQuery).forEach(([key, value]) => {
+      if (value && value !== 'all') next.set(urlKeys[key as keyof typeof submittedQuery], value);
+    });
     setSearchParams(next, { replace: true });
   }, [page, pageSize, setSearchParams, sortField, sortOrder, submittedQuery]);
   useEffect(() => {
@@ -124,45 +133,61 @@ export default function RealtimeSyncTasksPage() {
   const openEdit = (row?: SyncTaskListItem) => {
     const returnTo = `${location.pathname}${location.search}`;
     navigate(row ? `/realtime/sync-tasks/${row.id}/edit` : '/realtime/sync-tasks/new', {
-      state: { returnTo },
+      state: { returnTo, taskName: row?.name },
     });
   };
 
   const openDetail = async (row: SyncTaskListItem) => {
+    const sequence = ++detailRequestRef.current;
     setDetailLoading(true);
     try {
-      setDetail(await getSyncTask(row.id));
-    } catch (error) { message.error((error as Error).message); }
-    finally { setDetailLoading(false); }
+      const value = await getSyncTask(row.id);
+      if (sequence === detailRequestRef.current) setDetail(value);
+    } catch (error) { if (sequence === detailRequestRef.current) message.error((error as Error).message); }
+    finally { if (sequence === detailRequestRef.current) setDetailLoading(false); }
   };
 
   const openMappings = async (row: SyncTaskListItem) => {
     setMappingTask(row);
-    try { setMappingRows(await listMappings(row.id)); }
+    try { setMappingRows(row.mapping?.length ? row.mapping : await listMappings(row.id)); }
     catch (error) { message.error((error as Error).message); }
   };
 
   const openAction = async (row: SyncTaskListItem) => {
-    setActionTask({ row }); setStateHistory([]);
+    const sequence = ++actionRequestRef.current;
+    setStateHistory([]);
     actionForm.resetFields();
-    actionForm.setFieldsValue({ startType: 'direct', statePath: undefined });
     try {
       setActionLoading(true);
-      setActionTask({ row, task: await getSyncTask(row.id) });
+      const qualification = await canEnableSyncTask(row.id);
+      if (sequence !== actionRequestRef.current) return;
+      if (!qualification.canEnable) {
+        message.warning(qualification.reason || '当前任务不满足启动条件');
+        return;
+      }
+      const task = await getSyncTask(row.id);
+      if (sequence !== actionRequestRef.current) return;
+      const requiredType = task.editPolicy?.requiredStartType ?? 'direct';
+      const requiredPath = task.editPolicy?.requiredStatePath;
+      actionForm.setFieldsValue({ startType: requiredType, statePath: requiredPath });
+      if (requiredPath) setStateHistory([{ label: requiredPath, path: requiredPath }]);
+      setActionTask({ row, task });
     } catch (error) {
-      message.error((error as Error).message);
+      if (sequence === actionRequestRef.current) message.error((error as Error).message);
     } finally {
-      setActionLoading(false);
+      if (sequence === actionRequestRef.current) setActionLoading(false);
     }
   };
 
   const openDebug = async (row: SyncTaskListItem) => {
-    try { setDebugTask(await getSyncTask(row.id)); }
-    catch (error) { message.error((error as Error).message); }
+    const sequence = ++debugRequestRef.current;
+    try { const value = await getSyncTask(row.id); if (sequence === debugRequestRef.current) setDebugTask(value); }
+    catch (error) { if (sequence === debugRequestRef.current) message.error((error as Error).message); }
   };
 
   const submitAction = async () => {
-    if (!actionTask) return;
+    if (!actionTask || submitActionRef.current) return;
+    submitActionRef.current = true;
     try {
       const values = await actionForm.validateFields();
       setActionLoading(true);
@@ -170,7 +195,7 @@ export default function RealtimeSyncTasksPage() {
       message.success('同步任务已提交');
       setActionTask(undefined); await load();
     } catch (error) { message.error((error as Error).message); }
-    finally { setActionLoading(false); }
+    finally { submitActionRef.current = false; setActionLoading(false); }
   };
 
   const formatRuntime = (seconds?: number) => {
@@ -194,13 +219,18 @@ export default function RealtimeSyncTasksPage() {
     return <Tooltip title={<Space direction="vertical" size={0}><span>{row.taskManagerCount ?? '-'} 个 TaskManager + 1 个 JobManager</span><span>配置：并行度 {row.parallelism ?? '-'} / TM {row.taskManagerMemory ?? '-'} / JM {row.jobManagerMemory ?? '-'}</span></Space>}><span>{memory} / {row.configuredVCores} vCore</span></Tooltip>;
   };
 
+  const ownerOptions = useMemo(() => Array.from(new Map(rows
+    .filter((row) => Boolean(row.owner))
+    .map((row) => [row.owner, { label: row.owner, value: row.owner }])).values()), [rows]);
+
   const columns = useMemo(() => [
     { title: '任务 ID', dataIndex: 'id', width: 100, fixed: 'left' as const, sorter: true },
     { title: '任务名称', dataIndex: 'name', width: 220, fixed: 'left' as const, ellipsis: true, sorter: true, render: (value: string) => <Typography.Link>{value}</Typography.Link> },
     { title: '任务描述', dataIndex: 'description', width: 260, ellipsis: { showTitle: false }, render: (value: string) => <Tooltip title={value}><span>{value || '-'}</span></Tooltip> },
     { title: '任务状态', dataIndex: 'status', width: 110, sorter: true, render: (value: string, row: SyncTaskListItem) => <Tooltip title={row.runtimeFailureMessage}><Tag color={statusColor[value]}>{statusLabel[value] ?? value}</Tag></Tooltip> },
-    { title: 'Server', width: 210, ellipsis: true, render: (_: unknown, row: SyncTaskListItem) => [row.sourceServerName, row.sourceServerDatabase].filter(Boolean).join('/') || '-' },
-    { title: '同步表', width: 170, render: (_: unknown, row: SyncTaskListItem) => <Button className="realtime-mapping-link" type="link" size="small" icon={<UnorderedListOutlined />} onClick={(event) => { event.stopPropagation(); void openMappings(row); }}>{row.mappingCount === undefined ? '查看同步表' : `查看全部 ${row.mappingCount} 组`}</Button> },
+    { title: '映射', width: 180, render: (_: unknown, row: SyncTaskListItem) => (row.mapping?.length ?? row.mappingCount ?? 0) > 0
+      ? <Button className="realtime-mapping-link" type="link" size="small" icon={<UnorderedListOutlined />} onClick={(event) => { event.stopPropagation(); void openMappings(row); }}>{`查看全部 ${row.mapping?.length ?? row.mappingCount} 组`}</Button>
+      : '-' },
     { title: '资源占用', width: 210, render: (_: unknown, row: SyncTaskListItem) => renderResource(row) },
     { title: 'Flink UI', width: 110, render: (_: unknown, row: SyncTaskListItem) => row.flinkUrl ? <Typography.Link href={row.flinkUrl} target="_blank" onClick={(event) => event.stopPropagation()}><LinkOutlined /> 打开</Typography.Link> : '-' },
     { title: '运行时长', dataIndex: 'runtimeSeconds', width: 120, sorter: true, render: (value: number) => formatRuntime(value) },
@@ -218,7 +248,7 @@ export default function RealtimeSyncTasksPage() {
         return (
           <Space size={12} onClick={(event) => event.stopPropagation()}>
             {running || restarting
-              ? <Tooltip title={row.managed === false ? '历史导入实例只读，不能在本平台停止' : undefined}><Typography.Link disabled={row.managed === false} onClick={() => { if (row.managed === false) return; setTaskStopTarget(row); setTaskStopType('direct'); }}>停止</Typography.Link></Tooltip>
+              ? <Tooltip title={row.managed === false ? '历史导入实例只读，不能在本平台停止' : undefined}><Typography.Link disabled={row.managed === false} onClick={() => { if (row.managed === false) return; setTaskStopTarget(row); }}>停止</Typography.Link></Tooltip>
               : <Typography.Link disabled={operating} onClick={() => !operating && void openAction(row)}>启动</Typography.Link>}
             <Typography.Link onClick={() => void openDebug(row)}>调试</Typography.Link>
             <Typography.Link disabled={active} onClick={() => !active && openEdit(row)}>编辑</Typography.Link>
@@ -257,39 +287,45 @@ export default function RealtimeSyncTasksPage() {
   return (
     <div className="realtime-page realtime-sync-tasks-page">
       <section className="realtime-sync-main-panel">
-        <div className="realtime-page-header">
+        {!workspace && <div className="realtime-page-header">
           <Typography.Title level={4}>实时同步任务</Typography.Title>
-          <Space><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => openEdit()}>新建同步任务</Button></Space>
-        </div>
+          <Space>
+            <Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+            <Tooltip title="新建同步任务"><Button aria-label="新建同步任务" type="primary" icon={<PlusOutlined />} onClick={() => openEdit()} /></Tooltip>
+          </Space>
+        </div>}
         <div className="realtime-sync-filter-section">
           <div className="realtime-sync-query-filter">
             <div className="realtime-sync-filter-item"><label>任务关键字：</label><Input allowClear placeholder="任务ID / 名称 / 描述" value={query.keyword} onChange={(event) => setQuery({ ...query, keyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
+            <div className="realtime-sync-filter-item"><label>任务类型：</label><Select aria-label="任务类型" value="sync" disabled options={[{ label: '实时同步任务', value: 'sync' }]} /></div>
             <div className="realtime-sync-filter-item"><label>任务状态：</label><Select value={query.status} onChange={(status) => setQuery({ ...query, status })} options={[{ label: '全部', value: 'all' }, ...Object.entries(statusLabel).filter(([key]) => ['not_running', 'submitting', 'running', 'stopping', 'restarting', 'failed'].includes(key)).map(([value, label]) => ({ value, label }))]} /></div>
-            <div className="realtime-sync-filter-item"><label>Server：</label><Select showSearch allowClear optionFilterProp="label" placeholder="Server名称 / 数据库" value={query.sourceServerId || undefined} onChange={(value) => setQuery({ ...query, sourceServerId: value ? String(value) : '' })} options={servers.map((item) => ({ label: `${item.name}/${item.databaseName || '-'}`, value: item.id }))} /></div>
+            <div className="realtime-sync-filter-item"><label>Paimon 表：</label><Input allowClear placeholder="库名、表名或完整表名" value={query.paimonTableKeyword} onChange={(event) => setQuery({ ...query, paimonTableKeyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
             <Space className="realtime-sync-filter-actions">
               <Button onClick={() => { setQuery(emptyQuery); setSubmittedQuery(emptyQuery); setSortField('lastOperationTime'); setSortOrder('desc'); setPage(1); }}>重置</Button>
               <Button type="primary" icon={<SearchOutlined />} onClick={() => { setSubmittedQuery(query); setPage(1); }}>查询</Button>
               <Button type="link" aria-expanded={filtersExpanded} onClick={() => setFiltersExpanded((value) => !value)}>{filtersExpanded ? <>收起 <UpOutlined /></> : <>展开 <DownOutlined /></>}</Button>
+              <Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+              <Tooltip title="新建同步任务"><Button aria-label="新建同步任务" type="primary" icon={<PlusOutlined />} onClick={() => openEdit()} /></Tooltip>
             </Space>
             {filtersExpanded && <>
-              <div className="realtime-sync-filter-item"><label>责任人：</label><Input allowClear placeholder="输入责任人" value={query.owner} onChange={(event) => setQuery({ ...query, owner: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
+              <div className="realtime-sync-filter-item"><label>责任人：</label><Select showSearch optionFilterProp="label" value={query.owner || 'all'} onChange={(owner) => setQuery({ ...query, owner: owner === 'all' ? '' : owner })} options={[{ label: '全部', value: 'all' }, ...ownerOptions]} placeholder="请输入成员名称进行搜索" /></div>
               <div className="realtime-sync-filter-item"><label>最近操作人：</label><Input allowClear placeholder="输入操作人" value={query.lastOperator} onChange={(event) => setQuery({ ...query, lastOperator: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
-              <div className="realtime-sync-filter-item realtime-sync-table-filter"><label>同步表：</label><Space.Compact block><Select value={query.tableScope} onChange={(tableScope) => setQuery({ ...query, tableScope })} options={[{ label: '全部表', value: 'all' }, { label: '源表', value: 'source' }, { label: '目标表', value: 'target' }]} /><Input allowClear placeholder="表名或 database.table" value={query.tableKeyword} onChange={(event) => setQuery({ ...query, tableKeyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></Space.Compact></div>
             </>}
           </div>
         </div>
         <div className="realtime-sync-table-section">
-          <Table rowKey="id" rowClassName="clickable-task-row" onRow={(row) => ({ onClick: () => void openDetail(row), onKeyDown: (event) => { if (event.key === 'Enter') void openDetail(row); }, role: 'button', tabIndex: 0 })} onChange={handleTableChange} loading={loading} dataSource={rows} columns={columns} scroll={{ x: 2160 }} pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (value) => `共 ${value} 条`, onChange: (nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); } }} />
+          <Table rowKey="id" rowClassName="clickable-task-row" onRow={(row) => ({ onClick: () => void openDetail(row), onKeyDown: (event) => { if (event.key === 'Enter') void openDetail(row); }, role: 'button', tabIndex: 0 })} onChange={handleTableChange} loading={loading} dataSource={rows} columns={columns} scroll={{ x: 1870 }} pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (value) => `共 ${value} 条`, onChange: (nextPage, nextSize) => { setPage(nextPage); setPageSize(nextSize); } }} />
         </div>
       </section>
 
       <SyncDebugDrawer task={debugTask} open={Boolean(debugTask)} onClose={() => setDebugTask(undefined)} />
 
-      <Modal title={`同步表映射 - ${mappingTask?.name ?? ''}`} open={Boolean(mappingTask)} onCancel={() => setMappingTask(undefined)} footer={null} width={980}>
-        <Table rowKey="id" pagination={false} dataSource={mappingRows} columns={[
-          { title: '序号', dataIndex: 'sortOrder', width: 70 },
-          { title: '源表', render: (_: unknown, row: TaskMapping) => `${row.sourceDatabase}.${row.sourceTable}` },
-          { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => `${row.targetDatabase}.${row.targetTable}` },
+      <Modal className="sync-mapping-modal" title={`同步表映射 - ${mappingTask?.name ?? ''}`} open={Boolean(mappingTask)} onCancel={() => setMappingTask(undefined)} footer={null} width={900} destroyOnHidden>
+        <Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={mappingRows} columns={[
+          { title: '序号', width: 72, render: (_: unknown, __: TaskMapping, index: number) => index + 1 },
+          { title: 'Server', width: 180, render: (_: unknown, row: TaskMapping) => [row.serverName, row.sourceDatabase].filter(Boolean).join('/') || '-' },
+          { title: '源表', width: 360, render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{[row.sourceDatabase, row.sourceTable].filter(Boolean).join('.')}</span> },
+          { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{[row.targetDatabase, row.targetTable].filter(Boolean).join('.')}</span> },
         ]} />
       </Modal>
 
@@ -305,11 +341,11 @@ export default function RealtimeSyncTasksPage() {
           } catch { setStateHistory([]); }
           finally { setActionLoading(false); }
         }}>
-          <Form.Item name="startType" label="启动类型" rules={[{ required: true }]}><Select options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }]} /></Form.Item>
+          <Form.Item name="startType" label="启动类型" rules={[{ required: true }]}><Select disabled={Boolean(actionTask?.task?.editPolicy?.requiredStartType)} options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }].filter((item) => !actionTask?.task?.editPolicy?.requiredStartType || item.value === actionTask.task.editPolicy.requiredStartType)} /></Form.Item>
           <Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' && (
             <>
-              <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select loading={actionLoading} placeholder="请选择历史状态" options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item>
-              {actionTask?.task?.editPolicy?.topologyChanged && <Alert showIcon type="warning" message="源表集合已发生变化，历史状态可能与当前拓扑不兼容" description="仍可继续提交；若 Flink 恢复失败，请改用直接启动。系统不会自动回退。" />}
+              <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select disabled={Boolean(actionTask?.task?.editPolicy?.requiredStatePath)} loading={actionLoading} placeholder="请选择历史状态" options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item>
+              {actionTask?.task?.editPolicy?.syncTableSetChanged && <Alert showIcon type="info" message="同步表集合已发生变化" description="本次只能从最近一次正式停止产生的 Savepoint 恢复；恢复失败时保留新配置，不会自动回滚。" />}
             </>
           )}</Form.Item>
         </Form>
@@ -320,10 +356,7 @@ export default function RealtimeSyncTasksPage() {
         try { await stopSyncTask(taskStopTarget.id, { stopType: taskStopType }); message.success('停止请求已提交'); setTaskStopTarget(undefined); await load(); }
         catch (error) { message.error((error as Error).message); }
       }}>
-        <Form layout="horizontal" labelCol={{ span: 6 }} wrapperCol={{ span: 16 }}><Form.Item label="停止类型" required><Select value={taskStopType} onChange={setTaskStopType} options={[
-          { label: '直接停止', value: 'direct' },
-          ...((taskStopTarget?.runtimeStatus || taskStopTarget?.status) === 'running' ? [{ label: 'savepoint停止', value: 'savepoint' }] : []),
-        ]} /></Form.Item></Form>
+        <Form layout="horizontal" labelCol={{ span: 6 }} wrapperCol={{ span: 16 }}><Form.Item label="停止类型" required><Select value={taskStopType} disabled options={[{ label: 'Savepoint 停止', value: 'savepoint' }]} /></Form.Item></Form>
       </Modal>
 
       <SyncTaskDetailDrawer task={detail} loading={detailLoading} onClose={() => setDetail(undefined)} />

@@ -16,8 +16,7 @@ const DataComparePage = lazy(() => import('./components/dataCompare/DataCompareP
 const VersionComparePage = lazy(() => import('./components/dataCompare/VersionComparePage'));
 const DataCompareDetailPage = lazy(() => import('./components/dataCompare/DataCompareDetailPage'));
 const TaskVersionUnionPage = lazy(() => import('./components/tasks/TaskVersionUnionPage'));
-const RealtimeSyncTasksPage = lazy(() => import('./realtime/pages/RealtimeSyncTasksPage'));
-const RealtimeSyncTaskEditorPage = lazy(() => import('./realtime/pages/RealtimeSyncTaskEditorPage'));
+const RealtimeSyncWorkspacePage = lazy(() => import('./realtime/pages/RealtimeSyncWorkspacePage'));
 const RealtimeServersPage = lazy(() => import('./realtime/pages/RealtimeServersPage'));
 const RealtimeAlertsPage = lazy(() => import('./realtime/pages/RealtimeAlertsPage'));
 const RealtimeTodoPage = lazy(() => import('./realtime/pages/RealtimeTodoPage'));
@@ -93,9 +92,9 @@ export default function App() {
           <Route path="/data-compares/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><VersionComparePage /></Suspense>} />
           <Route path="/data-compares/:compareId" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><DataCompareDetailPage /></Suspense>} />
           <Route path="/realtime" element={<Navigate to="/realtime/sync-tasks" replace />} />
-          <Route path="/realtime/sync-tasks" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncTasksPage /></Suspense>} />
-          <Route path="/realtime/sync-tasks/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncTaskEditorPage /></Suspense>} />
-          <Route path="/realtime/sync-tasks/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncTaskEditorPage /></Suspense>} />
+          <Route path="/realtime/sync-tasks" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
+          <Route path="/realtime/sync-tasks/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
+          <Route path="/realtime/sync-tasks/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
           <Route path="/realtime/servers" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeServersPage /></Suspense>} />
           <Route path="/realtime/alerts" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeAlertsPage /></Suspense>} />
           <Route path="/realtime/paimon-tables" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTodoPage title="Paimon 表管理" /></Suspense>} />

@@ -10,7 +10,6 @@ import {
   Switch,
   Table,
   Tooltip,
-  Typography,
   message,
 } from 'antd';
 import {
@@ -188,11 +187,6 @@ export default function ExecutionCenterPage() {
 
   return (
     <div className="data-page execution-center-page">
-      <header className="data-page-header execution-center-header">
-        <Typography.Title level={2}>执行中心</Typography.Title>
-        <Space><span className="muted-text">自动刷新</span><Switch checked={autoRefresh} onChange={setAutoRefresh} /></Space>
-      </header>
-
       <section className="execution-summary-band" aria-label="执行概览">
         <button type="button" onClick={() => { setStatus('all'); setPage(1); }}><span>全部实例</span><strong>{summary.total}</strong></button>
         <button type="button" onClick={() => { setStatus('active'); setPage(1); }}><span>当前运行中</span><strong className="processing">{summary.active}</strong></button>
@@ -220,6 +214,7 @@ export default function ExecutionCenterPage() {
             />
             <Button type="primary" onClick={submitSearch}>查询</Button>
             <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+            <span className="compact-switch-control"><span className="muted-text">自动刷新</span><Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} /></span>
           </Space>
         </div>
         <Table

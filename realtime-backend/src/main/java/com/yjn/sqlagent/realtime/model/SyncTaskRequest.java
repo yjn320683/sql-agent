@@ -8,6 +8,7 @@ import javax.validation.constraints.NotNull;
 public class SyncTaskRequest {
     @NotBlank(message = "任务名称不能为空")
     private String name;
+    @NotBlank(message = "负责人不能为空")
     private String owner;
     private String description;
     private String flinkVersion = "2.2.1";

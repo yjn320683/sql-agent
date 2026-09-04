@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm, Space, Table, Tag, Typography, message } from 'antd';
+import { Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm, Space, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { DeleteOutlined, EditOutlined, EyeOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { createServer, deleteServer, listServers, listSyncTasks, testServer, testServerRequest, updateServer } from '../api';
 import type { RealtimeServer, RealtimeServerSave, SyncTaskListItem } from '../types';
@@ -30,8 +30,8 @@ export default function RealtimeServersPage() {
     setEditing(server); setDrawerOpen(true);
     setTested(Boolean(server));
     form.setFieldsValue(server ? { name: server.name, address: server.address, databaseName: server.databaseName,
-      databaseAbbr: server.databaseAbbr, account: server.account, description: server.description, password: '' }
-      : { name: '', address: '', databaseName: '', databaseAbbr: '', account: '', password: '', description: '' });
+      databasePrefix: server.databasePrefix, account: server.account, description: server.description, password: '' }
+      : { name: '', address: '', databaseName: '', databasePrefix: '', account: '', password: '', description: '' });
   };
   const save = async () => {
     setSaving(true);
@@ -65,19 +65,21 @@ export default function RealtimeServersPage() {
   const filteredRows = useMemo(() => {
     const value = keyword.trim().toLowerCase();
     if (!value) return rows;
-    return rows.filter((row) => [row.id, row.name, row.address, row.databaseName, row.databaseAbbr, row.account, row.operator]
+    return rows.filter((row) => [row.id, row.name, row.address, row.databaseName, row.databasePrefix, row.account, row.operator]
       .some((item) => String(item ?? '').toLowerCase().includes(value)));
   }, [keyword, rows]);
 
   return (
     <div className="realtime-page realtime-sync-tasks-page realtime-servers-page">
       <section className="realtime-sync-main-panel">
-        <div className="realtime-page-header">
-          <Typography.Title level={4}>MySQL Server 管理</Typography.Title>
-          <Space><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button><Button type="primary" icon={<PlusOutlined />} onClick={() => open()}>新建 Server</Button></Space>
-        </div>
         <div className="realtime-sync-filter-section">
-          <div className="realtime-server-toolbar"><Input allowClear prefix={<SearchOutlined />} placeholder="服务 ID、名称、地址、数据库或操作人" value={keyword} onChange={(event) => setKeyword(event.target.value)} /></div>
+          <div className="realtime-server-toolbar">
+            <Input allowClear prefix={<SearchOutlined />} placeholder="服务 ID、名称、地址、数据库或操作人" value={keyword} onChange={(event) => setKeyword(event.target.value)} />
+            <Space size={8}>
+              <Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+              <Tooltip title="新建 Server"><Button aria-label="新建 Server" type="primary" icon={<PlusOutlined />} onClick={() => open()} /></Tooltip>
+            </Space>
+          </div>
         </div>
         <div className="realtime-sync-table-section">
           <Table rowKey="id" loading={loading} dataSource={filteredRows} columns={[
@@ -86,7 +88,7 @@ export default function RealtimeServersPage() {
           { title: '类型', dataIndex: 'type', width: 90, render: () => <Tag color="blue">MySQL</Tag> },
           { title: '地址', dataIndex: 'address', ellipsis: true },
           { title: '数据库', dataIndex: 'databaseName', width: 160 },
-          { title: '库缩写', dataIndex: 'databaseAbbr', width: 100 },
+          { title: '库前缀', dataIndex: 'databasePrefix', width: 100 },
           { title: '账号', dataIndex: 'account', width: 140 },
           { title: '密码', dataIndex: 'passwordConfigured', width: 90, render: (value: boolean) => value ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag> },
           { title: '操作人', dataIndex: 'operator', width: 110 },
@@ -106,8 +108,16 @@ export default function RealtimeServersPage() {
           {editing && <Typography.Paragraph type="secondary">已使用的连接信息保持只读，避免影响现有同步任务；可修改描述。</Typography.Paragraph>}
           <Form.Item name="name" label="Server 名称" rules={[{ required: true }]}><Input disabled={Boolean(editing)} /></Form.Item>
           <Form.Item name="address" label="MySQL 地址" rules={[{ required: true }]}><Input disabled={Boolean(editing)} placeholder="host:3306 或 jdbc:mysql://host:3306/database" /></Form.Item>
-          <Form.Item name="databaseName" label="默认数据库"><Input disabled={Boolean(editing)} /></Form.Item>
-          <Form.Item name="databaseAbbr" label="数据库缩写" rules={[{ required: true }, { pattern: /^[a-z]{1,9}$/, message: '仅支持 1-9 位小写字母' }]}><Input disabled={Boolean(editing)} /></Form.Item>
+          <Form.Item name="databaseName" label="默认数据库" rules={[{ required: true, message: '请输入数据库' }]}><Input disabled={Boolean(editing)} /></Form.Item>
+          <Form.Item name="databasePrefix" label="库前缀" tooltip="选填；填写时只能是小写字母，长度小于10" dependencies={['databaseName']} rules={[({ getFieldValue }) => ({ validator: (_, value) => {
+            const prefix = String(value ?? '').trim();
+            if (prefix && !/^[a-z]{1,9}$/.test(prefix)) return Promise.reject(new Error('只能是小写字母，长度小于10'));
+            const database = String(getFieldValue('databaseName') ?? '').trim().toLowerCase();
+            const sameDatabase = rows.filter((server) => server.id !== editing?.id && String(server.databaseName ?? '').trim().toLowerCase() === database);
+            if (sameDatabase.length && !prefix) return Promise.reject(new Error('该数据库已存在，请填写库前缀'));
+            if (sameDatabase.some((server) => String(server.databasePrefix ?? '').trim() === prefix)) return Promise.reject(new Error('库前缀与数据库组合已存在，请更换库前缀'));
+            return Promise.resolve();
+          } })]}><Input disabled={Boolean(editing)} placeholder="选填，例如 jd" /></Form.Item>
           <Form.Item name="account" label="账号"><Input disabled={Boolean(editing)} autoComplete="off" /></Form.Item>
           {!editing && <Form.Item name="password" label="密码"><Input.Password autoComplete="new-password" /></Form.Item>}
           <Form.Item name="description" label="描述"><Input.TextArea rows={3} /></Form.Item>
@@ -117,7 +127,7 @@ export default function RealtimeServersPage() {
         {viewing && <Descriptions bordered size="small" column={1} items={[
           { key: 'id', label: '服务 ID', children: viewing.id }, { key: 'name', label: '名称', children: viewing.name },
           { key: 'type', label: '类型', children: 'MySQL' }, { key: 'address', label: '地址', children: viewing.address },
-          { key: 'database', label: '数据库', children: viewing.databaseName || '-' }, { key: 'abbr', label: '库缩写', children: viewing.databaseAbbr || '-' },
+          { key: 'database', label: '数据库', children: viewing.databaseName || '-' }, { key: 'prefix', label: '库前缀', children: viewing.databasePrefix || '-' },
           { key: 'account', label: '账号', children: viewing.account || '-' }, { key: 'password', label: '密码', children: viewing.passwordConfigured ? '已配置' : '未配置' },
           { key: 'description', label: '描述', children: viewing.description || '-' }, { key: 'operator', label: '操作人', children: viewing.operator || '-' },
           { key: 'created', label: '创建时间', children: viewing.createTime || '-' }, { key: 'updated', label: '更新时间', children: viewing.updateTime || '-' },

@@ -6,6 +6,7 @@ import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.yjn.sqlagent.realtime.common.PaimonSyncCommandBuilder;
+import com.yjn.sqlagent.realtime.common.PaimonSyncOptionValidator;
 import com.yjn.sqlagent.realtime.common.SubmissionSpec;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -21,6 +22,7 @@ class PaimonSyncCommandBuilderTest {
 
         assertEquals("/data/paimon-action.jar", command.getJarPath());
         assertOption(command.getArguments(), "--including_tables", "orders|order_item");
+        assertOption(command.getArguments(), "--mode", "combined");
         assertOption(command.getArguments(), "--multiple_table_primary_keys", "orders=id");
         assertOption(command.getArguments(), "--multiple_table_partition_keys", "orders=dt");
         assertOption(command.getArguments(), "--multiple_table_computed_column", "orders=dt=date_format(created_at,yyyy-MM-dd)");
@@ -42,10 +44,23 @@ class PaimonSyncCommandBuilderTest {
         assertThrows(IllegalArgumentException.class, () -> new PaimonSyncCommandBuilder().build(spec));
     }
 
+    @Test
+    void rejectsUnsafePaimonOptionCombinations() {
+        assertThrows(IllegalArgumentException.class, () -> PaimonSyncOptionValidator.validateTableConf(
+                Map.of("changelog-producer", "input", "changelog-producer.row-deduplicate", "true")));
+        assertThrows(IllegalArgumentException.class, () -> PaimonSyncOptionValidator.validateTableConf(
+                Map.of("changelog-producer", "lookup",
+                        "changelog-producer.row-deduplicate-ignore-fields", "updated_at")));
+        for (String mergeEngine : List.of("first-row", "partial-update", "aggregation")) {
+            assertThrows(IllegalArgumentException.class, () -> PaimonSyncOptionValidator.validateTableConf(
+                    Map.of("merge-engine", mergeEngine)));
+        }
+    }
+
     private SubmissionSpec validSpec() {
         SubmissionSpec spec = new SubmissionSpec();
         spec.setTaskId(12L);
-        spec.setJobInstanceId(34L);
+        spec.setTaskInstanceId(34L);
         SubmissionSpec.TaskSpec task = new SubmissionSpec.TaskSpec();
         Map<String, Object> orderConfig = new LinkedHashMap<>();
         orderConfig.put("primaryKeys", List.of("id"));
@@ -68,7 +83,7 @@ class PaimonSyncCommandBuilderTest {
         server.setId(7L);
         server.setAddress("jdbc:mysql://mysql.example:3307/sales?useUnicode=true");
         server.setDatabaseName("sales");
-        server.setDatabaseAbbr("sale");
+        server.setDatabasePrefix("sale");
         server.setAccount("cdc_user");
         server.setPassword("中文密码");
         spec.setServers(List.of(server));

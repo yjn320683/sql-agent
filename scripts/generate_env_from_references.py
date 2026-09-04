@@ -24,7 +24,7 @@ AGENT_ENV_SECTIONS: list[tuple[str, list[tuple[str, str]]]] = [
     (
         "service",
         [
-            ("AGENT_PORT", "8284"),
+            ("AGENT_PORT", "8285"),
             ("AGENT_SERVICE_TOKEN", ""),
             ("HOST_LOG_DIR", "./logs"),
             ("TASK_EXECUTION_LOG_DIR", "./logs/task-executions"),
@@ -93,7 +93,7 @@ BACKEND_DEFAULTS = {
     "spring.datasource.driver-class-name": "com.mysql.cj.jdbc.Driver",
     "spring.datasource.username": "example_user",
     "spring.datasource.password": "example_password",
-    "sql-agent.agent.base-url": "http://127.0.0.1:8284",
+    "sql-agent.agent.base-url": "http://127.0.0.1:8285",
     "sql-agent.agent.service-token": "",
     "sql-agent.agent.history-dir": "",
     "sql-agent.auth.local-login-enabled": "true",

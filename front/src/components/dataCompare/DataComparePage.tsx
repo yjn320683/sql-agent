@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { RefCallback } from 'react';
 import {
-  Button, Checkbox, DatePicker, Empty, Form, Input, InputNumber, Modal, Pagination, Segmented, Space, Table, Tooltip, Typography, message,
+  Button, Checkbox, DatePicker, Empty, Form, Input, InputNumber, Modal, Pagination, Segmented, Select, Space, Table, Tooltip, Typography, message,
 } from 'antd';
-import { ExperimentOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { DownOutlined, ExperimentOutlined, PlusOutlined, ReloadOutlined, SearchOutlined, UpOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
 import { createDataCompare, listDataCompares } from '../../api/dataCompare';
@@ -73,6 +73,7 @@ export default function DataComparePage() {
   const [tableModal, setTableModal] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [suggestedKeys, setSuggestedKeys] = useState<string[]>([]);
+  const [filtersExpanded, setFiltersExpanded] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -152,29 +153,31 @@ export default function DataComparePage() {
 
   return (
     <div className="data-page data-compare-page">
-      <header className="data-page-header">
-        <div><Typography.Title level={2}>数据验数</Typography.Title></div>
-        <Space>
-          <Button icon={<PlusOutlined />} onClick={() => setTableModal(true)}>表对比</Button>
-          <Button type="primary" icon={<ExperimentOutlined />} onClick={() => navigate('/data-compares/new')}>版本验数</Button>
-        </Space>
-      </header>
       <section className="data-panel">
         <div className="data-toolbar data-compare-toolbar">
-          <Space wrap>
-            <Segmented className="ui-flat-segmented" value={type} options={[{ label: '全部', value: 'all' }, { label: '任务对比', value: 'VERSION' }, { label: '数据表对比', value: 'TABLE' }]} onChange={(value) => { setPage(1); setType(String(value)); }} />
-            <Segmented className="ui-flat-segmented" value={status} options={[{ label: '全部状态', value: 'all' }, { label: '运行中', value: 'RUNNING' }, { label: '真实通过', value: 'PASSED' }, { label: '强制通过', value: 'FORCE_PASSED' }, { label: '不一致', value: 'NOT_PASSED' }, { label: '需重验', value: 'NEEDS_RERUN' }, { label: '失败', value: 'FAILED' }]} onChange={(value) => { setPage(1); setStatus(String(value)); }} />
-            <InputNumber min={1} controls={false} value={taskId} placeholder="任务 ID" onChange={(value) => setTaskId(value || undefined)} />
-            <InputNumber min={1} controls={false} value={versionNo} placeholder="版本号" onChange={(value) => setVersionNo(value || undefined)} />
-            <InputNumber min={1} controls={false} value={jobId} placeholder="Job ID" onChange={(value) => setJobId(value || undefined)} />
-            <Input allowClear value={operator} placeholder="操作人" disabled={mine} onChange={(event) => setOperator(event.target.value)} />
-            <DatePicker.RangePicker showTime onChange={(_, values) => setTimeRange(values[0] && values[1] ? [values[0], values[1]] : undefined)} />
-            <Checkbox checked={mine} onChange={(event) => setMine(event.target.checked)}>只看自己</Checkbox>
-            <Input allowClear value={keyword} prefix={<SearchOutlined />} placeholder="搜索验数 ID、任务、表或操作人" onChange={(event) => setKeyword(event.target.value)} onPressEnter={submitSearch} />
-            <Button type="primary" onClick={submitSearch}>查询</Button>
-            <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
-          </Space>
-          <span className="result-count">共 {data.total} 条真实记录</span>
+          <div className="data-compare-toolbar-main">
+            <Space size={8}>
+              <Segmented className="ui-flat-segmented" value={type} options={[{ label: '全部', value: 'all' }, { label: '任务对比', value: 'VERSION' }, { label: '数据表对比', value: 'TABLE' }]} onChange={(value) => { setPage(1); setType(String(value)); }} />
+              <Select className="data-compare-status-select" value={status} options={[{ label: '全部状态', value: 'all' }, { label: '运行中', value: 'RUNNING' }, { label: '真实通过', value: 'PASSED' }, { label: '强制通过', value: 'FORCE_PASSED' }, { label: '不一致', value: 'NOT_PASSED' }, { label: '需重验', value: 'NEEDS_RERUN' }, { label: '失败', value: 'FAILED' }]} onChange={(value) => { setPage(1); setStatus(value); }} />
+              <Input className="data-compare-search" allowClear value={keyword} prefix={<SearchOutlined />} placeholder="搜索验数 ID、任务、表或操作人" onChange={(event) => setKeyword(event.target.value)} onPressEnter={submitSearch} />
+              <Button type="primary" onClick={submitSearch}>查询</Button>
+              <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+              <Button type="text" icon={filtersExpanded ? <UpOutlined /> : <DownOutlined />} onClick={() => setFiltersExpanded((value) => !value)}>{filtersExpanded ? '收起' : '展开'}</Button>
+            </Space>
+            <Space size={8}>
+              <span className="result-count">共 {data.total} 条</span>
+              <Button icon={<PlusOutlined />} onClick={() => setTableModal(true)}>表对比</Button>
+              <Button type="primary" icon={<ExperimentOutlined />} onClick={() => navigate('/data-compares/new')}>版本验数</Button>
+            </Space>
+          </div>
+          {filtersExpanded ? <div className="data-compare-advanced-filters">
+              <InputNumber min={1} controls={false} value={taskId} placeholder="任务 ID" onChange={(value) => setTaskId(value || undefined)} />
+              <InputNumber min={1} controls={false} value={versionNo} placeholder="版本号" onChange={(value) => setVersionNo(value || undefined)} />
+              <InputNumber min={1} controls={false} value={jobId} placeholder="Job ID" onChange={(value) => setJobId(value || undefined)} />
+              <Input allowClear value={operator} placeholder="操作人" disabled={mine} onChange={(event) => setOperator(event.target.value)} />
+              <DatePicker.RangePicker showTime onChange={(_, values) => setTimeRange(values[0] && values[1] ? [values[0], values[1]] : undefined)} />
+              <Checkbox checked={mine} onChange={(event) => setMine(event.target.checked)}>只看自己</Checkbox>
+          </div> : null}
         </div>
         <Table rowKey="id" size="middle" columns={columns(navigate, actionColumnWidth, actionRef)} dataSource={data.items} loading={loading} pagination={false} scroll={{ x: 1144 + actionColumnWidth }} locale={{ emptyText: <Empty description={committedKeyword ? '没有匹配的验数记录' : '暂无验数记录'} /> }} onRow={(row) => ({ className: 'clickable-task-row', onClick: () => navigate(`/data-compares/${row.id}`) })} />
         <div className="table-pagination"><Pagination current={page} pageSize={pageSize} total={data.total} showSizeChanger onChange={(next, size) => { setPage(next); setPageSize(size); }} /></div>

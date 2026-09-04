@@ -1,7 +1,7 @@
 import { EyeOutlined, LinkOutlined, SearchOutlined } from '@ant-design/icons';
 import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
-import { useCallback, useEffect, useMemo, useState } from 'react';
-import { getChangeLogDetail, getInstanceInfo, listAlerts, listChangeLogs, listInstances, listMappings, previewSavedSyncTask } from '../api';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { getChangeLogDetail, getInstanceInfo, listAlerts, listChangeLogs, listInstances, listMappings, previewSavedSyncTask, stopInstance } from '../api';
 import type { RealtimeAlert, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
 import InstanceInspectorModal, { InstanceConfigView, StructuredKeyValueTable, type InstanceInspectorKind } from './InstanceInspectorModal';
 import InstanceLogPanel from './InstanceLogPanel';
@@ -18,12 +18,12 @@ interface Props {
 
 const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
 const statusLabel: Record<string, string> = {
-  submitting: '提交中', running: '运行中', stopping: '停止中', restarting: '重启中',
-  canceled: '已取消', finished: '已完成', failed: '失败', not_running: '未运行',
+  submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
+  canceled: '已取消', killed_success: '已停止(调试成功)', finished: '已完成', failed: '失败', not_running: '未运行',
 };
 const statusColor: Record<string, string> = {
-  submitting: 'processing', running: 'success', stopping: 'warning', restarting: 'processing',
-  canceled: 'default', finished: 'success', failed: 'error', not_running: 'default',
+  submitting: 'processing', running: 'success', debug_success_running: 'success', stopping: 'warning', restarting: 'processing',
+  canceled: 'default', killed_success: 'success', finished: 'success', failed: 'error', not_running: 'default',
 };
 
 const displayValue = (input: unknown) => {
@@ -46,11 +46,21 @@ const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown> }) =>
   const request = objectValue(operation.request);
   const result = objectValue(operation.result);
   const instance = objectValue(detail.instance);
-  if (kind === 'edit') return <div className="realtime-change-compare"><section><Typography.Title level={5}>变更前</Typography.Title>{detail.beforeTask ? <InstanceConfigView value={detail.beforeTask} /> : <Empty description="缺少变更前版本" />}</section><section><Typography.Title level={5}>变更后</Typography.Title>{detail.afterTask ? <InstanceConfigView value={detail.afterTask} /> : <Empty description="缺少变更后版本" />}</section></div>;
+  if (kind === 'edit') {
+    const diffs = Array.isArray(detail.diffs) ? detail.diffs as Record<string, unknown>[] : [];
+    return <Space direction="vertical" size={16} style={{ width: '100%' }}>
+      <section><Typography.Title level={5}>本次变更字段</Typography.Title><Table rowKey={(row) => String(row.path)} size="small" pagination={false} dataSource={diffs} locale={{ emptyText: '配置内容无差异' }} columns={[
+        { title: '配置项', dataIndex: 'label', width: 230 },
+        { title: '变更前', dataIndex: 'beforeValue', render: displayValue },
+        { title: '变更后', dataIndex: 'afterValue', render: displayValue },
+      ]} /></section>
+      <div className="realtime-change-compare"><section><Typography.Title level={5}>变更前完整配置</Typography.Title>{detail.beforeTask ?? detail.beforeConfig ? <InstanceConfigView value={detail.beforeTask ?? detail.beforeConfig} /> : <Empty description="缺少变更前版本" />}</section><section><Typography.Title level={5}>变更后完整配置</Typography.Title>{detail.afterTask ?? detail.afterConfig ? <InstanceConfigView value={detail.afterTask ?? detail.afterConfig} /> : <Empty description="缺少变更后版本" />}</section></div>
+    </Space>;
+  }
   if (kind === 'start') return <Space direction="vertical" size={16} style={{ width: '100%' }}>
     <Descriptions bordered size="small" column={2}>
       <Descriptions.Item label="启动类型">{displayValue(request.startType ?? result.startType)}</Descriptions.Item>
-      <Descriptions.Item label="实例 ID">{displayValue(detail.jobInstanceId ?? instance.id)}</Descriptions.Item>
+      <Descriptions.Item label="实例 ID">{displayValue(detail.taskInstanceId ?? instance.id)}</Descriptions.Item>
       <Descriptions.Item label="实例状态">{displayValue(instance.status)}</Descriptions.Item>
       <Descriptions.Item label="JobID">{displayValue(result.jobId ?? instance.jobId)}</Descriptions.Item>
       <Descriptions.Item label="历史状态" span={2}>{displayValue(request.statePath)}</Descriptions.Item>
@@ -90,27 +100,33 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
   const [changeKeyword, setChangeKeyword] = useState('');
   const [logInstance, setLogInstance] = useState<TaskInstance>();
   const [mappingOpen, setMappingOpen] = useState(false);
+  const [mappingInstance, setMappingInstance] = useState<TaskInstance>();
+  const [instanceMappings, setInstanceMappings] = useState<TaskMapping[]>([]);
+  const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
   const [inspector, setInspector] = useState<{ title: string; kind?: InstanceInspectorKind; value: unknown }>();
   const [changeDetail, setChangeDetail] = useState<Record<string, unknown>>();
   const [changeDetailLoadingId, setChangeDetailLoadingId] = useState<number>();
   const [activeDrawerTab, setActiveDrawerTab] = useState('instances');
   const [detailCommand, setDetailCommand] = useState('');
   const [detailCommandLoading, setDetailCommandLoading] = useState(false);
+  const requestSequenceRef = useRef(0);
 
   const reload = useCallback(async (silent = false) => {
     if (!task) return;
+    const sequence = ++requestSequenceRef.current;
     if (!silent) setDataLoading(true);
     try {
       const [allInstances, taskMappings, taskChanges, allAlerts] = await Promise.all([
         listInstances(task.id), listMappings(task.id), listChangeLogs(task.id), listAlerts(),
       ]);
+      if (sequence !== requestSequenceRef.current) return;
       const production = allInstances.filter((item) => item.executionMode !== 'DEBUG');
       setInstances(production);
       setMappings(taskMappings);
       setChanges(taskChanges);
       setAlerts(allAlerts.filter((item) => item.taskId === task.id));
-    } catch (error) { message.error((error as Error).message); }
-    finally { if (!silent) setDataLoading(false); }
+    } catch (error) { if (sequence === requestSequenceRef.current) message.error((error as Error).message); }
+    finally { if (!silent && sequence === requestSequenceRef.current) setDataLoading(false); }
   }, [task]);
 
   useEffect(() => {
@@ -161,7 +177,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
     if (!task) return;
     try {
       const names: Record<InstanceInspectorKind, string> = { config: '实例配置', 'startup-log': '启动日志', 'runtime-log': '运行日志', runtime: '运行指标', resources: '资源', checkpoints: 'Checkpoint', 'log-components': '日志组件' };
-      setInspector({ title: `实例 #${instance.id} · ${names[kind]}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
+      setInspector({ title: kind === 'config' ? `实例配置 - 实例 ${instance.id}` : `实例 ${instance.id} - ${names[kind]}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
     } catch (error) { message.error((error as Error).message); }
   };
 
@@ -176,10 +192,44 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
     }
   };
 
+  const showInstanceMappings = async (instance: TaskInstance) => {
+    if (!task) return;
+    try {
+      const snapshot = objectValue(await getInstanceInfo(task.id, instance.id, 'config'));
+      const taskConfig = objectValue(snapshot.taskConfig);
+      const cdc = objectValue(taskConfig.cdcConfig);
+      const selected = Array.isArray(cdc.selectedTables) ? cdc.selectedTables.map(String) : [];
+      const targets = Array.isArray(cdc.targetTableList) ? cdc.targetTableList.map(String) : [];
+      const prefix = String(cdc.tablePrefix ?? '');
+      const suffix = String(cdc.tableSuffix ?? '');
+      const sourceDatabase = String(cdc.databaseName ?? task.taskConfig.cdcConfig.databaseName ?? '');
+      const targetDatabase = String(cdc.targetDatabase ?? task.targetDatabase ?? '');
+      setInstanceMappings(selected.map((sourceTable, index) => ({
+        id: index + 1, sourceDatabase, sourceTable, targetDatabase,
+        targetTable: targets[index] || `${prefix}${sourceTable}${suffix}`, sortOrder: index,
+      })));
+      setMappingInstance(instance); setMappingOpen(true);
+    } catch (error) { message.error((error as Error).message); }
+  };
+
+  const stopProductionInstance = (instance: TaskInstance) => {
+    if (!task || !instance.managed) return;
+    Modal.confirm({
+      title: `确认停止实例 ${instance.id}？`,
+      content: '将执行 Stop-with-Savepoint，成功保存状态后停止正式实例。',
+      okText: '停止', cancelText: '取消', okButtonProps: { danger: true },
+      onOk: async () => {
+        try { setStoppingInstanceId(instance.id); await stopInstance(task.id, instance.id, 'savepoint'); message.success('停止请求已提交'); await reload(); }
+        catch (error) { message.error((error as Error).message); }
+        finally { setStoppingInstanceId(undefined); }
+      },
+    });
+  };
+
   const renderChangeSummary = (value: string, row: TaskChangeLog) => {
     const summary = row.summary || value || `${row.operator} 执行 ${normalizeChangeAction(row.action)}`;
     const canOpen = row.detailKind !== 'text'
-      && Boolean(row.beforeVersionId || row.afterVersionId || row.operationId || row.jobInstanceId);
+      && Boolean(row.beforeVersionId || row.afterVersionId || row.operationId || row.taskInstanceId);
     if (!canOpen) return summary;
     return <Button className="task-change-detail-button" type="link" size="small"
       loading={changeDetailLoadingId === row.id} onClick={() => void showChangeDetail(row)}>
@@ -203,11 +253,11 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
       { title: 'JobID', dataIndex: 'jobId', width: 270, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '同步中' : '-') },
       { title: 'YARN Application ID', dataIndex: 'yarnApplicationId', width: 220, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '提交中' : '-') },
       { title: 'Flink UI', dataIndex: 'trackingUrl', width: 120, render: (value: string, row: TaskInstance) => value ? <Typography.Link href={value} target="_blank"><LinkOutlined /> 打开</Typography.Link> : (ACTIVE.includes(row.status) ? '同步中' : '-') },
-      { title: 'Savepoint', dataIndex: 'savepointPath', width: 250, ellipsis: true, render: (value: string) => value || '-' },
+      { title: 'Savepoint', dataIndex: 'savepointPath', width: 250, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '停止后生成' : '-') },
       { title: '失败原因', dataIndex: 'failureMessage', width: 240, ellipsis: true, render: (value: string, row: TaskInstance) => row.status === 'failed' ? (value || '请查看运行日志') : '-' },
       { title: '开始时间', dataIndex: 'startedAt', width: 180, render: (value: string) => value || '-' },
       { title: '结束时间', dataIndex: 'endedAt', width: 180, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '运行中' : '-') },
-      { title: '操作', fixed: 'right', width: 210, render: (_: unknown, row: TaskInstance) => <Space size={12}><Typography.Link onClick={() => void inspect(row, 'config')}>实例配置</Typography.Link><Typography.Link onClick={() => setLogInstance(row)}>日志</Typography.Link><Typography.Link onClick={() => setMappingOpen(true)}>同步表</Typography.Link></Space> },
+      { title: '操作', fixed: 'right', width: 270, render: (_: unknown, row: TaskInstance) => <Space size={12}><Typography.Link onClick={() => void inspect(row, 'config')}>实例配置</Typography.Link><Typography.Link onClick={() => setLogInstance(row)}>日志</Typography.Link><Typography.Link onClick={() => void showInstanceMappings(row)}>同步表</Typography.Link>{ACTIVE.includes(row.status) && <Typography.Link type="danger" disabled={!row.managed || stoppingInstanceId === row.id} onClick={() => stopProductionInstance(row)}>停止</Typography.Link>}</Space> },
     ]} />
   </>;
 
@@ -221,7 +271,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
         { key: 'changes', label: '变更记录', children: <><div className="realtime-detail-toolbar"><Space><Select showSearch optionFilterProp="label" value={changeAction} onChange={setChangeAction} options={[{ label: '全部操作', value: 'all' }, ...changeActionOptions]} /><Input allowClear prefix={<SearchOutlined />} value={changeKeyword} onChange={(event) => setChangeKeyword(event.target.value)} placeholder="搜索操作人 / 操作类型 / 变更说明" /></Space></div><Table rowKey="id" size="small" dataSource={filteredChanges} pagination={false} locale={{ emptyText: changeKeyword.trim() || changeAction !== 'all' ? '没有匹配的变更记录' : '暂无变更记录' }} columns={[{ title: '操作时间', dataIndex: 'createTime', width: 180 }, { title: '操作人', dataIndex: 'operator', width: 120 }, { title: '操作类型', dataIndex: 'action', width: 150, render: (value: string) => normalizeChangeAction(value) }, { title: '变更明细', dataIndex: 'detail', render: renderChangeSummary }]} /></> },
       ]} />
     </Drawer>
-    <Modal title="同步表映射" open={mappingOpen} footer={null} width={900} onCancel={() => setMappingOpen(false)}><Table rowKey="id" size="small" pagination={false} dataSource={mappings} columns={[{ title: '序号', dataIndex: 'sortOrder', width: 72 }, { title: '源表', render: (_: unknown, row: TaskMapping) => `${row.sourceDatabase}.${row.sourceTable}` }, { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => `${row.targetDatabase}.${row.targetTable}` }]} /></Modal>
+    <Modal className="sync-mapping-modal" title={`同步表映射${mappingInstance ? ` - 实例 ${mappingInstance.id}` : ''}`} open={mappingOpen} footer={null} width={900} destroyOnHidden onCancel={() => { setMappingOpen(false); setMappingInstance(undefined); }}><Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={mappingInstance ? instanceMappings : mappings} columns={[{ title: '序号', width: 72, render: (_: unknown, __: TaskMapping, index: number) => index + 1 }, { title: '源表', width: 360, render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.sourceDatabase}.${row.sourceTable}`}</span> }, { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.targetDatabase}.${row.targetTable}`}</span> }]} /></Modal>
     <Modal className="realtime-change-detail-modal" title={String(changeDetail?.detailKind ?? '').toLowerCase() === 'edit' ? '任务配置变更' : '变更记录详情'} open={Boolean(changeDetail)} footer={null} width={String(changeDetail?.detailKind ?? '').toLowerCase() === 'edit' ? 1500 : 1050} onCancel={() => setChangeDetail(undefined)}>
       {changeDetail && <ChangeDetailContent detail={changeDetail} />}
     </Modal>

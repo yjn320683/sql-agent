@@ -28,6 +28,7 @@ public class RealtimeProperties {
     private String savepointDir = "";
     private long syncDelayMs = 10000L;
     private boolean stateSyncEnabled = true;
+    private int debugSuccessMinRunningMinutes = 2;
     private Map<String, String> catalogConf = new LinkedHashMap<>();
     private Map<String, String> defaultTableConf = new LinkedHashMap<>();
     private Map<String, String> mysqlDefaultConf = new LinkedHashMap<>();
@@ -72,6 +73,8 @@ public class RealtimeProperties {
     public void setSyncDelayMs(long value) { syncDelayMs = value; }
     public boolean isStateSyncEnabled() { return stateSyncEnabled; }
     public void setStateSyncEnabled(boolean value) { stateSyncEnabled = value; }
+    public int getDebugSuccessMinRunningMinutes() { return debugSuccessMinRunningMinutes; }
+    public void setDebugSuccessMinRunningMinutes(int value) { debugSuccessMinRunningMinutes = value; }
     public Map<String, String> getCatalogConf() { return catalogConf; }
     public void setCatalogConf(Map<String, String> value) { catalogConf = value; }
     public Map<String, String> getDefaultTableConf() { return defaultTableConf; }

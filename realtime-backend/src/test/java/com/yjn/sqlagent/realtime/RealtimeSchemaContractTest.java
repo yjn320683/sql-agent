@@ -16,7 +16,7 @@ class RealtimeSchemaContractTest {
 
     private static final Set<String> REQUIRED_TABLES = Set.of(
             "rt_project", "rt_task", "rt_task_version", "rt_sync_task_config",
-            "rt_sync_task_table_mapping", "rt_task_param", "rt_server", "rt_job_instance",
+            "rt_sync_task_table_mapping", "rt_task_param", "rt_server", "rt_task_instance",
             "rt_task_operation", "rt_task_change_log", "rt_alert", "rt_paimon_business_domain");
 
     @Test
@@ -29,17 +29,46 @@ class RealtimeSchemaContractTest {
         assertEquals(REQUIRED_TABLES, tables.stream().collect(Collectors.toSet()));
         assertEquals(12, tables.size());
         assertTrue(schema.contains("managed_flag TINYINT(1) NOT NULL DEFAULT 1"));
+        assertTrue(schema.contains("idx_task_instance_managed_status"));
+        assertTrue(schema.contains("idx_task_instance_task_mode_create"));
+        assertTrue(schema.contains("idx_task_instance_yarn_application"));
+        assertTrue(schema.contains("idx_task_instance_task_mode_status"));
+        assertTrue(schema.contains("idx_task_operation_instance"));
+        assertTrue(schema.contains("idx_task_change_log_instance"));
+        assertFalse(schema.contains("CREATE TABLE IF NOT EXISTS rt_job_instance"));
+        assertFalse(schema.contains("job_instance_id"));
+        assertFalse(schema.contains("idx_job_"));
         assertFalse(schema.contains("current_draft_version_id"));
         assertFalse(schema.contains("current_release_version_id"));
         assertFalse(schema.contains("last_success_debug_id"));
         assertFalse(schema.contains("debug_enabled"));
         assertFalse(schema.contains("object_type"));
+        assertTrue(schema.contains("INSERT IGNORE INTO rt_task_param"));
+        assertTrue(schema.contains("'sync','mysql_conf','scan.snapshot.fetch.size'"));
+        assertTrue(schema.contains("'sync','table_conf','changelog-producer'"));
+        assertTrue(schema.contains("'sync','flink_conf','high-availability.type'"));
+        assertTrue(schema.contains("INSERT IGNORE INTO rt_paimon_business_domain"));
+    }
+
+    @Test
+    void upgradesLegacyServerAndInstanceNamesToTheUnifiedContract() throws Exception {
+        String instanceUpgrade = resource("db/upgrade-20260903-unified-task-instance.sql");
+        assertTrue(instanceUpgrade.contains("RENAME TABLE rt_job_instance TO rt_task_instance"));
+        assertTrue(instanceUpgrade.contains("CHANGE COLUMN job_instance_id task_instance_id"));
+        assertTrue(instanceUpgrade.contains("RENAME INDEX idx_job_managed_status TO idx_task_instance_managed_status"));
+        assertTrue(instanceUpgrade.contains("RENAME INDEX idx_job_task_mode_create TO idx_task_instance_task_mode_create"));
+        assertTrue(instanceUpgrade.contains("RENAME INDEX idx_job_yarn_application TO idx_task_instance_yarn_application"));
+
+        String serverUpgrade = resource("db/upgrade-20260903-server-database-prefix.sql");
+        assertTrue(serverUpgrade.contains("CHANGE COLUMN database_abbr database_prefix"));
+        assertTrue(serverUpgrade.contains("uk_server_type_database_identity"));
     }
 
     @Test
     void migrationKeepsTheSyncClosureAndMarksEveryImportedInstanceReadOnly() throws Exception {
         String migration = resource("db/migrate_realtime_sync_data.sql");
         assertTrue(migration.contains("WHERE task_type='sync'"));
+        assertTrue(migration.contains("COALESCE(deleted_flag,0)=0"));
         assertTrue(migration.contains("WHERE c.source_server_id=s.id"));
         assertTrue(migration.contains("i.execution_mode, 0,"));
         assertTrue(migration.contains("NULL, o.create_time"));

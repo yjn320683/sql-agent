@@ -46,7 +46,7 @@ public final class TaskSubmitMain {
         PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(spec);
         Map<String, Object> snapshot = new LinkedHashMap<>();
         snapshot.put("taskId", spec.getTaskId());
-        snapshot.put("jobInstanceId", spec.getJobInstanceId());
+        snapshot.put("taskInstanceId", spec.getTaskInstanceId());
         snapshot.put("startType", spec.getStartType());
         snapshot.put("jarPath", command.getJarPath());
         snapshot.put("args", command.maskedArguments());
@@ -64,11 +64,11 @@ public final class TaskSubmitMain {
         StreamExecutionEnvironment environment = StreamExecutionEnvironment.getExecutionEnvironment();
         environment.setParallelism(1);
         environment.fromData("submission-spec-validated").print("realtime-sync-dry-run");
-        environment.execute("realtime-sync-dry-run-" + spec.getTaskId() + "-" + spec.getJobInstanceId());
+        environment.execute("realtime-sync-dry-run-" + spec.getTaskId() + "-" + spec.getTaskInstanceId());
     }
 
     private static void validate(SubmissionSpec spec) {
-        if (spec == null || spec.getTaskId() == null || spec.getJobInstanceId() == null) {
+        if (spec == null || spec.getTaskId() == null || spec.getTaskInstanceId() == null) {
             throw new IllegalArgumentException("提交标识不能为空");
         }
         String taskType = spec.getTask() == null ? "" : spec.getTask().getTaskType();

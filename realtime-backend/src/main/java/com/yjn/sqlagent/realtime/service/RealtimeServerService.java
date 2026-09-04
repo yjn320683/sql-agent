@@ -12,6 +12,7 @@ import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.Comparator;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -41,6 +42,7 @@ public class RealtimeServerService {
             try (ResultSet rows = metadata.getTables(connection.getCatalog(), null, "%", new String[] {"TABLE"})) {
                 while (rows.next()) result.add(rows.getString("TABLE_NAME"));
             }
+            result.sort(String.CASE_INSENSITIVE_ORDER);
             return result;
         } catch (Exception ex) {
             throw new IllegalStateException("读取 MySQL 表列表失败：" + safe(ex), ex);
@@ -56,34 +58,43 @@ public class RealtimeServerService {
                 while (rows.next()) {
                     Map<String, Object> column = new LinkedHashMap<>();
                     column.put("name", rows.getString("COLUMN_NAME"));
+                    column.put("ordinalPosition", rows.getInt("ORDINAL_POSITION"));
                     column.put("type", rows.getString("TYPE_NAME"));
                     column.put("nullable", rows.getInt("NULLABLE") != DatabaseMetaData.columnNoNulls);
                     column.put("comment", rows.getString("REMARKS"));
+                    column.put("defaultValue", rows.getObject("COLUMN_DEF"));
+                    column.put("extra", columnExtra(rows));
                     columns.add(column);
                 }
             }
+            columns.sort(Comparator.comparingInt(column -> ((Number) column.get("ordinalPosition")).intValue()));
+            columns.forEach(column -> column.remove("ordinalPosition"));
             List<String> primaryKeys = new ArrayList<>();
             try (ResultSet rows = metadata.getPrimaryKeys(connection.getCatalog(), null, table)) {
                 Map<Short, String> ordered = new java.util.TreeMap<>();
                 while (rows.next()) ordered.put(rows.getShort("KEY_SEQ"), rows.getString("COLUMN_NAME"));
                 primaryKeys.addAll(ordered.values());
             }
-            return Map.of("table", table, "columns", columns, "primaryKeys", primaryKeys);
+            return Map.of("database", text(server.get("databaseName")), "table", table,
+                    "columns", columns, "primaryKeys", primaryKeys);
         } catch (Exception ex) {
             throw new IllegalStateException("读取 MySQL 表结构失败：" + safe(ex), ex);
         }
     }
 
-    public List<String> commonColumns(long serverId, List<String> tables) {
-        Set<String> common = null;
+    public List<Map<String, Object>> commonColumns(long serverId, List<String> tables) {
+        Map<String, Map<String, Object>> common = null;
         for (String table : tables) {
             @SuppressWarnings("unchecked")
             List<Map<String, Object>> columns = (List<Map<String, Object>>) schema(serverId, table).get("columns");
-            Set<String> names = new LinkedHashSet<>();
-            columns.forEach(column -> names.add(String.valueOf(column.get("name"))));
-            if (common == null) common = names; else common.retainAll(names);
+            Map<String, Map<String, Object>> byName = new LinkedHashMap<>();
+            columns.forEach(column -> byName.put(String.valueOf(column.get("name")), column));
+            if (common == null) common = byName;
+            else common.entrySet().removeIf(entry -> !byName.containsKey(entry.getKey())
+                    || !String.valueOf(entry.getValue().get("type"))
+                            .equalsIgnoreCase(String.valueOf(byName.get(entry.getKey()).get("type"))));
         }
-        return common == null ? List.of() : new ArrayList<>(common);
+        return common == null ? List.of() : new ArrayList<>(common.values());
     }
 
     private Map<String, Object> test(Map<String, Object> server) {
@@ -107,6 +118,16 @@ public class RealtimeServerService {
     private String safe(Exception ex) {
         String value = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
         return value.replaceAll("(?i)(password=)[^&\\s]+", "$1******");
+    }
+    private String columnExtra(ResultSet rows) {
+        try {
+            List<String> values = new ArrayList<>();
+            if ("YES".equalsIgnoreCase(rows.getString("IS_AUTOINCREMENT"))) values.add("auto_increment");
+            if ("YES".equalsIgnoreCase(rows.getString("IS_GENERATEDCOLUMN"))) values.add("generated");
+            return String.join(" ", values);
+        } catch (Exception ignored) {
+            return "";
+        }
     }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 }

@@ -4,14 +4,14 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { getInstanceInfo, getInstanceLogs } from '../api';
 import type { TaskInstance } from '../types';
 
-const ACTIVE_STATUSES = ['submitting', 'running', 'stopping', 'restarting'];
+const ACTIVE_STATUSES = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
 const STATUS_LABEL: Record<string, string> = {
-  submitting: '提交中', running: '运行中', stopping: '停止中', restarting: '重启中',
-  canceled: '已取消', finished: '已完成', failed: '失败', not_running: '未运行',
+  submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
+  canceled: '已取消', killed_success: '已停止(调试成功)', finished: '已完成', failed: '失败', not_running: '未运行',
 };
 const STATUS_COLOR: Record<string, string> = {
-  submitting: 'processing', running: 'success', stopping: 'warning', restarting: 'processing',
-  canceled: 'default', finished: 'success', failed: 'error', not_running: 'default',
+  submitting: 'processing', running: 'success', debug_success_running: 'success', stopping: 'warning', restarting: 'processing',
+  canceled: 'default', killed_success: 'success', finished: 'success', failed: 'error', not_running: 'default',
 };
 
 type RuntimeComponent = 'jobmanager' | 'taskmanager' | 'yarn';

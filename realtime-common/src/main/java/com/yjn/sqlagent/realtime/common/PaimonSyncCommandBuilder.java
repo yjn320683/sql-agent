@@ -6,7 +6,6 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
-import java.util.Set;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
@@ -14,9 +13,6 @@ import java.util.stream.Collectors;
 public class PaimonSyncCommandBuilder {
 
     private static final Pattern DOMAIN = Pattern.compile("[a-z0-9]+");
-    private static final Set<String> ALLOWED_MYSQL_CONF_OVERRIDES = Set.of(
-            "scan.snapshot.fetch.size", "scan.incremental.snapshot.chunk.size");
-
     public Command build(SubmissionSpec spec) {
         required(spec, "提交配置不存在");
         SubmissionSpec.TaskSpec task = required(spec.getTask(), "任务配置不存在");
@@ -40,23 +36,23 @@ public class PaimonSyncCommandBuilder {
         option(args, "--database", required(database, "Paimon 目标库未配置"));
         Endpoint endpoint = endpoint(required(server.getAddress(), "Server 地址未配置"));
         List<String> tables = strings(cdc.get("selectedTables"));
-        String includingTables = tables.isEmpty() ? text(cdc.get("includingTables"))
-                : tables.stream().map(this::regexLiteral).collect(Collectors.joining("|"));
+        if (tables.isEmpty()) throw new IllegalArgumentException("请至少选择一张 MySQL 源表");
+        String includingTables = tables.stream().map(this::regexLiteral).collect(Collectors.joining("|"));
         option(args, "--including_tables", includingTables);
         option(args, "--excluding_tables", text(cdc.get("excludingTables")));
         option(args, "--merge_shards", text(cdc.get("mergeShards")));
-        option(args, "--mode", text(cdc.get("mode")));
+        option(args, "--mode", "combined");
         option(args, "--ignore_incompatible", text(cdc.get("ignoreIncompatible")));
-        option(args, "--table_prefix", tablePrefix(database, cdc, server));
+        String tablePrefix = tablePrefix(database, cdc, server);
+        validateTargetIdentifiers(database, tablePrefix, text(cdc.get("tableSuffix")), tables);
+        option(args, "--table_prefix", tablePrefix);
         option(args, "--table_suffix", text(cdc.get("tableSuffix")));
         csv(args, "--type_mapping", strings(cdc.get("typeMappings")));
         csv(args, "--metadata_column", strings(cdc.get("metadataColumns")));
         validateTableConfigs(tables, objectMap(cdc.get("tableConfigs")));
         appendTableConfigs(args, tables, objectMap(cdc.get("tableConfigs")));
         Map<String, String> mysql = new LinkedHashMap<>(runtime.getMysqlDefaultConf());
-        stringMap(cdc.get("mysqlConfOverrides")).forEach((key, value) -> {
-            if (ALLOWED_MYSQL_CONF_OVERRIDES.contains(key)) mysql.put(key, value);
-        });
+        mysql.putAll(stringMap(cdc.get("mysqlConfOverrides")));
         mysql.put("hostname", endpoint.host);
         mysql.put("port", String.valueOf(endpoint.port));
         mysql.put("username", required(server.getAccount(), "Server 账号未配置"));
@@ -101,21 +97,22 @@ public class PaimonSyncCommandBuilder {
     }
 
     private String tablePrefix(String database, Map<String, Object> cdc, SubmissionSpec.ServerSnapshot server) {
-        String existing = text(cdc.get("tablePrefix"));
-        if (existing.startsWith(database + "_")) return existing;
-        String domain = first(text(cdc.get("domainPrefix")), domainFromExistingPrefix(cdc, server), existing);
+        String sourceDatabase = first(text(cdc.get("databaseName")), text(server.getDatabaseName()));
+        String domain = text(cdc.get("domainPrefix"));
         if (!DOMAIN.matcher(domain).matches()) throw new IllegalArgumentException("业务域只能包含小写字母和数字");
-        return database + "_" + domain + "_" + required(server.getDatabaseAbbr(), "Server 库缩写未配置") + "_";
+        return database + "_"
+                + (text(server.getDatabasePrefix()).isEmpty() ? "" : text(server.getDatabasePrefix()) + "_")
+                + required(sourceDatabase, "MySQL 源库不能为空") + "_" + domain + "_";
     }
 
-    private String domainFromExistingPrefix(Map<String, Object> cdc, SubmissionSpec.ServerSnapshot server) {
-        String prefix = text(cdc.get("tablePrefix"));
-        String originalDatabase = text(cdc.get("targetDatabase"));
-        String databaseAbbr = text(server.getDatabaseAbbr());
-        String suffix = databaseAbbr.isEmpty() ? "" : "_" + databaseAbbr + "_";
-        if (prefix.isEmpty() || originalDatabase.isEmpty() || suffix.isEmpty()
-                || !prefix.startsWith(originalDatabase + "_") || !prefix.endsWith(suffix)) return "";
-        return prefix.substring((originalDatabase + "_").length(), prefix.length() - suffix.length());
+    private void validateTargetIdentifiers(String database, String prefix, String suffix, List<String> tables) {
+        if (database.length() > 128) throw new IllegalArgumentException("Paimon 目标库名称不能超过 128 个字符");
+        if (tables.isEmpty() && prefix.length() > 128) throw new IllegalArgumentException("Paimon 目标表前缀不能超过 128 个字符");
+        for (String table : tables) {
+            String target = prefix + table + suffix;
+            if (target.indexOf('$') >= 0) throw new IllegalArgumentException("Paimon 目标表名不能包含 $，该字符用于系统表：" + target);
+            if (target.length() > 128) throw new IllegalArgumentException("Paimon 目标表名不能超过 128 个字符：" + target);
+        }
     }
 
     private void csvWithPrefix(List<String> args, String name, String table, List<String> values) {

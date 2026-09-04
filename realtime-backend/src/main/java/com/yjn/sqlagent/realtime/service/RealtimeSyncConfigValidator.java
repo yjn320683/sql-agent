@@ -3,7 +3,6 @@ package com.yjn.sqlagent.realtime.service;
 import com.yjn.sqlagent.realtime.model.SyncTaskRequest;
 import java.math.BigDecimal;
 import java.util.ArrayList;
-import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
 import java.util.List;
@@ -20,11 +19,14 @@ public class RealtimeSyncConfigValidator {
     private static final long MIN_PROCESS_MEMORY_BYTES = 1024L * 1024L * 1024L;
     private static final Pattern MEMORY = Pattern.compile("^([0-9]+(?:\\.[0-9]+)?)\\s*([A-Za-z]+)$");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
-    private static final Set<String> CDC_MODES = Set.of("divided", "combined");
+    private static final Set<String> CDC_MODES = Set.of("combined");
     private static final Set<String> METADATA_COLUMNS = Set.of("database_name", "table_name", "op_ts");
     private static final Set<String> TYPE_MAPPINGS = Set.of(
             "to-nullable", "to-string", "char-to-string", "tinyint1-not-bool",
             "longtext-to-bytes", "bigint-unsigned-to-bigint");
+    private static final Set<String> NULL_PROPAGATING_COMPUTED_FUNCTIONS = Set.of(
+            "year", "month", "day", "hour", "minute", "second", "date_format",
+            "substring", "truncate", "cast", "upper", "lower", "trim");
     private final RealtimeServerService servers;
 
     public RealtimeSyncConfigValidator(RealtimeServerService servers) {
@@ -67,7 +69,8 @@ public class RealtimeSyncConfigValidator {
             if (commonFields == null) commonFields = new LinkedHashSet<>(fields);
             else commonFields.retainAll(fields);
         }
-        validateTableFieldReferences(cdc.get("tableConfOverrides"), commonFields == null ? Set.of() : commonFields);
+        validateTableFieldReferences(cdc.get("tableConfOverrides"), commonFields == null ? Set.of() : commonFields,
+                strings(cdc.get("metadataColumns"), false, "元数据列"));
     }
 
     private void validateFixedConfig(Map<String, Object> taskConfig, Map<String, Object> cdc) {
@@ -128,10 +131,12 @@ public class RealtimeSyncConfigValidator {
                 ? strings(config.get("primaryKeys"), true, table + " 主键") : List.of();
         List<String> partitionKeys = config.containsKey("partitionKeys")
                 ? strings(config.get("partitionKeys"), true, table + " 分区键") : List.of();
-        Set<String> sourceFields = fields(schema);
-        Set<String> computedNames = validateComputedColumns(table, config.get("computedColumns"), sourceFields);
+        Map<String, Map<String, Object>> sourceColumns = columns(schema);
+        Set<String> sourceFields = sourceColumns.keySet();
+        Map<String, ComputedColumnDefinition> computedColumns = validateComputedColumns(
+                table, config.get("computedColumns"), sourceColumns);
         Set<String> finalFields = new LinkedHashSet<>(sourceFields);
-        finalFields.addAll(computedNames);
+        finalFields.addAll(computedColumns.keySet());
         List<String> sourcePrimaryKeys = strings(schema.get("primaryKeys"), false, table + " 源表主键");
         if (sourcePrimaryKeys.isEmpty() && customPrimaryKeys.isEmpty()) {
             throw new IllegalArgumentException("MySQL CDC 源表无主键，请配置私有主键：" + table);
@@ -146,11 +151,13 @@ public class RealtimeSyncConfigValidator {
         if (!partitionKeys.isEmpty() && partitionKeys.containsAll(effectivePrimaryKeys)) {
             throw new IllegalArgumentException("源表 " + table + " 的分区键不能覆盖全部最终主键，请至少保留一个非分区主键字段");
         }
+        validateKeyNullability(table, effectivePrimaryKeys, partitionKeys, sourceColumns, computedColumns);
     }
 
-    private Set<String> validateComputedColumns(String table, Object value, Set<String> sourceFields) {
+    private Map<String, ComputedColumnDefinition> validateComputedColumns(String table, Object value,
+            Map<String, Map<String, Object>> sourceColumns) {
         List<String> expressions = computedExpressions(value);
-        Set<String> names = new LinkedHashSet<>();
+        Map<String, ComputedColumnDefinition> definitionsByName = new LinkedHashMap<>();
         Set<String> definitions = new LinkedHashSet<>();
         for (String expression : expressions) {
             if (!definitions.add(expression)) throw new IllegalArgumentException("源表 " + table + " 的计算列表达式不能重复：" + expression);
@@ -169,8 +176,8 @@ public class RealtimeSyncConfigValidator {
             }
             String name = expression.substring(0, equals).trim();
             if (!IDENTIFIER.matcher(name).matches()) throw new IllegalArgumentException("源表 " + table + " 的计算列名称格式错误：" + name);
-            if (!names.add(name)) throw new IllegalArgumentException("源表 " + table + " 的计算列名称不能重复：" + name);
-            if (sourceFields.contains(name)) throw new IllegalArgumentException("源表 " + table + " 的计算列名称与源字段重复：" + name);
+            if (definitionsByName.containsKey(name)) throw new IllegalArgumentException("源表 " + table + " 的计算列名称不能重复：" + name);
+            if (sourceColumns.containsKey(name)) throw new IllegalArgumentException("源表 " + table + " 的计算列名称与源字段重复：" + name);
             String functionName = expression.substring(equals + 1, open).trim();
             if (!IDENTIFIER.matcher(functionName).matches()) throw new IllegalArgumentException("源表 " + table + " 的计算列函数名称格式错误：" + functionName);
             List<String> arguments = splitArguments(expression.substring(open + 1, close).trim());
@@ -178,11 +185,59 @@ public class RealtimeSyncConfigValidator {
             if ("date_format".equals(functionName) && arguments.size() >= 2 && quoted(arguments.get(1))) {
                 throw new IllegalArgumentException("date_format 格式参数不需要单引号或双引号");
             }
-            if (!arguments.isEmpty() && !sourceFields.contains(arguments.get(0))) {
+            String referenceField = arguments.isEmpty() ? null : arguments.get(0);
+            if (referenceField != null && !sourceColumns.containsKey(referenceField)) {
                 throw new IllegalArgumentException("源表 " + table + " 的计算列引用字段不存在：" + arguments.get(0));
             }
+            boolean safeAsKey = "now".equals(functionName) && arguments.isEmpty();
+            if (NULL_PROPAGATING_COMPUTED_FUNCTIONS.contains(functionName) && referenceField != null) {
+                safeAsKey = Boolean.FALSE.equals(sourceColumns.get(referenceField).get("nullable"));
+            }
+            definitionsByName.put(name, new ComputedColumnDefinition(
+                    expression, functionName, referenceField, safeAsKey));
         }
-        return names;
+        return definitionsByName;
+    }
+
+    private void validateKeyNullability(String table, List<String> primaryKeys, List<String> partitionKeys,
+            Map<String, Map<String, Object>> sourceColumns,
+            Map<String, ComputedColumnDefinition> computedColumns) {
+        for (String key : primaryKeys) {
+            String keyType = partitionKeys.contains(key) ? "主键/分区键" : "主键";
+            ComputedColumnDefinition computed = computedColumns.get(key);
+            if (computed != null) {
+                if (!computed.safeAsKey) throw new IllegalArgumentException(computed.nullabilityError(table, keyType));
+                continue;
+            }
+            Map<String, Object> source = sourceColumns.get(key);
+            if (source == null || !Boolean.FALSE.equals(source.get("nullable"))) {
+                throw new IllegalArgumentException("源表 " + table + " 的" + keyType + "字段 " + key
+                        + " 允许 NULL，不能作为 Paimon " + keyType);
+            }
+        }
+    }
+
+    private static final class ComputedColumnDefinition {
+        private final String expression;
+        private final String functionName;
+        private final String referenceField;
+        private final boolean safeAsKey;
+
+        private ComputedColumnDefinition(String expression, String functionName,
+                String referenceField, boolean safeAsKey) {
+            this.expression = expression;
+            this.functionName = functionName;
+            this.referenceField = referenceField;
+            this.safeAsKey = safeAsKey;
+        }
+
+        private String nullabilityError(String table, String keyType) {
+            if (NULL_PROPAGATING_COMPUTED_FUNCTIONS.contains(functionName) && referenceField != null) {
+                return "源表 " + table + " 的计算列 " + expression + " 引用字段 " + referenceField
+                        + " 允许 NULL，结果可能为空，不能作为" + keyType;
+            }
+            return "源表 " + table + " 的计算列 " + expression + " 无法证明结果非空，不能作为" + keyType;
+        }
     }
 
     private void validateBucketFunction(String table, Object rawOverrides, List<String> effectivePrimaryKeys,
@@ -203,18 +258,25 @@ public class RealtimeSyncConfigValidator {
         }
     }
 
-    private void validateTableFieldReferences(Object value, Set<String> fields) {
+    private void validateTableFieldReferences(Object value, Set<String> fields, List<String> metadataColumns) {
         if (!(value instanceof Map<?, ?>)) return;
         Map<?, ?> overrides = (Map<?, ?>) value;
         validateReferencedFields(overrides, "bucket-key", "Bucket Key", fields);
-        validateReferencedFields(overrides, "sequence.field", "Sequence Field", fields);
+        Set<String> sequenceFields = new LinkedHashSet<>(fields);
+        sequenceFields.addAll(metadataColumns);
+        validateReferencedFields(overrides, "sequence.field", "Sequence Field", "目标字段", sequenceFields);
         validateReferencedFields(overrides, "changelog-producer.row-deduplicate-ignore-fields", "Row Deduplicate Ignore Fields", fields);
     }
 
     private void validateReferencedFields(Map<?, ?> overrides, String key, String label, Set<String> fields) {
+        validateReferencedFields(overrides, key, label, "源字段", fields);
+    }
+
+    private void validateReferencedFields(Map<?, ?> overrides, String key, String label,
+            String fieldScope, Set<String> fields) {
         if (!overrides.containsKey(key)) return;
         for (String reference : strings(overrides.get(key), true, label)) {
-            if (!fields.contains(reference)) throw new IllegalArgumentException(label + " 引用的源字段不存在：" + reference);
+            if (!fields.contains(reference)) throw new IllegalArgumentException(label + " 引用的" + fieldScope + "不存在：" + reference);
         }
     }
 
@@ -225,12 +287,19 @@ public class RealtimeSyncConfigValidator {
     }
 
     private Set<String> fields(Map<String, Object> schema) {
-        Set<String> result = new HashSet<>();
+        return columns(schema).keySet();
+    }
+
+    private Map<String, Map<String, Object>> columns(Map<String, Object> schema) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
         Object columns = schema.get("columns");
         if (columns instanceof Iterable<?>) {
-            for (Object column : (Iterable<?>) columns) result.add(text(objectMap(column, "源表字段格式不正确").get("name")));
+            for (Object column : (Iterable<?>) columns) {
+                Map<String, Object> item = objectMap(column, "源表字段格式不正确");
+                String name = text(item.get("name"));
+                if (!name.isEmpty()) result.put(name, item);
+            }
         }
-        result.remove("");
         return result;
     }
 

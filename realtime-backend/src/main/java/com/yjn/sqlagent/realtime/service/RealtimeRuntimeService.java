@@ -89,6 +89,10 @@ public class RealtimeRuntimeService {
         Map<String, Object> effectiveTask = effectiveTask(task, action, debug);
         validateStart(action);
         validateStatePath(taskId, action);
+        if (!debug) validateRequiredRecovery(taskId, action);
+        if (debug && repository.hasActiveManagedDebugInstance(taskId)) {
+            throw new IllegalStateException("当前任务已有正在提交或运行的调试实例");
+        }
         if (!debug && repository.hasActiveManagedInstance(taskId)) {
             throw new IllegalStateException("任务已有本平台管理的活动实例，请勿重复提交");
         }
@@ -139,8 +143,13 @@ public class RealtimeRuntimeService {
             throw new IllegalStateException("历史导入实例为只读，禁止停止或接管");
         }
         String currentStatus = text(instance.get("status")).toLowerCase(Locale.ROOT);
-        if (!List.of("submitting", "running", "stopping", "restarting").contains(currentStatus)) return instance;
-        String stopType = text(action.getStopType(), "direct").toLowerCase(Locale.ROOT);
+        if (!List.of("submitting", "running", "debug_success_running", "stopping", "restarting").contains(currentStatus)) return instance;
+        boolean debug = "DEBUG".equalsIgnoreCase(text(instance.get("executionMode")));
+        String requestedStopType = text(action.getStopType(), debug ? "direct" : "savepoint").toLowerCase(Locale.ROOT);
+        final String stopType = debug ? "direct" : requestedStopType;
+        if (!debug && !"savepoint".equals(stopType)) {
+            throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
+        }
         if (!List.of("direct", "savepoint").contains(stopType)) {
             throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
         }
@@ -149,11 +158,13 @@ public class RealtimeRuntimeService {
         }
         String jobId = text(instance.get("jobId"));
         String applicationId = text(instance.get("yarnApplicationId"));
+        if (!debug && "savepoint".equals(stopType) && jobId.isEmpty()) {
+            throw new IllegalStateException("正式实例缺少 Flink JobID，禁止降级为 YARN kill；请先刷新实例状态");
+        }
         long operationId = repository.startOperation(taskId, instanceId,
                 "DEBUG".equals(instance.get("executionMode")) ? "DEBUG_STOP" : "STOP", actor,
                 json(Map.of("stopType", stopType)));
         repository.updateInstanceRuntime(instanceId, "stopping", text(instance.get("lastRuntimeLog")), null);
-        boolean debug = "DEBUG".equals(instance.get("executionMode"));
         if (!debug) repository.changeTaskStatus(taskId, "stopping");
         try {
             if (!operationExecutor.submit(taskId, debug ? "调试停止" : "停止",
@@ -204,7 +215,8 @@ public class RealtimeRuntimeService {
                     empty(trackingUrl), tail(mask(startupLog), 1024 * 1024), null);
             if (!debug) repository.changeTaskStatus(taskId, status);
             Map<String, Object> operationResult = new LinkedHashMap<>();
-            operationResult.put("instanceId", instanceId); operationResult.put("jobId", jobId);
+            operationResult.put("taskInstanceId", instanceId); operationResult.put("instanceId", instanceId);
+            operationResult.put("jobId", jobId);
             operationResult.put("yarnApplicationId", applicationId);
             operationResult.put("startType", text(action.getStartType(), "direct"));
             operationResult.put("statePath", text(action.getStatePath()));
@@ -258,7 +270,10 @@ public class RealtimeRuntimeService {
             }
             String savepoint = parseSavepoint(combinedOutput);
             repository.updateSavepointPath(instanceId, savepoint);
-            String terminalStatus = "savepoint".equals(stopType) ? "finished" : "canceled";
+            String terminalStatus = debug
+                    ? ("debug_success_running".equalsIgnoreCase(text(instance.get("status")))
+                            ? "killed_success" : "canceled")
+                    : ("savepoint".equals(stopType) ? "finished" : "canceled");
             repository.updateInstanceSubmission(instanceId, terminalStatus, empty(jobId), empty(applicationId),
                     text(instance.get("trackingUrl")),
                     append(text(instance.get("startupLog")), mask(combinedOutput)), null);
@@ -415,7 +430,7 @@ public class RealtimeRuntimeService {
             String path = text(instance.get("savepointPath"));
             if (!path.isEmpty() && ("savepoint".equalsIgnoreCase(type) || text(type).isEmpty())) {
                 boolean exists = result.stream().anyMatch(item -> path.equals(text(item.get("path"))));
-                if (!exists) result.add(Map.of("type", "savepoint", "path", path,
+                if (!exists && stateHistoryReader.exists(taskId, "savepoint", path)) result.add(Map.of("type", "savepoint", "path", path,
                         "label", text(instance.get("updateTime")) + " (" + path.substring(path.lastIndexOf('/') + 1) + ")",
                         "instanceId", instance.get("id"), "createTime", instance.get("updateTime")));
             }
@@ -425,9 +440,12 @@ public class RealtimeRuntimeService {
 
     public Object logComponents(long taskId, long instanceId) {
         Map<String, Object> instance = repository.requiredInstance(taskId, instanceId);
-        if (isTerminal(text(instance.get("status")))) return List.of();
         List<Map<String, String>> result = new ArrayList<>();
+        result.add(Map.of("value", "all", "label", "全部日志"));
+        result.add(Map.of("value", "startup", "label", "启动日志"));
         result.add(Map.of("value", "jobmanager", "label", "JobManager"));
+        result.add(Map.of("value", "taskmanager", "label", "TaskManager"));
+        if (isTerminal(text(instance.get("status"))) || text(instance.get("trackingUrl")).isEmpty()) return result;
         Object rows = objectMap(fetch(instance, "/taskmanagers")).get("taskmanagers");
         if (rows instanceof List) {
             for (Object row : (List<?>) rows) {
@@ -466,6 +484,39 @@ public class RealtimeRuntimeService {
         return result;
     }
 
+    public Map<String, Object> logPage(long taskId, long instanceId, String component,
+            String containerId, int cursor, int limit) {
+        String selected = text(component, "all").toLowerCase(Locale.ROOT);
+        if (selected.startsWith("taskmanager:") && text(containerId).isEmpty()) {
+            containerId = selected.substring("taskmanager:".length());
+            selected = "taskmanager";
+        }
+        Object payload;
+        if ("startup".equals(selected)) {
+            payload = Map.of("content", text(repository.requiredInstance(taskId, instanceId).get("startupLog")));
+        } else if ("taskmanager".equals(selected) && !text(containerId).isEmpty()) {
+            payload = logs(taskId, instanceId, "taskmanager:" + containerId, null);
+        } else if ("jobmanager".equals(selected)) {
+            payload = logs(taskId, instanceId, "jobmanager", null);
+        } else {
+            payload = logs(taskId, instanceId, "yarn", null);
+            selected = "all";
+        }
+        String content = payload instanceof Map ? text(((Map<?, ?>) payload).get("content")) : text(payload);
+        String[] lines = content.split("\\R", -1);
+        int safeCursor = Math.max(0, Math.min(cursor, lines.length));
+        int safeLimit = Math.max(20, Math.min(limit, 5000));
+        int end = Math.min(lines.length, safeCursor + safeLimit);
+        List<String> page = new ArrayList<>();
+        for (int index = safeCursor; index < end; index++) page.add(lines[index]);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("instanceId", instanceId); result.put("lines", page);
+        result.put("nextCursor", end); result.put("truncated", end < lines.length);
+        result.put("component", selected); result.put("containerId", empty(text(containerId)));
+        result.put("updatedAt", java.time.OffsetDateTime.now().toString());
+        return result;
+    }
+
     public String downloadLog(long taskId, long instanceId, String component, String file) {
         Object value = logs(taskId, instanceId, component, file);
         if (value instanceof Map) return text(((Map<?, ?>) value).get("content"));
@@ -488,7 +539,7 @@ public class RealtimeRuntimeService {
         for (Map<String, Object> operation : repository.expiredActiveOperations()) {
             long taskId = number(operation.get("taskId"));
             if (operationExecutor.isRunning(taskId)) continue;
-            Long instanceId = nullableNumber(operation.get("jobInstanceId"));
+            Long instanceId = nullableNumber(operation.get("taskInstanceId"));
             if (instanceId == null) {
                 repository.addAlertIfOpenAbsent(taskId, "warning", "同步任务操作超时待人工确认",
                         "操作超过截止时间但未关联运行实例，无法确认外部作业状态，任务锁未自动释放");
@@ -526,6 +577,13 @@ public class RealtimeRuntimeService {
         repository.updateInstanceIdentifiers(instanceId, observed.jobId,
                 observed.applicationId, observed.trackingUrl);
         String status = observed.status;
+        if ("DEBUG".equalsIgnoreCase(text(instance.get("executionMode"))) && "running".equals(status)) {
+            Map<String, Object> refreshed = new LinkedHashMap<>(instance);
+            refreshed.put("jobId", observed.jobId); refreshed.put("yarnApplicationId", observed.applicationId);
+            refreshed.put("trackingUrl", observed.trackingUrl);
+            if ("debug_success_running".equalsIgnoreCase(text(instance.get("status")))
+                    || hasDebugSuccessEvidence(refreshed)) status = "debug_success_running";
+        }
         if ("unknown".equals(status)) {
             int failures = statusDetectionFailures.merge(instanceId, 1, Integer::sum);
             if (failures >= 3) {
@@ -545,7 +603,8 @@ public class RealtimeRuntimeService {
             if (!"DEBUG".equals(instance.get("executionMode"))) {
                 repository.changeTaskStatus(taskId, isTerminal(status) ? ("failed".equals(status) ? "failed" : "not_running") : status);
             }
-            if ("stopping".equals(previous) && ("running".equals(status) || "restarting".equals(status))) {
+            if ("stopping".equals(previous) && ("running".equals(status)
+                    || "debug_success_running".equals(status) || "restarting".equals(status))) {
                 repository.addAlert(taskId, "warning", "同步任务停止未生效",
                         "停止请求后外部作业仍为 " + status + "，任务状态已恢复");
             } else if ("failed".equals(status)) {
@@ -555,12 +614,38 @@ public class RealtimeRuntimeService {
                 repository.addAlert(taskId, "warning", "同步任务状态纠偏",
                         "外部作业状态为 " + status + "，数据库状态从 " + previous + " 修正");
             }
-            if (manual && actor != null && !actor.trim().isEmpty()) {
-                repository.addChange(taskId, null, null, instanceId, actor, "REFRESH",
-                        "手动刷新状态：" + previous + " → " + status);
+            if (!"DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
+                String changeActor = actor == null || actor.trim().isEmpty() ? "system" : actor.trim();
+                repository.addChange(taskId, null, null, instanceId, changeActor, "REFRESH",
+                        (manual ? "手动刷新" : "状态对账") + "：实例状态 " + previous + " → " + status);
             }
         }
         return repository.requiredInstance(taskId, instanceId);
+    }
+
+    /** 调试通过必须持续运行到最短时长，并至少完成一次当前运行窗口内的 Checkpoint。 */
+    private boolean hasDebugSuccessEvidence(Map<String, Object> instance) {
+        String jobId = text(instance.get("jobId"));
+        if (jobId.isEmpty() || text(instance.get("trackingUrl")).isEmpty()) return false;
+        try {
+            Map<String, Object> job = objectMap(fetch(instance, "/jobs/" + jobId));
+            Map<String, Object> timestamps = objectMap(job.get("timestamps"));
+            long runningTimestamp = number(timestamps.get("RUNNING"));
+            long now = number(job.get("now"));
+            if (now <= 0) now = System.currentTimeMillis();
+            int configured = properties.getDebugSuccessMinRunningMinutes();
+            long minimum = Math.max(1, configured) * 60_000L;
+            if (runningTimestamp <= 0 || now - runningTimestamp <= minimum) return false;
+            Map<String, Object> checkpoint = objectMap(fetch(instance, "/jobs/" + jobId + "/checkpoints"));
+            Map<String, Object> counts = objectMap(checkpoint.get("counts"));
+            if (number(counts.get("completed")) < 1) return false;
+            Map<String, Object> latest = objectMap(checkpoint.get("latest"));
+            Map<String, Object> completed = objectMap(latest.get("completed"));
+            long acknowledged = number(completed.get("latest_ack_timestamp"));
+            return acknowledged >= runningTimestamp && acknowledged <= now;
+        } catch (RuntimeException ignored) {
+            return false;
+        }
     }
 
     private ObservedStatus observeStatus(Map<String, Object> source) {
@@ -661,7 +746,7 @@ public class RealtimeRuntimeService {
         result.put("submission", Map.of(
                 "taskId", spec.getTaskId(),
                 "versionId", spec.getVersionId() == null ? "" : spec.getVersionId(),
-                "jobInstanceId", spec.getJobInstanceId() == null ? "" : spec.getJobInstanceId(),
+                "taskInstanceId", spec.getTaskInstanceId() == null ? "" : spec.getTaskInstanceId(),
                 "startType", text(spec.getStartType(), "direct"),
                 "executionMode", text(spec.getExecutionMode(), "PRODUCTION")));
         return result;
@@ -670,7 +755,7 @@ public class RealtimeRuntimeService {
     private SubmissionSpec spec(Map<String, Object> task, Long versionId, Long instanceId,
             TaskActionRequest action, String mode) {
         SubmissionSpec spec = new SubmissionSpec();
-        spec.setTaskId(number(task.get("id"))); spec.setVersionId(versionId); spec.setJobInstanceId(instanceId);
+        spec.setTaskId(number(task.get("id"))); spec.setVersionId(versionId); spec.setTaskInstanceId(instanceId);
         spec.setJobName(text(task.get("name"))); spec.setStartType(text(action.getStartType(), "direct"));
         spec.setStatePath(text(action.getStatePath())); spec.setExecutionMode(mode);
         SubmissionSpec.TaskSpec taskSpec = new SubmissionSpec.TaskSpec();
@@ -691,7 +776,7 @@ public class RealtimeRuntimeService {
         Map<String, Object> source = repository.requiredServer(serverId, true);
         SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
         server.setId(serverId); server.setName(text(source.get("name"))); server.setAddress(text(source.get("address")));
-        server.setDatabaseName(text(source.get("databaseName"))); server.setDatabaseAbbr(text(source.get("databaseAbbr")));
+        server.setDatabaseName(text(source.get("databaseName"))); server.setDatabasePrefix(text(source.get("databasePrefix")));
         server.setAccount(text(source.get("account"))); server.setPassword(text(source.get("password")));
         spec.setServers(List.of(server));
         spec.setConfigHash(sha256(json(spec).getBytes(StandardCharsets.UTF_8)));
@@ -722,12 +807,17 @@ public class RealtimeRuntimeService {
         String debugDatabase = text(properties.getPaimonDebugTargetDatabase(), "paimon_debug");
         String suffix = text(properties.getDebugTableSuffix(), "_debug");
         String domain = text(cdc.get("domainPrefix"));
-        String databaseAbbr = "";
-        try { databaseAbbr = text(repository.requiredServer(number(task.get("sourceServerId")), true).get("databaseAbbr")); }
+        String databasePrefix = "";
+        String sourceDatabase = text(cdc.get("databaseName"));
+        try {
+            Map<String, Object> server = repository.requiredServer(number(task.get("sourceServerId")), true);
+            databasePrefix = text(server.get("databasePrefix"));
+            if (sourceDatabase.isEmpty()) sourceDatabase = text(server.get("databaseName"));
+        }
         catch (RuntimeException ignored) { }
         String prefix;
-        if (!domain.isEmpty() && !databaseAbbr.isEmpty()) prefix = debugDatabase + "_" + domain + "_" + databaseAbbr + "_";
-        else if (!domain.isEmpty()) prefix = debugDatabase + "_" + domain + "_";
+        if (!domain.isEmpty() && !sourceDatabase.isEmpty()) prefix = debugDatabase + "_"
+                + (databasePrefix.isEmpty() ? "" : databasePrefix + "_") + sourceDatabase + "_" + domain + "_";
         else {
             String productionPrefix = text(cdc.get("tablePrefix"));
             String productionDatabase = text(cdc.get("targetDatabase"));
@@ -751,7 +841,7 @@ public class RealtimeRuntimeService {
             byte[] bytes = mapper.writeValueAsBytes(spec);
             String hash = sha256(bytes);
             Path dir = Path.of(properties.getSubmissionDir(), "tasks", String.valueOf(spec.getTaskId()),
-                    "instances", String.valueOf(spec.getJobInstanceId()));
+                    "instances", String.valueOf(spec.getTaskInstanceId()));
             Files.createDirectories(dir);
             Path file = dir.resolve("job-config.json");
             Files.write(file, bytes);
@@ -760,7 +850,7 @@ public class RealtimeRuntimeService {
             String prefix = text(properties.getSubmissionUriPrefix());
             if (prefix.isEmpty()) return new StoredSpec(file.toUri().toString(), hash);
             String uri = prefix.replaceAll("/+$", "") + "/tasks/" + spec.getTaskId() + "/instances/"
-                    + spec.getJobInstanceId() + "/job-config.json";
+                    + spec.getTaskInstanceId() + "/job-config.json";
             String parent = uri.substring(0, uri.lastIndexOf('/'));
             CommandResult mkdir = execute(List.of("hdfs", "dfs", "-mkdir", "-p", parent), 60);
             if (mkdir.exitCode != 0) throw new IllegalStateException("创建 HDFS 提交目录失败：" + mkdir.output);
@@ -805,7 +895,7 @@ public class RealtimeRuntimeService {
 
     private String pipelineName(SubmissionSpec spec) {
         String name = text(spec.getJobName());
-        String instanceId = spec.getJobInstanceId() == null ? "<job-instance-id>" : String.valueOf(spec.getJobInstanceId());
+        String instanceId = spec.getTaskInstanceId() == null ? "<task-instance-id>" : String.valueOf(spec.getTaskInstanceId());
         String taskId = spec.getTaskId() == null || spec.getTaskId() <= 0 ? "<task-id>" : String.valueOf(spec.getTaskId());
         if ("DEBUG".equalsIgnoreCase(spec.getExecutionMode())) {
             return name + "-debug-" + instanceId;
@@ -817,7 +907,7 @@ public class RealtimeRuntimeService {
     private String checkpointPath(SubmissionSpec spec) {
         String root = properties.getCheckpointDir().replaceAll("/+$", "");
         String taskId = spec.getTaskId() == null || spec.getTaskId() <= 0 ? "<task-id>" : String.valueOf(spec.getTaskId());
-        String instanceId = spec.getJobInstanceId() == null ? "<job-instance-id>" : String.valueOf(spec.getJobInstanceId());
+        String instanceId = spec.getTaskInstanceId() == null ? "<task-instance-id>" : String.valueOf(spec.getTaskInstanceId());
         if ("DEBUG".equalsIgnoreCase(spec.getExecutionMode())) {
             return root + "/debug/task-" + taskId + "/" + instanceId;
         }
@@ -827,11 +917,11 @@ public class RealtimeRuntimeService {
     private String previewSubmissionFile(SubmissionSpec spec) {
         String taskId = spec.getTaskId() == null || spec.getTaskId() <= 0
                 ? "<task-id>" : String.valueOf(spec.getTaskId());
-        String relative = "/tasks/" + taskId + "/instances/<job-instance-id>/job-config.json";
+        String relative = "/tasks/" + taskId + "/instances/<task-instance-id>/job-config.json";
         String prefix = text(properties.getSubmissionUriPrefix());
         if (!prefix.isEmpty()) return prefix.replaceAll("/+$", "") + relative;
         return Path.of(properties.getSubmissionDir(), "tasks", taskId, "instances",
-                "<job-instance-id>", "job-config.json").toString();
+                "<task-instance-id>", "job-config.json").toString();
     }
 
     private List<String> stopCommand(long taskId, String jobId, String applicationId, String stopType) {
@@ -1199,7 +1289,7 @@ public class RealtimeRuntimeService {
             default: return "unknown";
         }
     }
-    private boolean isTerminal(String status) { return List.of("failed", "canceled", "finished").contains(status); }
+    private boolean isTerminal(String status) { return List.of("failed", "canceled", "finished", "killed_success").contains(status); }
     private void validateStart(TaskActionRequest action) {
         String start = text(action.getStartType(), "direct").toLowerCase(Locale.ROOT);
         if (!List.of("direct", "checkpoint", "savepoint").contains(start)) throw new IllegalArgumentException("启动类型不正确");
@@ -1218,6 +1308,20 @@ public class RealtimeRuntimeService {
         String statePath = text(action.getStatePath());
         if (!stateHistoryReader.exists(taskId, start, statePath)) {
             throw new IllegalArgumentException("所选 " + start + " 已不存在或不完整，请刷新历史状态后重新选择：" + statePath);
+        }
+    }
+    private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
+        Map<String, Object> policy = repository.editPolicy(taskId);
+        if (!Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) return;
+        String requiredPath = text(policy.get("requiredStatePath"));
+        if (requiredPath.isEmpty()) {
+            throw new IllegalStateException("同步表集合已变化，但没有可用的正式 Savepoint，请先恢复原配置运行并通过 Savepoint 停止");
+        }
+        if (!"savepoint".equalsIgnoreCase(text(action.getStartType()))) {
+            throw new IllegalArgumentException("增删同步表后必须从最近一次正式停止产生的 Savepoint 启动");
+        }
+        if (!requiredPath.equals(text(action.getStatePath()))) {
+            throw new IllegalArgumentException("增删同步表后只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
         }
     }
     private void addFlinkArg(List<String> command, String key, Object value) {

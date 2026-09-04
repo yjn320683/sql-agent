@@ -6,7 +6,7 @@ export interface RealtimeServer {
   type: 'mysql';
   address: string;
   databaseName?: string;
-  databaseAbbr: string;
+  databasePrefix?: string;
   account?: string;
   passwordConfigured?: boolean;
   description?: string;
@@ -40,6 +40,9 @@ export interface SyncTaskConfig {
     targetDatabase: string;
     domainPrefix: string;
     tablePrefix?: string;
+    tableSuffix?: string;
+    targetTable?: string;
+    targetTableList?: string[];
     metadataColumns?: string[];
     typeMappings?: string[];
     mode?: string;
@@ -79,6 +82,9 @@ export interface SyncTask extends SyncTaskSave {
     lockedTables?: string[];
     lockedTableConfigs?: Record<string, TablePrivateConfig>;
     topologyChanged?: boolean;
+    syncTableSetChanged?: boolean;
+    requiredStartType?: 'savepoint';
+    requiredStatePath?: string;
     reason?: string;
   };
 }
@@ -94,6 +100,7 @@ export interface SyncTaskListItem {
   sourceServerName?: string;
   sourceServerDatabase?: string;
   mappingCount?: number;
+  mapping?: TaskMapping[];
   parallelism?: number;
   taskManagerMemory?: string;
   jobManagerMemory?: string;
@@ -256,6 +263,8 @@ export interface TaskRuntimeCheckpoints {
 
 export interface TaskMapping {
   id: number;
+  sourceServerId?: number;
+  serverName?: string;
   sourceDatabase: string;
   sourceTable: string;
   targetDatabase: string;
@@ -279,9 +288,9 @@ export interface TaskParam {
   sortOrder: number;
 }
 
-export interface BusinessDomain { id: number; code: string; name: string; sortOrder: number }
+export interface PaimonTablePrefixOption { label: string; value: string }
 export interface RealtimeAlert { id: number; taskId: number; taskName: string; severity: string; status: string; title: string; detail?: string; createTime: string; updateTime: string }
-export interface TaskChangeLog { id: number; taskId: number; taskName: string; operationId?: number; beforeVersionId?: number; afterVersionId?: number; jobInstanceId?: number; operator: string; action: string; detail?: string; summary?: string; detailKind?: 'create' | 'edit' | 'start' | 'stop' | 'text'; createTime: string }
+export interface TaskChangeLog { id: number; taskId: number; taskName: string; operationId?: number; beforeVersionId?: number; afterVersionId?: number; taskInstanceId?: number; operator: string; action: string; detail?: string; summary?: string; detailKind?: 'create' | 'edit' | 'start' | 'stop' | 'text'; createTime: string }
 export interface MysqlColumn { name: string; type: string; nullable: boolean; comment?: string }
 export interface MysqlTableSchema { table: string; columns: MysqlColumn[]; primaryKeys: string[] }
 export interface SyncSourceTableOption { tableName: string; occupied: boolean; occupiedTaskId?: number; occupiedTaskName?: string }

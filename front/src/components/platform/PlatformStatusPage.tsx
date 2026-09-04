@@ -9,7 +9,6 @@ import {
   Table,
   Tag,
   Tooltip,
-  Typography,
   message,
 } from 'antd';
 import {
@@ -127,16 +126,14 @@ export default function PlatformStatusPage() {
 
   return (
     <div className="data-page platform-status-page">
-      <header className="data-page-header platform-status-header">
-        <div>
-          <Typography.Title level={2}>平台状态</Typography.Title>
-        </div>
-        <Space>
+      <div className="data-toolbar platform-status-toolbar">
+        <span className="result-count">共 {total} 项依赖</span>
+        <Space size={10}>
           <span className="muted-text">30 秒刷新</span>
-          <Switch checked={autoRefresh} onChange={setAutoRefresh} />
+          <Switch size="small" checked={autoRefresh} onChange={setAutoRefresh} />
           <Tooltip title="立即检查"><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} /></Tooltip>
         </Space>
-      </header>
+      </div>
 
       <section className="platform-health-summary" aria-label="平台健康概览">
         <div><span>整体状态</span><strong className={health?.complete ? 'healthy' : 'unhealthy'}>{health?.complete ? '健康' : health ? '部分不可用' : '-'}</strong></div>

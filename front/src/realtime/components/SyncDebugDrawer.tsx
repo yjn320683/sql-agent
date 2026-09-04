@@ -39,12 +39,12 @@ interface Props {
   onClose: () => void;
 }
 
-const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
+const ACTIVE = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
 const DEBUG_TARGET_DATABASE = 'paimon_debug';
 const DEBUG_TABLE_SUFFIX = '_debug';
 const statusLabel: Record<string, string> = {
-  submitting: '提交中', running: '运行中', stopping: '停止中', restarting: '重启中',
-  canceled: '已取消', finished: '已完成', failed: '失败', not_running: '未运行',
+  submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
+  canceled: '已取消', killed_success: '已停止(调试成功)', finished: '已完成', failed: '失败', not_running: '未运行',
 };
 
 const paramOptions = (param: TaskParam) => {
@@ -75,9 +75,9 @@ const mergeParamDefaults = (params: TaskParam[], type: TaskParam['paramType'], v
 const debugTarget = (task: SyncTask, servers: RealtimeServer[]) => {
   const cdc = task.taskConfig.cdcConfig;
   const server = servers.find((item) => item.id === task.sourceServerId);
-  const prefix = cdc.domainPrefix
-    ? [DEBUG_TARGET_DATABASE, cdc.domainPrefix, server?.databaseAbbr].filter(Boolean).join('_') + '_'
-    : cdc.tablePrefix ?? '';
+  const prefix = cdc.domainPrefix && (cdc.databaseName || server?.databaseName)
+    ? [DEBUG_TARGET_DATABASE, server?.databasePrefix, cdc.databaseName || server?.databaseName, cdc.domainPrefix].filter(Boolean).join('_') + '_'
+    : '';
   const targets = cdc.selectedTables.map((table) => {
     const name = `${prefix}${table}`;
     return name.endsWith(DEBUG_TABLE_SUFFIX) ? name : `${name}${DEBUG_TABLE_SUFFIX}`;
@@ -105,30 +105,45 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
   const [inspector, setInspector] = useState<{ title: string; kind: InstanceInspectorKind; value: unknown }>();
   const [mappingInstance, setMappingInstance] = useState<TaskInstance>();
   const [logInstance, setLogInstance] = useState<TaskInstance>();
+  const [selectedInstanceId, setSelectedInstanceId] = useState<number>();
+  const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
   const initializedConfigKeyRef = useRef('');
+  const submittingRef = useRef(false);
+  const acceptedInstancesRef = useRef(new Map<number, TaskInstance>());
+  const instanceRequestSequenceRef = useRef(0);
+  const supportRequestSequenceRef = useRef(0);
 
   const reload = useCallback(async (silent = false) => {
     if (!task) return;
+    const sequence = ++instanceRequestSequenceRef.current;
     if (!silent) setLoading(true);
     try {
-      const allInstances = await listInstances(task.id);
-      setInstances(allInstances.filter((item) => item.executionMode === 'DEBUG'));
+      const rows = await listInstances(task.id, 'DEBUG');
+      if (sequence === instanceRequestSequenceRef.current) {
+        const serverIds = new Set(rows.map((item) => item.id));
+        serverIds.forEach((id) => acceptedInstancesRef.current.delete(id));
+        const accepted = [...acceptedInstancesRef.current.values()].filter((item) => !serverIds.has(item.id));
+        setInstances([...accepted, ...rows]);
+      }
     } catch (error) {
-      message.error((error as Error).message);
+      if (sequence === instanceRequestSequenceRef.current) message.error((error as Error).message);
     } finally {
-      if (!silent) setLoading(false);
+      if (!silent && sequence === instanceRequestSequenceRef.current) setLoading(false);
     }
   }, [task]);
 
   useEffect(() => {
     if (!open || !task) return;
     setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setCommand('');
-    setLogInstance(undefined); setMappingInstance(undefined);
+    setLogInstance(undefined); setMappingInstance(undefined); setSelectedInstanceId(undefined);
+    acceptedInstancesRef.current.clear();
     void reload();
+    const supportSequence = ++supportRequestSequenceRef.current;
     setSupportLoading(true);
     void Promise.all([listTaskParams(), listServers()]).then(([taskParams, allServers]) => {
-      setParams(taskParams); setServers(allServers);
-    }).catch((error) => message.error((error as Error).message)).finally(() => setSupportLoading(false));
+      if (supportSequence === supportRequestSequenceRef.current) { setParams(taskParams); setServers(allServers); }
+    }).catch((error) => { if (supportSequence === supportRequestSequenceRef.current) message.error((error as Error).message); })
+      .finally(() => { if (supportSequence === supportRequestSequenceRef.current) setSupportLoading(false); });
   }, [open, reload, task]);
 
   useEffect(() => {
@@ -207,22 +222,27 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
   const inspect = async (instance: TaskInstance, kind: 'config' | 'startup-log' | 'runtime-log') => {
     if (!task) return;
     try {
-      setInspector({ title: `调试实例 #${instance.id} · ${kind === 'config' ? '实例配置' : kind === 'startup-log' ? '启动日志' : '运行日志'}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
+      setInspector({ title: kind === 'config' ? `调试配置 - 调试实例 ${instance.id}` : `调试实例 ${instance.id} - ${kind === 'startup-log' ? '启动日志' : '运行日志'}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
     } catch (error) { message.error((error as Error).message); }
   };
 
   const submit = async () => {
-    if (!task) return;
+    if (!task || submittingRef.current) return;
+    submittingRef.current = true;
     try {
       const values = buildAction(await form.validateFields());
       setSubmitting(true);
-      await startSyncTask(task.id, values, true);
+      const instance = await startSyncTask(task.id, values, true);
+      acceptedInstancesRef.current.set(instance.id, instance);
+      setInstances((current) => [instance, ...current.filter((item) => item.id !== instance.id)]);
+      setSelectedInstanceId(instance.id);
+      setKeyword(''); setSearchField('all'); setStatus('all'); setSortOrder('startedAtDesc');
       message.success('调试请求已提交');
       setConfigOpen(false);
       await reload();
     } catch (error) {
       if (error instanceof Error) message.error(error.message);
-    } finally { setSubmitting(false); }
+    } finally { submittingRef.current = false; setSubmitting(false); }
   };
 
   const records = logInstance ? (
@@ -242,15 +262,16 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
         dataSource={filtered}
         locale={{ emptyText: '暂无调试实例' }}
         scroll={{ x: 1690 }}
+        rowClassName={(row) => row.id === selectedInstanceId ? 'debug-record-selected' : ''}
         pagination={{ pageSize: 6, showSizeChanger: true, pageSizeOptions: [6, 10, 20], showTotal: (value) => `共 ${value} 条` }}
         columns={[
           { title: '实例 ID', dataIndex: 'id', width: 95, fixed: 'left' },
-          { title: '状态', dataIndex: 'status', width: 105, fixed: 'left', render: (value: string) => <Tag color={value === 'running' ? 'green' : value === 'failed' ? 'red' : 'default'}>{statusLabel[value] ?? value}</Tag> },
+          { title: '状态', dataIndex: 'status', width: 150, fixed: 'left', render: (value: string) => <Tag color={value === 'running' || value === 'debug_success_running' || value === 'killed_success' ? 'green' : value === 'failed' ? 'red' : 'default'}>{statusLabel[value] ?? value}</Tag> },
           { title: 'JobID', dataIndex: 'jobId', width: 230, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '同步中' : '-') },
           { title: 'YARN Application ID', dataIndex: 'yarnApplicationId', width: 210, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '提交中' : '-') },
           { title: 'Flink UI', dataIndex: 'trackingUrl', width: 120, render: (value: string, row: TaskInstance) => value ? <Typography.Link href={value} target="_blank"><LinkOutlined /> 打开</Typography.Link> : (ACTIVE.includes(row.status) ? '同步中' : '-') },
-          { title: 'Savepoint', dataIndex: 'savepointPath', width: 230, ellipsis: true, render: (value: string) => value || '-' },
-          { title: '失败原因', dataIndex: 'failureMessage', width: 220, ellipsis: true, render: (value: string) => value || '-' },
+          { title: 'Savepoint', dataIndex: 'savepointPath', width: 230, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '停止后生成' : '-') },
+          { title: '失败原因', dataIndex: 'failureMessage', width: 220, ellipsis: true, render: (value: string, row: TaskInstance) => row.status === 'failed' ? (value || '请查看运行日志') : '-' },
           { title: '开始时间', dataIndex: 'startedAt', width: 170, render: (value: string) => value || '-' },
           { title: '结束时间', dataIndex: 'endedAt', width: 170, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '运行中' : '-') },
           {
@@ -260,9 +281,10 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
               <Typography.Link onClick={() => setMappingInstance(row)}>同步表</Typography.Link>
               {ACTIVE.includes(row.status) && <Typography.Link disabled={!row.managed} onClick={async () => {
                 if (!task || !row.managed) return;
-                try { await stopInstance(task.id, row.id); message.success('停止请求已提交'); await reload(); }
+                try { setStoppingInstanceId(row.id); await stopInstance(task.id, row.id); message.success('停止请求已提交'); await reload(); }
                 catch (error) { message.error((error as Error).message); }
-              }}>停止</Typography.Link>}
+                finally { setStoppingInstanceId(undefined); }
+              }}>{stoppingInstanceId === row.id ? '停止中…' : '停止'}</Typography.Link>}
             </Space>,
           },
         ]}
@@ -283,18 +305,18 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
         { key: 'records', label: '调试记录', children: records },
         { key: 'verify', label: '验数记录', children: <Table rowKey="id" size="small" dataSource={[]} pagination={false} locale={{ emptyText: '暂无验数记录' }} scroll={{ x: 1820 }} columns={[
           { title: 'ID', dataIndex: 'id', width: 90 },
-          { title: '调试记录 ID', dataIndex: 'debugRecordId', width: 160 },
+          { title: '调试记录ID', dataIndex: 'debugRecordId', width: 190, ellipsis: true },
           { title: '线上表', dataIndex: 'onlineTable', width: 220, ellipsis: true },
           { title: '调试表', dataIndex: 'debugTable', width: 220, ellipsis: true },
-          { title: '校验状态', dataIndex: 'checkStatus', width: 110 },
+          { title: '校验状态', dataIndex: 'checkStatus', width: 110, render: (value: string) => <Typography.Text type={value === '不通过' ? 'danger' : undefined}>{value}</Typography.Text> },
           { title: '是否分区表', dataIndex: 'partitioned', width: 120 },
-          { title: '元数据是否一致', dataIndex: 'metadataMatched', width: 140 },
+          { title: '元数据是否一致', dataIndex: 'metadataMatched', width: 140, render: (value: string) => <Typography.Text type={value === '否' ? 'danger' : undefined}>{value}</Typography.Text> },
           { title: '行数是否一致', dataIndex: 'rowCountMatched', width: 130 },
-          { title: 'CRC32 是否一致', dataIndex: 'crc32Matched', width: 140 },
+          { title: 'CRC32值是否一致', dataIndex: 'crc32Matched', width: 150 },
           { title: '配置规则', dataIndex: 'rule', width: 120, render: (value: string) => value ? <Typography.Link>{value}</Typography.Link> : '-' },
           { title: '创建时间', dataIndex: 'createdAt', width: 170 },
           { title: '更新时间', dataIndex: 'updatedAt', width: 170 },
-          { title: '操作人', dataIndex: 'operator', width: 110 },
+          { title: '操作人', dataIndex: 'operator', width: 120 },
           { title: '操作', key: 'actions', fixed: 'right', width: 280, render: () => <Space split={<span className="table-action-split" />}><Typography.Link>对比规则</Typography.Link><Typography.Link>运行</Typography.Link><Typography.Link>差异报告</Typography.Link><Typography.Link>日志</Typography.Link></Space> },
         ]} /> },
       ]} />
@@ -311,35 +333,37 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
         } catch { setStateHistory([]); }
         finally { setStateHistoryLoading(false); }
       }}>
+        <Typography.Title level={5} className="realtime-detail-title">基础信息</Typography.Title>
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="任务名称">{task.name}</Descriptions.Item>
           <Descriptions.Item label="负责人">{task.owner || '-'}</Descriptions.Item>
           <Descriptions.Item label="描述" span={2}>{task.description || '-'}</Descriptions.Item>
-          <Descriptions.Item label="源端 Server">{debug.server?.name || task.sourceServerName || task.sourceServerId}</Descriptions.Item>
-          <Descriptions.Item label="Flink 版本">{task.flinkVersion || '2.2.1'}</Descriptions.Item>
-          <Descriptions.Item label="源表" span={2}>{task.taskConfig.cdcConfig.selectedTables.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="flink版本" span={2}>{task.flinkVersion || '2.2.1'}</Descriptions.Item>
         </Descriptions>
         <Typography.Title level={5} className="realtime-detail-title">告警配置</Typography.Title>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="报警设置类型">{task.taskConfig.alarmType || '任务失败'}</Descriptions.Item>
+          <Descriptions.Item label="报警设置类型">{!task.taskConfig.alarmType || task.taskConfig.alarmType === 'task-failed' ? '任务失败' : task.taskConfig.alarmType}</Descriptions.Item>
           <Descriptions.Item label="告警组">{task.taskConfig.alarmGroup || '-'}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">源端与调试目标 Paimon 配置</Typography.Title>
+        <Typography.Title level={5} className="realtime-detail-title">源端&调试目标Paimon配置</Typography.Title>
+        <Typography.Title level={5} className="realtime-detail-title">公共配置</Typography.Title>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="源库">{task.taskConfig.cdcConfig.databaseName || '-'}</Descriptions.Item>
-          <Descriptions.Item label="目标 Paimon 库">{DEBUG_TARGET_DATABASE}</Descriptions.Item>
-          <Descriptions.Item label="业务域前缀">{task.taskConfig.cdcConfig.domainPrefix || '-'}</Descriptions.Item>
-          <Descriptions.Item label="目标表后缀">{DEBUG_TABLE_SUFFIX}</Descriptions.Item>
-          <Descriptions.Item label="目标表前缀" span={2}>{debug.prefix || '-'}</Descriptions.Item>
-          <Descriptions.Item label="目标表列表" span={2}><Input.TextArea disabled value={debug.targets.join('\n')} rows={Math.max(2, Math.min(debug.targets.length, 6))} /></Descriptions.Item>
-          <Descriptions.Item label="元数据列" span={2}>{task.taskConfig.cdcConfig.metadataColumns?.join('、') || '-'}</Descriptions.Item>
-          <Descriptions.Item label="类型映射" span={2}>{task.taskConfig.cdcConfig.typeMappings?.join('、') || '-'}</Descriptions.Item>
-          <Descriptions.Item label="MySQL CDC 参数" span={2}><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="mysql_conf" formNamePath={['mysqlConfOverrides']} taskParams={params} /></Descriptions.Item>
-          <Descriptions.Item label="Paimon Table 参数" span={2}><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="table_conf" formNamePath={['tableConfOverrides']} taskParams={params} /></Descriptions.Item>
-          <Descriptions.Item label="同步模式">{task.taskConfig.cdcConfig.mode || '-'}</Descriptions.Item>
-          <Descriptions.Item label="忽略不兼容表">{String(task.taskConfig.cdcConfig.ignoreIncompatible) === 'true' ? '是' : '否'}</Descriptions.Item>
+          <Descriptions.Item label="源端类型">Mysql CDC</Descriptions.Item>
+          <Descriptions.Item label="Server">{debug.server?.name || task.sourceServerName || task.sourceServerId}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">源表私有配置</Typography.Title>
+        <Descriptions bordered size="small" column={1}>
+          <Descriptions.Item label="源库">{task.taskConfig.cdcConfig.databaseName || debug.server?.databaseName || '-'}</Descriptions.Item>
+          <Descriptions.Item label="源表列表">{task.taskConfig.cdcConfig.selectedTables.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="Mysql配置"><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="mysql_conf" formNamePath={['mysqlConfOverrides']} taskParams={params} /></Descriptions.Item>
+          <Descriptions.Item label="目标Paimon库">{DEBUG_TARGET_DATABASE}</Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表前缀">{debug.prefix || '-'}</Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={debug.targets.join('\n')} rows={Math.max(2, Math.min(debug.targets.length, 6))} /></Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表同步元数据列">{task.taskConfig.cdcConfig.metadataColumns?.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表类型映射">{task.taskConfig.cdcConfig.typeMappings?.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表配置"><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="table_conf" formNamePath={['tableConfOverrides']} taskParams={params} /></Descriptions.Item>
+          <Descriptions.Item label="整库模式">{task.taskConfig.cdcConfig.mode || '-'}</Descriptions.Item>
+        </Descriptions>
+        <Typography.Title level={5} className="realtime-detail-title">私有配置</Typography.Title>
         <Table size="small" pagination={false} rowKey="table" dataSource={task.taskConfig.cdcConfig.selectedTables.map((table, index) => ({ table, index: index + 1, config: task.taskConfig.cdcConfig.tableConfigs?.[table] }))} scroll={{ x: 980, y: 320 }} columns={[
           { title: '序号', dataIndex: 'index', width: 64 }, { title: '源表', dataIndex: 'table', width: 220, ellipsis: true },
           { title: '计算列', width: 300, ellipsis: true, render: (_: unknown, row: { config?: { computedColumns?: string[] } }) => row.config?.computedColumns?.join('；') || '未配置' },
@@ -347,36 +371,31 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
           { title: '分区键', width: 220, render: (_: unknown, row: { config?: { partitionKeys?: string[] } }) => row.config?.partitionKeys?.join('、') || '不分区' },
           { title: '状态', width: 110, render: (_: unknown, row: { config?: { computedColumns?: string[]; primaryKeys?: string[]; partitionKeys?: string[] } }) => row.config?.computedColumns?.length || row.config?.primaryKeys?.length || row.config?.partitionKeys?.length ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
         ]} />
+        <Typography.Title level={5} className="realtime-detail-title">启动设置</Typography.Title>
+        <Descriptions bordered size="small" column={2}>
+          <Descriptions.Item label="启动类型"><Form.Item name="startType" noStyle rules={[{ required: true, message: '请选择启动类型' }]}><Select options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }]} /></Form.Item></Descriptions.Item>
+          <Descriptions.Item label="历史状态"><Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" noStyle rules={[{ required: true, message: '请选择历史状态' }]}><Select loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Typography.Text type="secondary">直接启动不需要历史状态</Typography.Text>}</Form.Item></Descriptions.Item>
+        </Descriptions>
         <Typography.Title level={5} className="realtime-detail-title">资源与运行</Typography.Title>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="并行度">{task.taskConfig.parallelism ?? '-'}</Descriptions.Item>
-          <Descriptions.Item label="Checkpoint 周期">{task.taskConfig.checkpointInterval ? `${task.taskConfig.checkpointInterval}s` : '-'}</Descriptions.Item>
-          <Descriptions.Item label="TaskManager 内存">{task.taskConfig.taskManagerMemory || '-'}</Descriptions.Item>
-          <Descriptions.Item label="JobManager 内存">{task.taskConfig.jobManagerMemory || '-'}</Descriptions.Item>
-          <Descriptions.Item label="Flink 参数" span={2}><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['flinkConfOverrides']} taskParams={params} /></Descriptions.Item>
-        </Descriptions>
-        <div className="realtime-debug-start-grid">
-          <Form.Item name="startType" label="启动类型" rules={[{ required: true, message: '请选择启动类型' }]}><Select options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }]} /></Form.Item>
-          <Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Form.Item label="历史状态"><Typography.Text type="secondary">直接启动不需要历史状态</Typography.Text></Form.Item>}</Form.Item>
-        </div>
-        <Typography.Title level={5} className="realtime-detail-title">调试运行参数</Typography.Title>
-        <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="任务并行度"><Form.Item name="parallelism" noStyle rules={[{ required: true }, { type: 'number', min: 1, max: 128 }]}><InputNumber min={1} max={128} style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
+          <Descriptions.Item label="并行度"><Form.Item name="parallelism" noStyle rules={[{ required: true }, { type: 'number', min: 1, max: 128 }]}><InputNumber min={1} max={128} style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="Checkpoint 间隔"><Form.Item name="checkpointInterval" noStyle rules={[{ required: true }, { type: 'number', min: 10, max: 600 }]}><InputNumber min={10} max={600} addonAfter="秒" style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="TaskManager 内存"><Form.Item name="taskManagerMemory" noStyle rules={[{ required: true }]}><Input placeholder="3GB" /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="JobManager 内存"><Form.Item name="jobManagerMemory" noStyle rules={[{ required: true }]}><Input placeholder="1GB" /></Form.Item></Descriptions.Item>
+          <Descriptions.Item label="Flink配置" span={2}><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['flinkConfOverrides']} taskParams={params} /></Descriptions.Item>
         </Descriptions>
-        <Form.Item label="命令预览">
+        <Typography.Title level={5} className="realtime-detail-title">命令预览</Typography.Title>
+        <Form.Item>
           <Button type="link" icon={<EyeOutlined />} loading={commandLoading} onClick={async () => { if (!task) return; try { setCommandLoading(true); const values = buildAction(await form.validateFields()); const value = await previewSavedSyncTask(task.id, true, values); setCommand(value.command); } catch (error) { if (error instanceof Error) message.error(error.message); } finally { setCommandLoading(false); } }}>预览</Button>
           <Input.TextArea className="task-command-preview-textarea" value={command} readOnly rows={10} wrap="off" placeholder="点击预览生成 Paimon Action 调试命令" />
         </Form.Item>
       </Form>}
     </Modal>
-    <Modal title={`同步表映射${mappingInstance ? ` · 调试实例 ${mappingInstance.id}` : ''}`} open={Boolean(mappingInstance)} footer={null} width={900} onCancel={() => setMappingInstance(undefined)}>
-      <Table rowKey="id" size="small" pagination={false} dataSource={debugMappings} columns={[
-        { title: '序号', dataIndex: 'id', width: 72 },
-        { title: '源表', dataIndex: 'source' },
-        { title: '目标 Paimon 表', dataIndex: 'target' },
+    <Modal className="sync-mapping-modal" title={`同步表映射${mappingInstance ? ` - 调试实例 ${mappingInstance.id}` : ''}`} open={Boolean(mappingInstance)} footer={null} width={900} destroyOnHidden onCancel={() => setMappingInstance(undefined)}>
+      <Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={debugMappings} columns={[
+        { title: '序号', width: 72, render: (_: unknown, __: unknown, index: number) => index + 1 },
+        { title: '源表', dataIndex: 'source', width: 360, render: (value: string) => <span className="sync-mapping-full-name">{value}</span> },
+        { title: '目标 Paimon 表', dataIndex: 'target', render: (value: string) => <span className="sync-mapping-full-name">{value}</span> },
       ]} />
     </Modal>
     <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} onClose={() => setInspector(undefined)} />

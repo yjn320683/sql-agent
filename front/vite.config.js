@@ -22,6 +22,10 @@ export default defineConfig(function (_a) {
                     target: apiProxyTarget,
                     changeOrigin: true,
                 },
+                '/v1': {
+                    target: apiProxyTarget,
+                    changeOrigin: true,
+                },
             },
         },
     };

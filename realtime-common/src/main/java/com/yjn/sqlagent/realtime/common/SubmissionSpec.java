@@ -10,7 +10,7 @@ public class SubmissionSpec {
 
     private Long taskId;
     private Long versionId;
-    private Long jobInstanceId;
+    private Long taskInstanceId;
     private String jobName;
     private String startType = "direct";
     private String statePath;
@@ -24,8 +24,8 @@ public class SubmissionSpec {
     public void setTaskId(Long taskId) { this.taskId = taskId; }
     public Long getVersionId() { return versionId; }
     public void setVersionId(Long versionId) { this.versionId = versionId; }
-    public Long getJobInstanceId() { return jobInstanceId; }
-    public void setJobInstanceId(Long jobInstanceId) { this.jobInstanceId = jobInstanceId; }
+    public Long getTaskInstanceId() { return taskInstanceId; }
+    public void setTaskInstanceId(Long value) { taskInstanceId = value; }
     public String getJobName() { return jobName; }
     public void setJobName(String jobName) { this.jobName = jobName; }
     public String getStartType() { return startType; }
@@ -107,7 +107,7 @@ public class SubmissionSpec {
         private String name;
         private String address;
         private String databaseName;
-        private String databaseAbbr;
+        private String databasePrefix;
         private String account;
         private String password;
 
@@ -119,8 +119,8 @@ public class SubmissionSpec {
         public void setAddress(String address) { this.address = address; }
         public String getDatabaseName() { return databaseName; }
         public void setDatabaseName(String value) { databaseName = value; }
-        public String getDatabaseAbbr() { return databaseAbbr; }
-        public void setDatabaseAbbr(String value) { databaseAbbr = value; }
+        public String getDatabasePrefix() { return databasePrefix; }
+        public void setDatabasePrefix(String value) { databasePrefix = value; }
         public String getAccount() { return account; }
         public void setAccount(String account) { this.account = account; }
         public String getPassword() { return password; }

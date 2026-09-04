@@ -35,3 +35,4 @@ app:
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:}
     sync-delay-ms: ${REALTIME_SYNC_DELAY_MS:10000}
     state-sync-enabled: ${REALTIME_STATE_SYNC_ENABLED:true}
+    debug-success-min-running-minutes: ${REALTIME_DEBUG_SUCCESS_MIN_RUNNING_MINUTES:2}

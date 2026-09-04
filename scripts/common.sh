@@ -53,7 +53,7 @@ print_deploy_context() {
   echo "部署根目录: ${DEPLOY_ROOT}"
   echo "代码目录: ${APP_DIR}"
   echo ".env 路径: ${ENV_FILE}"
-  echo "Agent 端口: ${AGENT_PORT:-8284}"
+  echo "Agent 端口: ${AGENT_PORT:-8285}"
   echo "日志目录: ${HOST_LOG_DIR:-${DEPLOY_ROOT}/logs}"
   echo "Claude 目录: ${HOST_CLAUDE_DIR:-${DEPLOY_ROOT}/.claude}"
   echo "Backend PID: ${BACKEND_PID_FILE}"
@@ -125,7 +125,7 @@ build_application() {
 }
 
 wait_agent_ready() {
-  local port="${AGENT_PORT:-8284}"
+  local port="${AGENT_PORT:-8285}"
   wait_http_ready "Agent" "http://127.0.0.1:${port}/health" 120
 }
 

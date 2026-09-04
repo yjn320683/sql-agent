@@ -23,6 +23,10 @@ export default defineConfig(({ mode }) => {
           target: apiProxyTarget,
           changeOrigin: true,
         },
+        '/v1': {
+          target: apiProxyTarget,
+          changeOrigin: true,
+        },
       },
     },
   };

@@ -51,6 +51,20 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void productionSavepointStopNeverFallsBackToYarnKillWhenJobIdIsMissing() {
+        when(repository.requiredInstance(8L, 30L)).thenReturn(Map.of(
+                "id", 30L, "taskId", 8L, "managed", true, "status", "running",
+                "executionMode", "PRODUCTION", "yarnApplicationId", "application_1_30"));
+        TaskActionRequest request = new TaskActionRequest();
+        request.setStopType("savepoint");
+
+        assertEquals("正式实例缺少 Flink JobID，禁止降级为 YARN kill；请先刷新实例状态",
+                assertThrows(IllegalStateException.class,
+                        () -> service.stop(8L, 30L, request, "tester")).getMessage());
+        verify(repository, never()).startOperation(anyLong(), any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void debugLifecycleDoesNotEnterTaskChangeLog() {
         assertFalse(RealtimeRuntimeService.isProductionLifecycleChange(true));
         assertTrue(RealtimeRuntimeService.isProductionLifecycleChange(false));
@@ -94,9 +108,33 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         assertEquals(1, ((Map<?, ?>) checkpoints.get("counts")).get("completed"));
         assertFalse(checkpoints.containsKey("instance"));
         assertFalse(checkpoints.containsKey("imported"));
-        assertEquals("jobmanager", ((Map<?, ?>) components.get(0)).get("value"));
+        assertEquals("all", ((Map<?, ?>) components.get(0)).get("value"));
+        assertEquals("startup", ((Map<?, ?>) components.get(1)).get("value"));
+        assertEquals("jobmanager", ((Map<?, ?>) components.get(2)).get("value"));
         assertEquals("imported runtime log", logs.get("runtimeLog"));
         assertEquals(true, logs.get("imported"));
+    }
+
+    @Test
+    void unifiedLogEndpointReturnsStableCursorPage() {
+        StringBuilder content = new StringBuilder();
+        for (int index = 0; index < 25; index++) {
+            if (index > 0) content.append('\n');
+            content.append("line-").append(index);
+        }
+        when(repository.requiredInstance(8L, 29L)).thenReturn(Map.of(
+                "id", 29L, "taskId", 8L, "managed", true, "status", "finished",
+                "lastRuntimeLog", content.toString()));
+
+        Map<String, Object> page = service.logPage(8L, 29L, "all", null, 2, 20);
+
+        @SuppressWarnings("unchecked") List<String> lines = (List<String>) page.get("lines");
+        assertEquals(20, lines.size());
+        assertEquals("line-2", lines.get(0));
+        assertEquals("line-21", lines.get(19));
+        assertEquals(22, page.get("nextCursor"));
+        assertEquals(true, page.get("truncated"));
+        assertEquals("all", page.get("component"));
     }
 
     @Test
@@ -178,6 +216,61 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         verify(repository).updateInstanceRuntime(20L, "canceled",
                 "未发现任务名前缀对应的存活 YARN Application", null);
         verify(repository).changeTaskStatus(8L, "not_running");
+    }
+
+    @Test
+    void debugBecomesQualifiedOnlyAfterMinimumRuntimeAndCompletedCheckpoint() {
+        RealtimeRuntimeService reconciler = spy(service);
+        long now = System.currentTimeMillis();
+        long runningAt = now - 3 * 60_000L;
+        Map<String, Object> running = Map.of(
+                "id", 27L, "taskId", 8L, "managed", true,
+                "status", "running", "executionMode", "DEBUG",
+                "jobId", "debug-job", "yarnApplicationId", "application_1_27",
+                "trackingUrl", "http://flink.example/");
+        when(repository.requiredInstance(8L, 27L)).thenReturn(running);
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
+                "State : RUNNING\nTracking-URL : http://flink.example/"))
+                .when(reconciler).execute(any(), anyLong());
+        doAnswer(invocation -> {
+            String path = invocation.getArgument(1);
+            if ("/jobs/debug-job".equals(path)) return "{\"state\":\"RUNNING\",\"now\":" + now
+                    + ",\"timestamps\":{\"RUNNING\":" + runningAt + "}}";
+            if ("/jobs/debug-job/checkpoints".equals(path)) return "{\"counts\":{\"completed\":1},"
+                    + "\"latest\":{\"completed\":{\"latest_ack_timestamp\":" + (runningAt + 10_000L) + "}}}";
+            return "{}";
+        }).when(reconciler).fetchText(anyString(), anyString());
+
+        reconciler.refresh(8L, 27L);
+
+        verify(repository).updateInstanceRuntime(27L, "debug_success_running",
+                "State : RUNNING\nTracking-URL : http://flink.example/", null);
+        verify(repository, never()).changeTaskStatus(anyLong(), anyString());
+    }
+
+    @Test
+    void debugWithoutCompletedCheckpointRemainsRunning() {
+        RealtimeRuntimeService reconciler = spy(service);
+        long now = System.currentTimeMillis();
+        Map<String, Object> running = Map.of(
+                "id", 28L, "taskId", 8L, "managed", true,
+                "status", "running", "executionMode", "DEBUG",
+                "jobId", "debug-job", "yarnApplicationId", "application_1_28",
+                "trackingUrl", "http://flink.example/");
+        when(repository.requiredInstance(8L, 28L)).thenReturn(running);
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0, "State : RUNNING"))
+                .when(reconciler).execute(any(), anyLong());
+        doAnswer(invocation -> {
+            String path = invocation.getArgument(1);
+            if ("/jobs/debug-job".equals(path)) return "{\"state\":\"RUNNING\",\"now\":" + now
+                    + ",\"timestamps\":{\"RUNNING\":" + (now - 3 * 60_000L) + "}}";
+            if ("/jobs/debug-job/checkpoints".equals(path)) return "{\"counts\":{\"completed\":0},\"latest\":{}}";
+            return "{}";
+        }).when(reconciler).fetchText(anyString(), anyString());
+
+        reconciler.refresh(8L, 28L);
+
+        verify(repository, never()).updateInstanceRuntime(anyLong(), anyString(), any(), any());
     }
 
     @Test
@@ -307,7 +400,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                         "targetDatabase", "ods", "domainPrefix", "trade", "selectedTables", java.util.List.of("orders")))));
         when(repository.requiredServer(3L, true)).thenReturn(Map.of(
                 "id", 3L, "name", "mysql", "address", "mysql:3306", "databaseName", "sales",
-                "databaseAbbr", "sale", "account", "cdc", "password", "secret-value"));
+                "databasePrefix", "sale", "account", "cdc", "password", "secret-value"));
 
         String json = new ObjectMapper().writeValueAsString(
                 previewService.previewSaved(8L, new TaskActionRequest(), false));
@@ -333,7 +426,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                                 "selectedTables", java.util.List.of("orders")))));
         when(repository.requiredServer(3L, true)).thenReturn(Map.of(
                 "id", 3L, "name", "mysql", "address", "mysql:3306", "databaseName", "sales",
-                "databaseAbbr", "sale", "account", "cdc", "password", "secret"));
+                "databasePrefix", "sale", "account", "cdc", "password", "secret"));
         TaskActionRequest action = new TaskActionRequest();
         action.setParallelism(6); action.setCheckpointInterval(90);
         action.setTaskManagerMemory("4GB"); action.setJobManagerMemory("3GB");
@@ -362,12 +455,12 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         when(repository.validatePreview(request, 18L)).thenReturn(request.getTaskConfig());
         when(repository.requiredServer(3L, true)).thenReturn(Map.of(
                 "id", 3L, "name", "mysql", "address", "mysql:3306", "databaseName", "sales",
-                "databaseAbbr", "sale", "account", "cdc", "password", "secret"));
+                "databasePrefix", "sale", "account", "cdc", "password", "secret"));
 
         String command = String.valueOf(previewService.previewRequest(request, 18L).get("command"));
 
-        assertTrue(command.contains("sync-task-18-inst-<job-instance-id>-edit_sync"));
-        assertTrue(command.contains("/tasks/18/instances/<job-instance-id>/job-config.json"));
+        assertTrue(command.contains("sync-task-18-inst-<task-instance-id>-edit_sync"));
+        assertTrue(command.contains("/tasks/18/instances/<task-instance-id>/job-config.json"));
         assertFalse(command.contains("sync-task-0-"));
         assertFalse(command.contains("/tasks/<task-id>/"));
     }
@@ -404,7 +497,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
-    void directStopReturnsStoppingBeforeFlinkCliRuns() {
+    void productionSavepointStopReturnsStoppingBeforeFlinkCliRuns() {
         AtomicReference<Runnable> queued = new AtomicReference<>();
         RealtimeRuntimeService asyncService = new RealtimeRuntimeService(repository,
                 new RealtimeProperties(), new ObjectMapper(),
@@ -420,7 +513,9 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         when(repository.requiredInstance(8L, 19L)).thenReturn(running, stopping);
         when(repository.startOperation(anyLong(), any(), anyString(), anyString(), anyString())).thenReturn(12L);
 
-        Map<String, Object> result = asyncService.stop(8L, 19L, new TaskActionRequest(), "tester");
+        TaskActionRequest request = new TaskActionRequest();
+        request.setStopType("savepoint");
+        Map<String, Object> result = asyncService.stop(8L, 19L, request, "tester");
 
         assertEquals("stopping", result.get("status"));
         assertNotNull(queued.get());
@@ -444,19 +539,19 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
-    void directStopFallsBackToYarnKillWhenFlinkCancelThrows() {
+    void debugDirectStopFallsBackToYarnKillWhenFlinkCancelThrows() {
         AtomicReference<Runnable> queued = new AtomicReference<>();
         RealtimeRuntimeService asyncService = spy(new RealtimeRuntimeService(repository,
                 new RealtimeProperties(), new ObjectMapper(),
                 new RealtimeTaskOperationExecutor(queued::set)));
         Map<String, Object> running = Map.of(
                 "id", 19L, "taskId", 8L, "managed", true, "status", "running",
-                "executionMode", "PRODUCTION", "jobId", "0123456789abcdef0123456789abcdef",
+                "executionMode", "DEBUG", "jobId", "0123456789abcdef0123456789abcdef",
                 "yarnApplicationId", "application_1_2", "trackingUrl", "http://flink/",
                 "lastRuntimeLog", "last", "startupLog", "start");
         Map<String, Object> stopping = Map.of(
                 "id", 19L, "taskId", 8L, "managed", true,
-                "status", "stopping", "executionMode", "PRODUCTION");
+                "status", "stopping", "executionMode", "DEBUG");
         when(repository.requiredInstance(8L, 19L)).thenReturn(running, stopping);
         when(repository.startOperation(anyLong(), any(), anyString(), anyString(), anyString())).thenReturn(12L);
         doAnswer(invocation -> {
@@ -478,6 +573,6 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                 org.mockito.ArgumentMatchers.isNull());
         assertTrue(operationResult.getValue().contains("\"actualMethod\":\"yarn_kill\""));
         assertTrue(operationResult.getValue().contains("\"fallbackToYarnKill\":true"));
-        verify(repository).changeTaskStatus(8L, "not_running");
+        verify(repository, never()).changeTaskStatus(anyLong(), anyString());
     }
 }

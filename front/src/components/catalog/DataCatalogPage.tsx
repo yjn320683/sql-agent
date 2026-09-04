@@ -441,16 +441,13 @@ export default function DataCatalogPage() {
 
   return (
     <div className="data-page catalog-page">
-      <header className="data-page-header catalog-page-header">
-        <div>
-          <Typography.Title level={2}>数据目录</Typography.Title>
-        </div>
-        <Space size={6} className="catalog-source"><span className="catalog-source-dot" />Hive Metastore</Space>
-      </header>
-
       <section className="data-panel catalog-workbench">
         <aside className="catalog-browser">
           <div className="catalog-browser-toolbar">
+            <div className="catalog-source-row">
+              <Space size={6} className="catalog-source"><span className="catalog-source-dot" />Hive Metastore</Space>
+              <span className="result-count">{tableTotal} 张表</span>
+            </div>
             <Select
               showSearch
               value={database || undefined}

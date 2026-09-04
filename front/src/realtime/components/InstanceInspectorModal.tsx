@@ -22,6 +22,36 @@ const labels: Record<string, string> = {
 
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 
+/** 兼容参考平台历史快照（{task:{...}}）、本平台旧快照和统一 v1 配置。 */
+const normalizeTaskSnapshot = (value: unknown) => {
+  const outer = asRecord(value);
+  const config = asRecord(outer.config);
+  const candidate = Object.keys(config).length ? config : outer;
+  const nestedTask = asRecord(candidate.task);
+  const root = Object.keys(nestedTask).length ? nestedTask : candidate;
+  const specific = asRecord(root.taskConfig);
+  const alarm = asRecord(root.alarmConfig);
+  const flink = asRecord(root.flinkConf);
+  const unified = Object.keys(alarm).length > 0 || Object.keys(flink).length > 0;
+  if (!unified) return root;
+  return {
+    ...root,
+    sourceType: specific.sourceType ?? root.sourceType,
+    sourceServerId: specific.sourceServerId ?? root.sourceServerId,
+    targetDatabase: asRecord(specific.cdcConfig).targetDatabase ?? root.targetDatabase,
+    taskConfig: {
+      ...specific,
+      alarmType: alarm.alarmType,
+      alarmGroup: alarm.alarmGroup,
+      parallelism: flink.parallelism,
+      checkpointInterval: flink.checkpointIntervalSeconds,
+      taskManagerMemory: flink.taskManagerMemoryGb == null ? undefined : `${String(flink.taskManagerMemoryGb)}GB`,
+      jobManagerMemory: flink.jobManagerMemoryGb == null ? undefined : `${String(flink.jobManagerMemoryGb)}GB`,
+      flinkConfOverrides: flink.flinkConfOverrides,
+    },
+  };
+};
+
 const display = (value: unknown): ReactNode => {
   if (value === undefined || value === null || value === '') return '-';
   if (typeof value === 'boolean') return value ? '是' : '否';
@@ -59,9 +89,7 @@ const Section = ({ title, children }: { title: string; children: ReactNode }) =>
 const item = (label: string, value: unknown, span = 1) => <Descriptions.Item key={label} label={label} span={span}>{display(value)}</Descriptions.Item>;
 
 export function InstanceConfigView({ value }: { value: unknown }) {
-  const outer = asRecord(value);
-  const wrapped = asRecord(outer.config);
-  const root = wrapped.taskConfig || wrapped.name ? wrapped : outer;
+  const root = normalizeTaskSnapshot(value);
   const taskConfig = asRecord(root.taskConfig ?? root.config);
   const cdc = asRecord(taskConfig.cdcConfig);
   const selectedTables = Array.isArray(cdc.selectedTables) ? cdc.selectedTables.map(String) : [];
@@ -75,11 +103,11 @@ export function InstanceConfigView({ value }: { value: unknown }) {
     <Section title="基础信息">
       <Descriptions bordered size="small" column={2}>
         {item('任务名称', root.name)}{item('负责人', root.owner)}{item('描述', root.description, 2)}
-        {item('Flink 版本', root.flinkVersion)}{item('任务类型', 'MySQL CDC → Paimon')}
+        {item('flink版本', root.flinkVersion, 2)}
       </Descriptions>
     </Section>
     <Section title="告警配置">
-      <Descriptions bordered size="small" column={2}>{item('报警设置类型', taskConfig.alarmType)}{item('告警组', taskConfig.alarmGroup)}</Descriptions>
+      <Descriptions bordered size="small" column={2}>{item('报警设置类型', taskConfig.alarmType === 'task-failed' ? '任务失败' : taskConfig.alarmType)}{item('告警组', taskConfig.alarmGroup)}</Descriptions>
     </Section>
     {Boolean(taskConfig.startType) && <Section title="启动设置">
       <Descriptions bordered size="small" column={2}>
@@ -87,14 +115,14 @@ export function InstanceConfigView({ value }: { value: unknown }) {
         {item('历史状态', String(taskConfig.startType) === 'direct' ? '直接启动不需要历史状态' : taskConfig.statePath)}
       </Descriptions>
     </Section>}
-    <Section title="源端与目标 Paimon 配置">
+    <Section title="源端&目标Paimon配置">
       <Descriptions bordered size="small" column={2}>
-        {item('源端类型', root.sourceType ?? 'mysql-cdc')}{item('Server', root.sourceServerName ?? root.sourceServerId)}
-        {item('源库', cdc.databaseName)}{item('目标 Paimon 库', cdc.targetDatabase ?? root.targetDatabase)}
-        {item('源表列表', cdc.selectedTables, 2)}{item('业务域前缀', cdc.domainPrefix)}{item('目标表前缀', cdc.tablePrefix)}
-        {item('目标 Paimon 表列表', targetTables, 2)}{item('排除表正则', cdc.excludingTables, 2)}
-        {item('元数据列', cdc.metadataColumns, 2)}{item('类型映射', cdc.typeMappings, 2)}
-        {item('整库模式', cdc.mode)}{item('忽略不兼容表', cdc.ignoreIncompatible)}
+        {item('源端类型', (root.sourceType ?? taskConfig.sourceType) === 'mysql-cdc' ? 'Mysql CDC' : root.sourceType ?? taskConfig.sourceType)}{item('Server', root.sourceServerName ?? root.sourceServerId ?? taskConfig.sourceServerId)}
+        {item('源库', cdc.databaseName, 2)}{item('源表列表', cdc.selectedTables, 2)}
+        {item('目标Paimon库', cdc.targetDatabase ?? root.targetDatabase)}{item('目标Paimon表所属域', cdc.domainPrefix)}
+        {item('目标Paimon表前缀', cdc.tablePrefix)}{item('目标Paimon表列表', targetTables)}
+        {item('目标Paimon表同步元数据列', cdc.metadataColumns, 2)}{item('目标Paimon表类型映射', cdc.typeMappings, 2)}
+        {item('整库模式', cdc.mode ?? 'combined', 2)}
       </Descriptions>
     </Section>
     <Section title="源表私有配置">
@@ -107,14 +135,14 @@ export function InstanceConfigView({ value }: { value: unknown }) {
         { title: '状态', width: 100, render: (_: unknown, row: { config: Record<string, unknown> }) => Object.values(row.config).some((entry) => Array.isArray(entry) && entry.length) ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
       ]} />
     </Section>
-    <Section title="MySQL CDC 参数"><StructuredKeyValueTable value={cdc.mysqlConfOverrides} /></Section>
-    <Section title="Paimon Table 参数"><StructuredKeyValueTable value={cdc.tableConfOverrides} /></Section>
+    {Object.keys(asRecord(cdc.mysqlConfOverrides)).length > 0 && <Section title="Mysql配置"><StructuredKeyValueTable value={cdc.mysqlConfOverrides} /></Section>}
+    {Object.keys(asRecord(cdc.tableConfOverrides)).length > 0 && <Section title="目标Paimon表配置"><StructuredKeyValueTable value={cdc.tableConfOverrides} /></Section>}
     <Section title="资源与运行">
       <Descriptions bordered size="small" column={2}>
         {item('并行度', taskConfig.parallelism)}{item('Checkpoint 周期', taskConfig.checkpointInterval ? `${taskConfig.checkpointInterval}s` : undefined)}
         {item('TaskManager 内存', taskConfig.taskManagerMemory)}{item('JobManager 内存', taskConfig.jobManagerMemory)}
       </Descriptions>
-      <div className="realtime-instance-flink-params"><StructuredKeyValueTable value={taskConfig.flinkConfOverrides} /></div>
+      {Object.keys(asRecord(taskConfig.flinkConfOverrides)).length > 0 && <div className="realtime-instance-flink-params"><StructuredKeyValueTable value={taskConfig.flinkConfOverrides} /></div>}
     </Section>
   </div>;
 }

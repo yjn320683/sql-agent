@@ -14,7 +14,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
 @RestController
-@RequestMapping("/api/realtime")
+@RequestMapping({"/api/realtime", "/api"})
 public class RealtimeSupportController {
     private final RealtimeSyncRepository repository; private final RealtimeActorProvider actors;
     private final RealtimeProperties properties;
@@ -26,8 +26,12 @@ public class RealtimeSupportController {
         actors.requireActor(); return RealtimeResponse.success(repository.params());
     }
     @GetMapping("/paimon/cdc-options") public RealtimeResponse<Map<String,Object>> cdcOptions() {
-        actors.requireActor(); return RealtimeResponse.success(Map.of(
-                "targetDatabase", properties.getTargetDatabase(), "domains", repository.domains()));
+        actors.requireActor();
+        List<Map<String, Object>> tablePrefixes = repository.domains().stream().map(domain -> Map.<String, Object>of(
+                "label", domain.get("name"), "value", domain.get("code")))
+                .collect(java.util.stream.Collectors.toList());
+        return RealtimeResponse.success(Map.of(
+                "targetDatabase", properties.getTargetDatabase(), "tablePrefixes", tablePrefixes));
     }
     @GetMapping("/alerts") public RealtimeResponse<List<Map<String,Object>>> alerts() {
         actors.requireActor(); return RealtimeResponse.success(repository.alerts());

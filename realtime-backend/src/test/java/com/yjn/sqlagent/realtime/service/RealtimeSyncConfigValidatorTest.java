@@ -50,6 +50,20 @@ class RealtimeSyncConfigValidatorTest {
     }
 
     @Test
+    void acceptsOnlyCombinedModeAndRejectsNullableKeys() {
+        Map<String, Object> divided = validConfig();
+        cdc(divided).put("mode", "divided");
+        assertThrows(IllegalArgumentException.class,
+                () -> validator.validate("mysql-cdc", 3L, divided));
+
+        Map<String, Object> nullableKey = validConfig();
+        cdc(nullableKey).put("tableConfigs", Map.of("orders", Map.of("primaryKeys", List.of("name"))));
+        assertEquals("源表 orders 的主键字段 name 允许 NULL，不能作为 Paimon 主键",
+                assertThrows(IllegalArgumentException.class,
+                        () -> validator.validate("mysql-cdc", 3L, nullableKey)).getMessage());
+    }
+
+    @Test
     void rejectsMissingKeyAndPartitionCoveringAllKeys() {
         when(servers.schema(3L, "orders")).thenReturn(schema(List.of()));
         assertEquals("MySQL CDC 源表无主键，请配置私有主键：orders",
@@ -75,7 +89,7 @@ class RealtimeSyncConfigValidatorTest {
 
         Map<String, Object> invalid = validConfig();
         cdc(invalid).put("tableConfOverrides", Map.of("sequence.field", "missing"));
-        assertEquals("Sequence Field 引用的源字段不存在：missing",
+        assertEquals("Sequence Field 引用的目标字段不存在：missing",
                 assertThrows(IllegalArgumentException.class,
                         () -> validator.validate("mysql-cdc", 3L, invalid)).getMessage());
     }
@@ -88,7 +102,7 @@ class RealtimeSyncConfigValidatorTest {
         cdc.put("domainPrefix", "trade");
         cdc.put("metadataColumns", List.of("database_name", "table_name", "op_ts"));
         cdc.put("typeMappings", List.of());
-        cdc.put("mode", "divided");
+        cdc.put("mode", "combined");
         cdc.put("ignoreIncompatible", false);
         Map<String, Object> config = new LinkedHashMap<>();
         config.put("sourceServerId", 3L);

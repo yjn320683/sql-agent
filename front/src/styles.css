@@ -2464,6 +2464,73 @@ body {
   }
 }
 
+/* 离线列表工作区：表格容器贴齐工作区边界，页头继续保留阅读留白。 */
+.app-nav.offline + .app-workspace .task-list-page.embedded {
+  padding: 0;
+}
+
+.app-nav.offline + .app-workspace .task-list-page.embedded .data-toolbar {
+  padding: 8px 12px;
+}
+
+.app-nav.offline + .app-workspace .task-list-page.embedded .ant-table-wrapper {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+}
+
+.app-nav.offline + .app-workspace .task-list-page.embedded .table-pagination {
+  padding: 6px 12px;
+}
+
+.app-nav.offline + .app-workspace .data-page:not(.task-list-page) {
+  height: 100%;
+  min-height: 0;
+  padding-top: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+}
+
+.app-nav.offline + .app-workspace .data-page:not(.task-list-page) > .data-page-header {
+  padding-right: var(--page-padding-inline);
+  padding-left: var(--page-padding-inline);
+}
+
+.app-nav.offline + .app-workspace .data-page:not(.task-list-page) > .data-panel {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.app-nav.offline + .app-workspace .session-management {
+  height: 100%;
+  min-height: 0;
+  padding-top: 0;
+  padding-right: 0;
+  padding-bottom: 0;
+  padding-left: 0;
+}
+
+.app-nav.offline + .app-workspace .session-page-header {
+  padding-right: var(--page-padding-inline);
+  padding-left: var(--page-padding-inline);
+}
+
+.app-nav.offline + .app-workspace .session-data-surface {
+  border-right: 0;
+  border-left: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+@media (max-width: 760px) {
+  .app-nav.offline + .app-workspace .task-list-page.embedded {
+    padding: 0;
+  }
+}
+
 .markdown-content th {
   background: #f8fafc;
   color: #334155;
@@ -2498,8 +2565,63 @@ body {
 }
 
 /* Data compare workspace */
-.data-compare-toolbar {
-  gap: 16px;
+.data-toolbar.data-compare-toolbar {
+  display: block;
+  min-height: var(--compact-toolbar-height);
+  padding: 8px 12px;
+}
+
+.data-compare-toolbar-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.data-compare-toolbar-main > .ant-space:first-child {
+  min-width: 0;
+  flex-wrap: nowrap;
+}
+
+.data-compare-toolbar-main .result-count {
+  white-space: nowrap;
+}
+
+.data-compare-status-select {
+  width: 112px;
+}
+
+.data-compare-search.ant-input-affix-wrapper {
+  width: min(240px, 21vw);
+}
+
+.data-compare-advanced-filters {
+  display: grid;
+  grid-template-columns: 110px 110px 110px minmax(140px, 180px) minmax(260px, 340px) auto;
+  align-items: center;
+  gap: 8px;
+  padding-top: 8px;
+  margin-top: 8px;
+  border-top: 1px solid #eef0f3;
+}
+
+@media (max-width: 1100px) {
+  .data-compare-toolbar-main {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .data-compare-toolbar-main > .ant-space:last-child {
+    align-self: flex-end;
+  }
+
+  .data-compare-advanced-filters {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .data-compare-advanced-filters .ant-picker-range {
+    grid-column: span 2;
+  }
 }
 
 .compare-two-column-form {
@@ -4503,10 +4625,10 @@ button.lineage-graph-node:hover {
   display: grid;
   flex: 0 0 auto;
   grid-template-columns: repeat(5, minmax(120px, 1fr));
-  margin-bottom: 14px;
+  margin-bottom: 0;
   overflow: hidden;
   border: 1px solid #dfe4ea;
-  border-radius: 6px;
+  border-radius: 0;
   background: #ffffff;
 }
 
@@ -4566,6 +4688,15 @@ button.lineage-graph-node:hover {
   flex-direction: column;
 }
 
+.execution-center-page > .execution-summary-band {
+  border-right: 0;
+  border-left: 0;
+}
+
+.execution-center-page > .execution-center-panel {
+  border-top: 0;
+}
+
 .execution-center-toolbar {
   min-height: 62px;
   display: flex;
@@ -4579,6 +4710,13 @@ button.lineage-graph-node:hover {
 
 .execution-center-search .ant-input-affix-wrapper {
   width: min(420px, 34vw);
+}
+
+.compact-switch-control {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  white-space: nowrap;
 }
 
 .execution-center-panel > .ant-table-wrapper {
@@ -4907,6 +5045,13 @@ button.lineage-graph-node:hover {
 .catalog-source {
   color: #667085;
   font-size: 12px;
+}
+
+.catalog-source-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
 }
 
 .catalog-source-dot {
@@ -5576,6 +5721,11 @@ button.lineage-graph-node:hover {
 .platform-status-header {
   min-height: var(--page-header-min-height);
   flex: 0 0 auto;
+}
+
+.platform-status-toolbar {
+  flex: 0 0 auto;
+  background: #fff;
 }
 
 .platform-health-summary {
@@ -7488,17 +7638,17 @@ body.is-resizing-inspector {
   font-size: 22px;
 }
 
-.realtime-sync-tasks-page {
-  padding-top: 10px;
+.realtime-page.realtime-sync-tasks-page {
+  padding: 0;
 }
 
 .realtime-sync-main-panel {
   min-width: 0;
   overflow: hidden;
-  border: 1px solid #dfe4ea;
-  border-radius: 6px;
+  border: 0;
+  border-radius: 0;
   background: #fff;
-  box-shadow: 0 4px 14px rgba(19, 33, 68, 0.05);
+  box-shadow: none;
 }
 
 .realtime-sync-tasks-page .realtime-page-header {
@@ -7581,7 +7731,7 @@ body.is-resizing-inspector {
 
 .realtime-sync-query-filter {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
   gap: 16px 20px;
   align-items: center;
 }
@@ -7613,7 +7763,9 @@ body.is-resizing-inspector {
 
 .realtime-server-toolbar {
   display: flex;
-  justify-content: flex-start;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 
 .realtime-server-toolbar .ant-input-affix-wrapper {
@@ -7874,10 +8026,21 @@ body.is-resizing-inspector {
   border: 1px solid var(--workspace-divider);
 }
 
-.realtime-editor-toolbar {
-  display: flex;
-  justify-content: center;
-  margin-bottom: 16px;
+.realtime-sync-workspace-tabs > .ant-tabs-content-holder {
+  padding: 0;
+}
+
+.realtime-editor-mode-tabs > .ant-tabs-nav {
+  margin: 0 0 16px;
+}
+
+.realtime-editor-mode-tabs > .ant-tabs-nav .ant-tabs-tab {
+  padding: 9px 4px;
+  font-weight: 600;
+}
+
+.realtime-editor-mode-tabs > .ant-tabs-content-holder {
+  display: none;
 }
 
 .realtime-sync-editor-page {

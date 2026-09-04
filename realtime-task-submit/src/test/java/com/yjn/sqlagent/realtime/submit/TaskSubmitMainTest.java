@@ -70,7 +70,7 @@ class TaskSubmitMainTest {
 
     private SubmissionSpec validSpec() {
         SubmissionSpec spec = new SubmissionSpec();
-        spec.setTaskId(1L); spec.setJobInstanceId(2L);
+        spec.setTaskId(1L); spec.setTaskInstanceId(2L);
         SubmissionSpec.TaskSpec task = new SubmissionSpec.TaskSpec();
         task.setTaskConfig(Map.of("sourceServerId", 3L, "cdcConfig", Map.of(
                 "targetDatabase", "ods", "domainPrefix", "trade", "selectedTables", List.of("orders"))));
@@ -80,7 +80,7 @@ class TaskSubmitMainTest {
         spec.setRuntimeConfig(runtime);
         SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
         server.setId(3L); server.setAddress("mysql:3306"); server.setDatabaseName("sales");
-        server.setDatabaseAbbr("sale"); server.setAccount("cdc"); server.setPassword("不能泄露的密码");
+        server.setDatabasePrefix("sale"); server.setAccount("cdc"); server.setPassword("不能泄露的密码");
         spec.setServers(List.of(server));
         return spec;
     }

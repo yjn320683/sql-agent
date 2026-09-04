@@ -355,20 +355,6 @@ export default function SessionManagementPage() {
   return (
     <section className="session-management">
       <div className="session-management-inner">
-        <header className="session-page-header">
-          <div className="session-page-heading">
-            <div className="session-page-title-row">
-              <Typography.Title level={2}>会话管理</Typography.Title>
-              <Typography.Text className="session-page-count">
-                {loadError ? '连接异常' : `${pageData.total} 个会话`}
-              </Typography.Text>
-            </div>
-          </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/chat')}>
-            新建对话
-          </Button>
-        </header>
-
         <div className="session-data-surface">
           <div className="session-toolbar">
             <div className="session-filter-group">
@@ -385,6 +371,7 @@ export default function SessionManagementPage() {
               />
             </div>
             <div className="session-toolbar-actions">
+              <span className="session-page-count">{loadError ? '连接异常' : `共 ${pageData.total} 个会话`}</span>
               <Input
                 className="session-search"
                 prefix={<SearchOutlined />}
@@ -396,6 +383,7 @@ export default function SessionManagementPage() {
               <Tooltip title="刷新">
                 <Button icon={<ReloadOutlined />} aria-label="刷新会话" onClick={() => void loadPage()} />
               </Tooltip>
+              <Button type="primary" icon={<PlusOutlined />} onClick={() => navigate('/chat')}>新建对话</Button>
             </div>
           </div>
 
