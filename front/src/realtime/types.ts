@@ -305,7 +305,7 @@ export interface RealtimeTable {
   tableType: 'primary_key' | 'append_only'; creationSource: 'manual' | 'sync';
   producerTaskId?: number; producerTaskName?: string; physicalStatus: 'declared' | 'active' | 'error';
   options: Record<string, string>; columns?: RealtimeTableColumn[]; dependencies?: ManagedTableReference[];
-  columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string;
+  columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string; ddl?: string; ddlError?: string;
 }
 export interface ManagedTableReference {
   realtimeTableId?: number; referenceRole: 'INPUT' | 'OUTPUT'; databaseName?: string; tableName?: string;

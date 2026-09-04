@@ -466,6 +466,18 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       <div className="realtime-mapping-table">
         <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 900 }} />
       </div>
+
+      <div className="task-command-preview realtime-command-preview-section">
+        <Button type="link" icon={<EyeOutlined />} loading={previewLoading} onClick={() => void commandPreview()}>生成预览</Button>
+        <Input.TextArea
+          className="task-command-preview-textarea"
+          value={preview}
+          placeholder="点击生成预览，查看 Paimon Action 等价命令"
+          readOnly
+          rows={8}
+          wrap="off"
+        />
+      </div>
     </div>
   );
 
@@ -484,17 +496,6 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       <Collapse className="realtime-param-collapse" items={[
         { key: 'flink', label: 'Flink 与高可用参数', children: <><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map((item) => dynamicParam(item))}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['taskConfig', 'flinkConfOverrides']} taskParams={params} /></> },
       ]} />
-      <div className="task-command-preview">
-        <Button type="link" icon={<EyeOutlined />} loading={previewLoading} onClick={() => void commandPreview()}>预览</Button>
-        <Input.TextArea
-          className="task-command-preview-textarea"
-          value={preview}
-          placeholder="点击预览生成 Paimon Action 等价命令"
-          readOnly
-          rows={10}
-          wrap="off"
-        />
-      </div>
     </div>
   );
 

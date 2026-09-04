@@ -1,8 +1,11 @@
 package com.yjn.sqlagent.realtime.service;
 
 import com.yjn.sqlagent.realtime.repository.RealtimeTableRepository;
+import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.TreeMap;
 import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Scheduled;
 
@@ -44,6 +47,58 @@ public class RealtimeTableService {
         repository.updateFromPhysical(id, request, physical, actor); return repository.required(id);
     }
 
+    public Map<String, Object> detail(long id) {
+        Map<String, Object> result = new LinkedHashMap<>(repository.required(id));
+        try {
+            Map<String, Object> physical = catalog.describe(text(result.get("databaseName")), text(result.get("tableName")));
+            result.put("columns", physical.getOrDefault("columns", result.get("columns")));
+            result.put("options", physical.getOrDefault("options", result.get("options")));
+            String physicalComment = text(physical.get("comment"));
+            if (!physicalComment.isEmpty()) result.put("tableComment", physicalComment);
+        } catch (RuntimeException ex) {
+            result.put("ddlError", ex.getMessage());
+        }
+        result.put("ddl", createTableDdl(result));
+        return result;
+    }
+
+    String createTableDdl(Map<String, Object> table) {
+        List<Map<String, Object>> columns = maps(table.get("columns"));
+        if (columns.isEmpty()) return "";
+        List<String> definitions = new ArrayList<>();
+        List<String> primaryKeys = new ArrayList<>();
+        List<String> partitionKeys = new ArrayList<>();
+        for (Map<String, Object> column : columns) {
+            String name = text(column.get("name"));
+            StringBuilder definition = new StringBuilder("  ").append(quoteIdentifier(name)).append(' ')
+                    .append(text(column.get("dataType")));
+            if (!boolDefault(column.get("nullable"), true)) definition.append(" NOT NULL");
+            String comment = text(column.get("comment"));
+            if (!comment.isEmpty()) definition.append(" COMMENT '").append(quoteLiteral(comment)).append('\'');
+            definitions.add(definition.toString());
+            if (bool(column.get("primaryKey"))) primaryKeys.add(quoteIdentifier(name));
+            if (bool(column.get("partitionKey"))) partitionKeys.add(quoteIdentifier(name));
+        }
+        if (!primaryKeys.isEmpty()) definitions.add("  PRIMARY KEY (" + String.join(", ", primaryKeys) + ") NOT ENFORCED");
+        String catalogName = text(table.get("catalogName"));
+        if (catalogName.isEmpty()) catalogName = "paimon";
+        StringBuilder ddl = new StringBuilder("CREATE TABLE ")
+                .append(quoteIdentifier(catalogName)).append('.')
+                .append(quoteIdentifier(text(table.get("databaseName")))).append('.')
+                .append(quoteIdentifier(text(table.get("tableName"))))
+                .append(" (\n").append(String.join(",\n", definitions)).append("\n)");
+        String tableComment = text(table.get("tableComment"));
+        if (!tableComment.isEmpty()) ddl.append("\nCOMMENT '").append(quoteLiteral(tableComment)).append('\'');
+        if (!partitionKeys.isEmpty()) ddl.append("\nPARTITIONED BY (").append(String.join(", ", partitionKeys)).append(')');
+        Map<String, String> options = stringMap(table.get("options"));
+        if (!options.isEmpty()) {
+            List<String> optionLines = new ArrayList<>();
+            new TreeMap<>(options).forEach((key, value) -> optionLines.add("  '" + quoteLiteral(key) + "' = '" + quoteLiteral(value) + "'"));
+            ddl.append("\nWITH (\n").append(String.join(",\n", optionLines)).append("\n)");
+        }
+        return ddl.append(';').toString();
+    }
+
     public List<String> databases() { return catalog.databases(); }
     // 物理表发现是兜底对账，不应复用实例状态的 10 秒轮询周期，避免频繁打开 Hive Catalog。
     @Scheduled(initialDelayString = "${app.realtime.table-refresh-initial-delay-ms:60000}",
@@ -55,4 +110,14 @@ public class RealtimeTableService {
         catch (RuntimeException ignored) { /* Catalog 暂时不可用时由下一轮重试。 */ }
     }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
+    private boolean bool(Object value) { return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(text(value)) || "1".equals(text(value)); }
+    private boolean boolDefault(Object value, boolean fallback) { return value == null ? fallback : bool(value); }
+    private String quoteIdentifier(String value) { return "`" + value.replace("`", "``") + "`"; }
+    private String quoteLiteral(String value) { return value.replace("'", "''"); }
+    @SuppressWarnings("unchecked") private List<Map<String, Object>> maps(Object value) { return value instanceof List ? (List<Map<String, Object>>) value : List.of(); }
+    private Map<String, String> stringMap(Object value) {
+        Map<String, String> result = new LinkedHashMap<>();
+        if (value instanceof Map) ((Map<?, ?>) value).forEach((key, item) -> result.put(String.valueOf(key), String.valueOf(item)));
+        return result;
+    }
 }

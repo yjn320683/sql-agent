@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from 'react';
-import { Alert, Button, Dropdown, Form, Input, Modal, Select, Skeleton, Space, Steps, Switch, Tabs, Tooltip, message } from 'antd';
+import { Alert, Button, Dropdown, Form, Input, Modal, Select, Skeleton, Space, Switch, Tabs, Tooltip, message } from 'antd';
 import {
   BranchesOutlined, CheckCircleOutlined, CodeOutlined, DatabaseOutlined,
   DeleteOutlined, DownOutlined, FunctionOutlined, MoreOutlined, OrderedListOutlined,
@@ -21,10 +21,10 @@ import WorkspaceBottomPanel, { type WorkbenchTab } from './WorkspaceBottomPanel'
 import WorkspaceMetadataPanel from './WorkspaceMetadataPanel';
 import TaskVersionDrawer from './TaskVersionDrawer';
 import WorkspaceFunctionPanel from './WorkspaceFunctionPanel';
+import TaskDevelopmentSteps, { taskStepsCollapsedKey } from './TaskDevelopmentSteps';
 
 type InspectorTab = 'metadata' | 'functions';
 
-const taskStepsCollapsedKey = 'sql-agent-task-steps-collapsed';
 const inspectorWidthKey = 'sql-agent-inspector-width';
 
 interface Props {
@@ -589,26 +589,10 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   return (
     <div className="sql-workbench-page task-development-page">
       <div className="task-development-body">
-        <aside className={developmentStepsCollapsed ? 'task-development-steps collapsed' : 'task-development-steps'}>
-          <Tooltip title={developmentStepsCollapsed ? '展开步骤导航' : '收起步骤导航'} placement="right">
-            <button
-              type="button"
-              className="task-development-steps-toggle"
-              aria-label={developmentStepsCollapsed ? '展开步骤导航' : '收起步骤导航'}
-              onClick={() => setDevelopmentStepsCollapsed((collapsed) => {
-                const next = !collapsed;
-                window.localStorage.setItem(taskStepsCollapsedKey, String(next));
-                return next;
-              })}
-            >
-              {developmentStepsCollapsed ? <RightOutlined /> : <LeftOutlined />}
-            </button>
-          </Tooltip>
-          <Steps direction="vertical" current={developmentStep} onChange={(next) => next === 0 ? setDevelopmentStep(0) : void continueToSql()} items={[
+        <TaskDevelopmentSteps collapsed={developmentStepsCollapsed} onCollapsedChange={setDevelopmentStepsCollapsed} current={developmentStep} onChange={(next) => next === 0 ? setDevelopmentStep(0) : void continueToSql()} items={[
             { title: '任务设置', description: id ? `任务 ${id}` : '名称与运行参数', icon: <SettingOutlined /> },
             { title: 'SQL 开发', description: structure ? `${structure.stepCount} 个 Step` : 'Hive SQL', icon: <CodeOutlined /> },
           ]} />
-        </aside>
 
         <main className="task-development-main">
           <section className={developmentStep === 0 ? 'task-stage task-settings-stage active' : 'task-stage task-settings-stage'}>

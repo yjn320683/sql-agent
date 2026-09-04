@@ -3,8 +3,10 @@ import { Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm, Space, Ta
 import { DeleteOutlined, EditOutlined, EyeOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { createServer, deleteServer, listServers, listSyncTasks, testServer, testServerRequest, updateServer } from '../api';
 import type { RealtimeServer, RealtimeServerSave, SyncTaskListItem } from '../types';
+import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 
 export default function RealtimeServersPage() {
+  const { actionColumnWidth, actionRef } = useAutoTableActionWidth({ initialWidth: 420, minWidth: 360 });
   const [rows, setRows] = useState<RealtimeServer[]>([]);
   const [loading, setLoading] = useState(false);
   const [editing, setEditing] = useState<RealtimeServer>();
@@ -86,21 +88,21 @@ export default function RealtimeServersPage() {
           { title: '服务 ID', dataIndex: 'id', width: 100, fixed: 'left' as const },
           { title: '名称', dataIndex: 'name', width: 180, fixed: 'left' as const },
           { title: '类型', dataIndex: 'type', width: 90, render: () => <Tag color="blue">MySQL</Tag> },
-          { title: '地址', dataIndex: 'address', ellipsis: true },
+          { title: '地址', dataIndex: 'address', width: 240, ellipsis: true },
           { title: '数据库', dataIndex: 'databaseName', width: 160 },
           { title: '库前缀', dataIndex: 'databasePrefix', width: 100 },
           { title: '账号', dataIndex: 'account', width: 140 },
           { title: '密码', dataIndex: 'passwordConfigured', width: 90, render: (value: boolean) => value ? <Tag color="green">已配置</Tag> : <Tag>未配置</Tag> },
           { title: '操作人', dataIndex: 'operator', width: 110 },
           { title: '更新时间', dataIndex: 'updateTime', width: 175 },
-          { title: '操作', width: 340, fixed: 'right' as const, render: (_: unknown, row: RealtimeServer) => <Space size={10}>
+          { title: '操作', width: actionColumnWidth, fixed: 'right' as const, className: 'table-operation-column', render: (_: unknown, row: RealtimeServer) => <div ref={actionRef(row.id)} className="table-row-actions"><Space size={10}>
             <Button type="link" icon={<ProfileOutlined />} onClick={() => void openTasks(row)}>任务列表</Button>
             <Button type="link" icon={<EyeOutlined />} onClick={() => setViewing(row)}>查看</Button>
             <Button type="link" icon={<LinkOutlined />} onClick={async () => { try { const result = await testServer(row.id); message.success(`连接成功，耗时 ${result.latencyMs ?? '-'} ms`); } catch (error) { message.error((error as Error).message); } }}>测试</Button>
             <Button type="link" icon={<EditOutlined />} onClick={() => open(row)}>编辑</Button>
             <Popconfirm title="确认删除该 Server？" onConfirm={async () => { try { await deleteServer(row.id); await load(); } catch (error) { message.error((error as Error).message); } }}><Button type="link" danger icon={<DeleteOutlined />}>删除</Button></Popconfirm>
-          </Space> },
-          ]} scroll={{ x: 1540 }} pagination={{ defaultPageSize: 20, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (total) => `共 ${total} 条` }} />
+          </Space></div> },
+          ]} scroll={{ x: 1385 + actionColumnWidth }} pagination={{ defaultPageSize: 20, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (total) => `共 ${total} 条` }} />
         </div>
       </section>
       <Drawer title={editing ? `编辑 Server · ${editing.name}` : '新建 MySQL Server'} open={drawerOpen} onClose={() => setDrawerOpen(false)} width={620} extra={<Space><Button icon={<LinkOutlined />} loading={testing} onClick={() => void testCurrent()}>测试连接</Button><Button type="primary" disabled={!editing && !tested} loading={saving} onClick={() => void save()}>保存</Button></Space>}>

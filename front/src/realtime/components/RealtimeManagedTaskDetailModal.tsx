@@ -10,7 +10,7 @@ import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
 import { availableChangeActions, changeDetailButtonText, normalizeChangeAction } from './changeActions';
 import { selectRuntimeInstance } from './runtimeSelection';
 
-interface Props { task?: ManagedTask; loading?: boolean; onClose: () => void }
+interface Props { task?: ManagedTask; loading?: boolean; initialTab?: 'instances' | 'detail' | 'runtime' | 'alerts' | 'changes' | 'versions'; onClose: () => void }
 
 const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
 const statusLabel: Record<string, string> = {
@@ -22,7 +22,7 @@ const statusColor: Record<string, string> = {
   finished: 'success', failed: 'error', canceled: 'default', killed_success: 'success', not_running: 'default',
 };
 
-export default function RealtimeManagedTaskDetailModal({ task, loading, onClose }: Props) {
+export default function RealtimeManagedTaskDetailModal({ task, loading, initialTab = 'instances', onClose }: Props) {
   const [versions, setVersions] = useState<Record<string, unknown>[]>([]);
   const [instances, setInstances] = useState<TaskInstance[]>([]);
   const [alerts, setAlerts] = useState<RealtimeAlert[]>([]);
@@ -34,7 +34,7 @@ export default function RealtimeManagedTaskDetailModal({ task, loading, onClose 
   const [sortOrder, setSortOrder] = useState<InstanceSortOrder>('startedAtDesc');
   const [changeAction, setChangeAction] = useState('all');
   const [changeKeyword, setChangeKeyword] = useState('');
-  const [activeTab, setActiveTab] = useState('instances');
+  const [activeTab, setActiveTab] = useState<string>(initialTab);
   const [logInstance, setLogInstance] = useState<TaskInstance>();
   const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
   const [inspector, setInspector] = useState<{ title: string; kind?: InstanceInspectorKind; value: unknown }>();
@@ -58,10 +58,10 @@ export default function RealtimeManagedTaskDetailModal({ task, loading, onClose 
   }, [task]);
 
   useEffect(() => {
-    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setActiveTab('instances');
+    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setActiveTab(initialTab);
     if (!task) { setVersions([]); setInstances([]); setAlerts([]); setChanges([]); return; }
     void reload();
-  }, [reload, task]);
+  }, [initialTab, reload, task]);
 
   useEffect(() => {
     if (!task || !instances.some((item) => item.executionMode === 'PRODUCTION' && ACTIVE.includes(item.status))) return undefined;

@@ -27,7 +27,7 @@ public class RealtimeTableController {
     @GetMapping("/available") public RealtimeResponse<List<Map<String,Object>>> available() { actors.requireActor(); return RealtimeResponse.success(repository.available()); }
     @GetMapping("/databases") public RealtimeResponse<List<String>> databases() { actors.requireActor(); return RealtimeResponse.success(service.databases()); }
     @PostMapping public RealtimeResponse<Map<String,Object>> create(@RequestBody Map<String,Object> request) { return RealtimeResponse.success(service.create(new LinkedHashMap<>(request),actors.requireActor())); }
-    @GetMapping("/{id}") public RealtimeResponse<Map<String,Object>> detail(@PathVariable long id) { actors.requireActor(); return RealtimeResponse.success(repository.required(id)); }
+    @GetMapping("/{id}") public RealtimeResponse<Map<String,Object>> detail(@PathVariable long id) { actors.requireActor(); return RealtimeResponse.success(service.detail(id)); }
     @GetMapping("/{id}/dependencies") public RealtimeResponse<List<Map<String,Object>>> dependencies(@PathVariable long id) { actors.requireActor(); return RealtimeResponse.success(repository.dependencies(id)); }
     @PostMapping("/{id}/refresh") public RealtimeResponse<Map<String,Object>> refresh(@PathVariable long id) { return RealtimeResponse.success(service.refresh(id,actors.requireActor())); }
     @PostMapping("/{id}/safe-update") public RealtimeResponse<Map<String,Object>> update(@PathVariable long id,@RequestBody Map<String,Object> request) { return RealtimeResponse.success(service.safeUpdate(id,new LinkedHashMap<>(request),actors.requireActor())); }
