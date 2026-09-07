@@ -47,7 +47,7 @@ public class ManagedFlinkPlannerService {
     }
 
     private Analysis plan(String sql, String defaultDatabase, boolean includeExplain) {
-        policy.analyze(sql, defaultDatabase);
+        ManagedSqlAnalyzer.Analysis expected = policy.analyze(sql, defaultDatabase);
         try {
             TableEnvironment table = TableEnvironment.create(
                     EnvironmentSettings.newInstance().inStreamingMode().build());
@@ -59,7 +59,7 @@ public class ManagedFlinkPlannerService {
             Set<String> inputs = new LinkedHashSet<>();
             Set<String> outputs = new LinkedHashSet<>();
             int insertCount = 0;
-            for (String raw : statements(sql)) {
+            for (String raw : policy.splitStatements(sql)) {
                 String statement = unwrapStatementSet(raw);
                 if (statement.isEmpty()) continue;
                 String upper = statement.toUpperCase(Locale.ROOT);
@@ -76,6 +76,8 @@ public class ManagedFlinkPlannerService {
                 }
             }
             if (insertCount == 0) throw new IllegalArgumentException("计算 SQL 至少需要一个 INSERT 输出");
+            requireSameLineage("输入", expected.getInputs(), inputs);
+            requireSameLineage("输出", expected.getOutputs(), outputs);
             String plan = includeExplain ? statementSet.explain() : "";
             return new Analysis(new ArrayList<>(inputs), new ArrayList<>(outputs), insertCount, plan);
         } catch (IllegalArgumentException ex) {
@@ -83,6 +85,26 @@ public class ManagedFlinkPlannerService {
         } catch (Exception ex) {
             throw new IllegalArgumentException("Flink SQL 解析或执行计划校验失败：" + rootMessage(ex), ex);
         }
+    }
+
+    /** AST 负责平台安全策略，Flink Planner 负责真实可执行计划；两侧依赖不一致时拒绝提交。 */
+    private void requireSameLineage(String role, List<String> astTables, Set<String> plannerTables) {
+        Set<String> ast = normalized(astTables);
+        Set<String> planner = normalized(plannerTables);
+        if (!ast.equals(planner)) {
+            Set<String> onlyAst = new LinkedHashSet<>(ast);
+            onlyAst.removeAll(planner);
+            Set<String> onlyPlanner = new LinkedHashSet<>(planner);
+            onlyPlanner.removeAll(ast);
+            throw new IllegalArgumentException("SQL 血缘与 Flink Planner 的" + role + "表不一致，"
+                    + "仅 AST=" + onlyAst + "，仅 Planner=" + onlyPlanner);
+        }
+    }
+
+    private Set<String> normalized(Iterable<String> tables) {
+        Set<String> result = new LinkedHashSet<>();
+        for (String table : tables) result.add(text(table).toLowerCase(Locale.ROOT));
+        return result;
     }
 
     private void collect(Operation operation, Set<String> inputs, Set<String> outputs) {
@@ -146,32 +168,6 @@ public class ManagedFlinkPlannerService {
         String key = unescape(matcher.group(1) == null ? matcher.group(2) : matcher.group(1));
         String value = unescape(matcher.group(3) == null ? matcher.group(4) : matcher.group(3));
         table.getConfig().getConfiguration().setString(key, value);
-    }
-
-    private List<String> statements(String sql) {
-        List<String> result = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean single = false, quoted = false, backtick = false, line = false, block = false;
-        for (int i = 0; i < sql.length(); i++) {
-            char c = sql.charAt(i), next = i + 1 < sql.length() ? sql.charAt(i + 1) : '\0';
-            if (line) { if (c == '\n') { line = false; current.append(c); } continue; }
-            if (block) { if (c == '*' && next == '/') { block = false; i++; } continue; }
-            if (!single && !quoted && !backtick && c == '-' && next == '-') { line = true; i++; continue; }
-            if (!single && !quoted && !backtick && c == '/' && next == '*') { block = true; i++; continue; }
-            if (c == '\'' && !quoted && !backtick) single = !single;
-            if (c == '"' && !single && !backtick) quoted = !quoted;
-            if (c == '`' && !single && !quoted) backtick = !backtick;
-            if (c == ';' && !single && !quoted && !backtick) {
-                add(result, current); current = new StringBuilder();
-            } else current.append(c);
-        }
-        add(result, current);
-        return result;
-    }
-
-    private void add(List<String> result, StringBuilder value) {
-        String statement = value.toString().trim();
-        if (!statement.isEmpty()) result.add(statement);
     }
 
     private String unwrapStatementSet(String sql) {

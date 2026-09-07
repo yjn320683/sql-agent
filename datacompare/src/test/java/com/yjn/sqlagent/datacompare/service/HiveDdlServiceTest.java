@@ -40,6 +40,13 @@ class HiveDdlServiceTest {
     }
 
     @Test
+    void lexerSplitterIgnoresSemicolonsInCommentsAndQuotedIdentifiers() {
+        assertEquals(2, service.parse("-- keep ; in comment\n"
+                + "ALTER TABLE `dw`.`orders` ADD COLUMNS (`a;b` STRING);"
+                + "/* another ; */ ALTER TABLE dw.items ADD COLUMN note STRING;").size());
+    }
+
+    @Test
     void retrySkipsOnlyWhenAllMetadataAlreadyMatches() {
         HiveDdlService.DdlStatement add = service.parse(
                 "ALTER TABLE dw.orders ADD COLUMNS (remark STRING, tags ARRAY<STRING>)").get(0);

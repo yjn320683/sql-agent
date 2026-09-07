@@ -13,6 +13,9 @@ import type {
   TaskInstance,
   TaskMapping,
   TaskParam,
+  SyncDirtyRecordPage,
+  SyncProgressSnapshot,
+  SyncSchemaChange,
   SyncSourceTableOption,
   ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable, RealtimeTableCreateRequest,
 } from './types';
@@ -126,6 +129,11 @@ export const instanceLogDownloadUrl = (taskId: number, instanceId: number, compo
 };
 export const stopInstance = (taskId: number, instanceId: number, stopType = 'direct') => requestJson<TaskInstance>(`/v1/api/tasks/${taskId}/instances/${instanceId}/stop`, json('POST', { stopType }));
 export const refreshInstance = (taskId: number, instanceId: number) => requestJson<TaskInstance>(`/api/realtime/sync-tasks/${taskId}/instances/${instanceId}/refresh-status`, { method: 'POST' });
+export const getSyncProgress = (taskId: number, instanceId: number, refresh = true) => requestJson<SyncProgressSnapshot>(`/api/realtime/sync-tasks/${taskId}/instances/${instanceId}/sync-progress?refresh=${refresh}`);
+export const listSyncDirtyRecords = (taskId: number, unresolvedOnly = true, page = 1, pageSize = 20) => requestJson<SyncDirtyRecordPage>(`/api/realtime/sync-tasks/${taskId}/dirty-records?unresolvedOnly=${unresolvedOnly}&page=${page}&pageSize=${pageSize}`);
+export const resolveSyncDirtyRecord = (taskId: number, recordId: number) => requestJson<boolean>(`/api/realtime/sync-tasks/${taskId}/dirty-records/${recordId}/resolve`, { method: 'POST' });
+export const listSyncSchemaChanges = (taskId: number, refresh = false) => requestJson<SyncSchemaChange[]>(`/api/realtime/sync-tasks/${taskId}/schema-changes?refresh=${refresh}`);
+export const applySyncSchemaChange = (taskId: number, eventId: number) => requestJson<Record<string, unknown>>(`/api/realtime/sync-tasks/${taskId}/schema-changes/${eventId}/apply`, { method: 'POST' });
 
 type ServerWire = Omit<RealtimeServer, 'databaseName'> & { database?: string };
 const serverRequest = (value: RealtimeServerSave) => ({ ...value, type: 'mysql', database: value.databaseName, databaseName: undefined });

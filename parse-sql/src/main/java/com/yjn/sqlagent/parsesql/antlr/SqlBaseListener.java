@@ -160,6 +160,18 @@ public interface SqlBaseListener extends ParseTreeListener {
 	 */
 	void exitAddColumn(SqlBaseParser.AddColumnContext ctx);
 	/**
+	 * Enter a parse tree produced by the {@code createTemporaryView}
+	 * labeled alternative in {@link SqlBaseParser#statement}.
+	 * @param ctx the parse tree
+	 */
+	void enterCreateTemporaryView(SqlBaseParser.CreateTemporaryViewContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code createTemporaryView}
+	 * labeled alternative in {@link SqlBaseParser#statement}.
+	 * @param ctx the parse tree
+	 */
+	void exitCreateTemporaryView(SqlBaseParser.CreateTemporaryViewContext ctx);
+	/**
 	 * Enter a parse tree produced by the {@code createView}
 	 * labeled alternative in {@link SqlBaseParser#statement}.
 	 * @param ctx the parse tree
@@ -323,6 +335,26 @@ public interface SqlBaseListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitUpdateItem(SqlBaseParser.UpdateItemContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link SqlBaseParser#partitionAssignment}.
+	 * @param ctx the parse tree
+	 */
+	void enterPartitionAssignment(SqlBaseParser.PartitionAssignmentContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link SqlBaseParser#partitionAssignment}.
+	 * @param ctx the parse tree
+	 */
+	void exitPartitionAssignment(SqlBaseParser.PartitionAssignmentContext ctx);
+	/**
+	 * Enter a parse tree produced by {@link SqlBaseParser#setValue}.
+	 * @param ctx the parse tree
+	 */
+	void enterSetValue(SqlBaseParser.SetValueContext ctx);
+	/**
+	 * Exit a parse tree produced by {@link SqlBaseParser#setValue}.
+	 * @param ctx the parse tree
+	 */
+	void exitSetValue(SqlBaseParser.SetValueContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link SqlBaseParser#with}.
 	 * @param ctx the parse tree
@@ -541,6 +573,18 @@ public interface SqlBaseListener extends ParseTreeListener {
 	 * @param ctx the parse tree
 	 */
 	void exitCube(SqlBaseParser.CubeContext ctx);
+	/**
+	 * Enter a parse tree produced by the {@code multipleGroupingSets}
+	 * labeled alternative in {@link SqlBaseParser#groupingElement}.
+	 * @param ctx the parse tree
+	 */
+	void enterMultipleGroupingSets(SqlBaseParser.MultipleGroupingSetsContext ctx);
+	/**
+	 * Exit a parse tree produced by the {@code multipleGroupingSets}
+	 * labeled alternative in {@link SqlBaseParser#groupingElement}.
+	 * @param ctx the parse tree
+	 */
+	void exitMultipleGroupingSets(SqlBaseParser.MultipleGroupingSetsContext ctx);
 	/**
 	 * Enter a parse tree produced by {@link SqlBaseParser#groupingExpressions}.
 	 * @param ctx the parse tree

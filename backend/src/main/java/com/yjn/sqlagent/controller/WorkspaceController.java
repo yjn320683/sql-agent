@@ -8,6 +8,7 @@ import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.service.AgentProxyService;
 import com.yjn.sqlagent.service.CurrentUserService;
 import com.yjn.sqlagent.service.PlatformHealthService;
+import com.yjn.sqlagent.service.TaskVersionCheckService;
 import java.util.Map;
 import java.util.Collections;
 import java.util.List;
@@ -28,13 +29,16 @@ public class WorkspaceController {
     private final AgentProxyService agentProxyService;
     private final CurrentUserService currentUserService;
     private final PlatformHealthService platformHealthService;
+    private final TaskVersionCheckService taskVersionCheckService;
 
     public WorkspaceController(AgentProxyService agentProxyService,
                                CurrentUserService currentUserService,
-                               PlatformHealthService platformHealthService) {
+                               PlatformHealthService platformHealthService,
+                               TaskVersionCheckService taskVersionCheckService) {
         this.agentProxyService = agentProxyService;
         this.currentUserService = currentUserService;
         this.platformHealthService = platformHealthService;
+        this.taskVersionCheckService = taskVersionCheckService;
     }
 
     @GetMapping("/hive/databases")
@@ -119,8 +123,10 @@ public class WorkspaceController {
             @RequestParam(required = false) Integer versionNo,
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
-        currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.checkTaskQuality(taskId, versionNo, defaultDb));
+        String operator = currentUserService.requireObId(request);
+        Map<String, Object> result = agentProxyService.checkTaskQuality(taskId, versionNo, defaultDb);
+        taskVersionCheckService.record(taskId, versionNo, "QUALITY", result, operator);
+        return BaseResponse.success(result);
     }
 
     @GetMapping("/hive/tables")
@@ -227,8 +233,10 @@ public class WorkspaceController {
             @RequestParam(required = false) Integer versionNo,
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
-        currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.validateTaskSql(taskId, versionNo, defaultDb));
+        String operator = currentUserService.requireObId(request);
+        Map<String, Object> result = agentProxyService.validateTaskSql(taskId, versionNo, defaultDb);
+        taskVersionCheckService.record(taskId, versionNo, "VALIDATE", result, operator);
+        return BaseResponse.success(result);
     }
 
     @PostMapping("/tasks/{taskId}/explain")
@@ -238,8 +246,10 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             @RequestParam(defaultValue = "false") boolean extended,
             HttpServletRequest request) {
-        currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.explainTaskSql(taskId, versionNo, defaultDb, extended));
+        String operator = currentUserService.requireObId(request);
+        Map<String, Object> result = agentProxyService.explainTaskSql(taskId, versionNo, defaultDb, extended);
+        taskVersionCheckService.record(taskId, versionNo, "EXPLAIN", result, operator);
+        return BaseResponse.success(result);
     }
 
     @PostMapping("/sql/completions")

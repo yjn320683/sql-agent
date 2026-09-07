@@ -19,7 +19,7 @@ import com.yjn.sqlagent.datacompare.model.PrepareVersionRequest;
 import com.yjn.sqlagent.datacompare.model.TaskVersionContent;
 import com.yjn.sqlagent.datacompare.model.VersionComparePlan;
 import com.yjn.sqlagent.datacompare.repository.DataCompareRepository;
-import com.yjn.sqlagent.parsesql.HiveSqlParser;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import java.util.Collections;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
@@ -38,7 +38,7 @@ class DataCompareServiceTest {
         ObjectMapper json = new ObjectMapper();
         DataCompareProperties properties = new DataCompareProperties();
         properties.setHiveTempDatabase("verify_tmp");
-        service = new DataCompareService(repository, new SqlStepParser(new HiveSqlParser()),
+        service = new DataCompareService(repository, new SqlStepParser(new SqlLineageParser()),
                 new HiveDdlService(), null, null, new SqlParameterRenderer(json), null, json, properties);
         String baselineSql = "====step:1====\nINSERT OVERWRITE TABLE tmp.stage SELECT id FROM ods.source;\n"
                 + "====step:2====\nINSERT OVERWRITE TABLE dw.target SELECT id FROM tmp.stage;";

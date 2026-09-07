@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type CSSProperties, type KeyboardEvent as ReactKeyboardEvent, type PointerEvent } from 'react';
-import { Alert, Button, Dropdown, Form, Input, Modal, Select, Skeleton, Space, Switch, Tabs, Tooltip, message } from 'antd';
+import { Alert, Button, Dropdown, Form, Input, Modal, Select, Skeleton, Space, Switch, Tabs, Tag, Tooltip, message } from 'antd';
 import {
   BranchesOutlined, CheckCircleOutlined, CodeOutlined, DatabaseOutlined,
   DeleteOutlined, DownOutlined, FunctionOutlined, MoreOutlined, OrderedListOutlined,
@@ -10,12 +10,12 @@ import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { sql } from '@codemirror/lang-sql';
 import { autocompletion, type CompletionContext } from '@codemirror/autocomplete';
 import { useNavigate } from 'react-router-dom';
-import { activateTaskVersion, createTask, getTask, getTaskVersion, listTaskVersions, updateTaskVersion } from '../../api/tasks';
+import { activateTaskVersion, createTask, getTask, getTaskVersion, getTaskVersionCheckSummary, listTaskVersions, updateTaskVersion } from '../../api/tasks';
 import { ApiError } from '../../api/client';
 import { checkTaskQuality, completeSql, explainTaskSql, previewSqlStructure, validateTaskSql } from '../../api/workspace';
 import type {
   HiveExplainVO, HiveValidationVO, SqlStructurePreviewVO, SqlTaskSaveRequest, SqlTaskVO,
-  SqlTaskVersionSaveRequest, SqlTaskVersionVO, TaskQualityVO,
+  SqlTaskVersionSaveRequest, SqlTaskVersionVO, TaskQualityVO, TaskVersionCheckSummaryVO,
 } from '../../types';
 import WorkspaceBottomPanel, { type WorkbenchTab } from './WorkspaceBottomPanel';
 import WorkspaceMetadataPanel from './WorkspaceMetadataPanel';
@@ -62,6 +62,7 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const [validationError, setValidationError] = useState('');
   const [explainError, setExplainError] = useState('');
   const [qualityError, setQualityError] = useState('');
+  const [checkSummary, setCheckSummary] = useState<TaskVersionCheckSummaryVO>();
   const [database, setDatabase] = useState<string>();
   const [dirty, setDirty] = useState(false);
   const [developmentStep, setDevelopmentStep] = useState(0);
@@ -204,6 +205,14 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   }, [id]);
 
   useEffect(() => { void loadVersionItems(); }, [loadVersionItems]);
+
+  const loadCheckSummary = useCallback(async (targetTaskId?: number, targetVersionNo?: number) => {
+    if (!targetTaskId || !targetVersionNo) { setCheckSummary(undefined); return; }
+    try { setCheckSummary(await getTaskVersionCheckSummary(targetTaskId, targetVersionNo)); }
+    catch { setCheckSummary(undefined); }
+  }, []);
+
+  useEffect(() => { void loadCheckSummary(id, taskVersion?.versionNo); }, [id, loadCheckSummary, taskVersion?.versionNo]);
 
   useEffect(() => {
     setDevelopmentStep(0);
@@ -353,7 +362,10 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const runValidation = async () => {
     const resolved = await ensureSaved(); if (!resolved) return;
     setBottomOpen(true); setBottomTab('validation'); setValidating(true); setValidationError('');
-    try { setValidation(await validateTaskSql(resolved.id, database, taskVersion?.versionNo)); }
+    try {
+      setValidation(await validateTaskSql(resolved.id, database, taskVersion?.versionNo));
+      await loadCheckSummary(resolved.id, taskVersion?.versionNo);
+    }
     catch (error) { setValidation(undefined); setValidationError((error as Error).message); }
     finally { setValidating(false); }
   };
@@ -361,7 +373,10 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const runExplain = async () => {
     const resolved = await ensureSaved(); if (!resolved) return;
     setBottomOpen(true); setBottomTab('explain'); setExplaining(true); setExplainError('');
-    try { setExplain(await explainTaskSql(resolved.id, database, taskVersion?.versionNo)); }
+    try {
+      setExplain(await explainTaskSql(resolved.id, database, taskVersion?.versionNo));
+      await loadCheckSummary(resolved.id, taskVersion?.versionNo);
+    }
     catch (error) { setExplain(undefined); setExplainError((error as Error).message); }
     finally { setExplaining(false); }
   };
@@ -369,7 +384,10 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const runQualityCheck = async () => {
     const resolved = await ensureSaved(); if (!resolved) return;
     setBottomOpen(true); setBottomTab('quality'); setQualityChecking(true); setQualityError('');
-    try { setQuality(await checkTaskQuality(resolved.id, database, taskVersion?.versionNo)); }
+    try {
+      setQuality(await checkTaskQuality(resolved.id, database, taskVersion?.versionNo));
+      await loadCheckSummary(resolved.id, taskVersion?.versionNo);
+    }
     catch (error) { setQuality(undefined); setQualityError((error as Error).message); }
     finally { setQualityChecking(false); }
   };
@@ -530,7 +548,11 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
         {!canEdit ? <Alert className="version-editor-readonly-alert" type={taskVersion.status === 'STALE' ? 'warning' : 'info'} showIcon message={`${versionStatusText(taskVersion)}不可编辑`} description="需要修改时，请从当前生效代码新建版本。" action={<Button size="small" type="primary" disabled={task.archived} onClick={() => { setVersionCreateOnOpen(true); setVersionOpen(true); }}>新建版本</Button>} /> : null}
 
         <div className="version-editor-action-toolbar">
-          <div><strong>{versionSection === 'sql' ? '任务 SQL' : '表结构变更 DDL'}</strong><span>{versionSection === 'sql' ? database || '未选择数据库' : '仅保存，不自动执行'}</span></div>
+          <div><strong>{versionSection === 'sql' ? '任务 SQL' : '表结构变更 DDL'}</strong><span>{versionSection === 'sql' ? database || '未选择数据库' : '仅保存，不自动执行'}</span>{versionSection === 'sql' && checkSummary ? <span className="version-check-summary">{(['VALIDATE', 'QUALITY', 'COMPARE'] as const).map((type) => {
+            const item = checkSummary.checks[type];
+            const label = type === 'VALIDATE' ? '编译' : type === 'QUALITY' ? '质量' : '验数';
+            return <Tooltip key={type} title={item?.summary || `${label}尚未执行`}><Tag color={!item ? 'default' : item.passed ? 'success' : item.complete ? 'error' : 'processing'}>{label} {!item ? '未检查' : item.passed ? '通过' : item.status}</Tag></Tooltip>;
+          })}</span> : null}</div>
           <Space size={2}>
             {versionSection === 'sql' ? <Button type="text" icon={<SafetyCertificateOutlined />} loading={qualityChecking} onClick={() => void runQualityCheck()}>质量检查</Button> : null}
             {versionSection === 'sql' ? <Button type="text" icon={<CheckCircleOutlined />} loading={validating} onClick={() => void runValidation()}>编译校验</Button> : null}

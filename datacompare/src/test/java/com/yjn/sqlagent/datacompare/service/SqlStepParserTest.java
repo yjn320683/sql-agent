@@ -4,13 +4,13 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import com.yjn.sqlagent.datacompare.model.SqlStep;
-import com.yjn.sqlagent.parsesql.HiveSqlParser;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import java.util.Collections;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
 class SqlStepParserTest {
-    private final SqlStepParser parser = new SqlStepParser(new HiveSqlParser());
+    private final SqlStepParser parser = new SqlStepParser(new SqlLineageParser());
 
     @Test
     void parsesStepMarkersAndAddsRequiredProducer() {

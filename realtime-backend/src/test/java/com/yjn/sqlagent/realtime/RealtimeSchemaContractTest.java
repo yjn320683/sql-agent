@@ -19,7 +19,8 @@ class RealtimeSchemaContractTest {
             "rt_sync_task_table_mapping", "rt_task_param", "rt_server", "rt_task_instance",
             "rt_task_operation", "rt_task_change_log", "rt_alert", "rt_paimon_business_domain",
             "rt_realtime_table", "rt_realtime_table_column", "rt_task_table_reference",
-            "rt_compute_task_config", "rt_export_task_config", "rt_export_task_table_mapping");
+            "rt_compute_task_config", "rt_export_task_config", "rt_export_task_table_mapping",
+            "rt_sync_progress_snapshot", "rt_sync_dirty_record", "rt_schema_change_event");
 
     @Test
     void schemaContainsUnifiedRealtimeTablesAndPrunedFields() throws Exception {
@@ -29,7 +30,7 @@ class RealtimeSchemaContractTest {
         while (matcher.find()) tables.add(matcher.group(1));
 
         assertEquals(REQUIRED_TABLES, tables.stream().collect(Collectors.toSet()));
-        assertEquals(18, tables.size());
+        assertEquals(21, tables.size());
         assertTrue(schema.contains("managed_flag TINYINT(1) NOT NULL DEFAULT 1"));
         assertTrue(schema.contains("idx_task_instance_managed_status"));
         assertTrue(schema.contains("idx_task_instance_task_mode_create"));
@@ -53,6 +54,9 @@ class RealtimeSchemaContractTest {
         assertTrue(schema.contains("realtime_table_id BIGINT NULL"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_compute_task_config"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_export_task_config"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_progress_snapshot"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_dirty_record"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_schema_change_event"));
     }
 
     @Test

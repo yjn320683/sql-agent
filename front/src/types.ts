@@ -161,6 +161,96 @@ export interface SqlTaskVersionPageVO {
   total: number;
 }
 
+export interface TaskVersionCheckItemVO {
+  type: 'VALIDATE' | 'QUALITY' | 'EXPLAIN' | 'COMPARE';
+  status: string;
+  passed?: boolean;
+  complete?: boolean;
+  errorCount?: number;
+  warningCount?: number;
+  durationMs?: number;
+  summary?: string;
+  checkedBy?: string;
+  checkedAt?: string;
+}
+
+export interface TaskVersionCheckSummaryVO {
+  taskId: number;
+  versionNo: number;
+  allPassed: boolean;
+  readyToActivate: boolean;
+  blockingReason?: string;
+  checks: Partial<Record<TaskVersionCheckItemVO['type'], TaskVersionCheckItemVO>>;
+}
+
+export interface SqlTaskScheduleVO {
+  id?: number;
+  taskId: number;
+  scheduleType: 'MANUAL' | 'CRON';
+  cronExpression?: string;
+  timezone: string;
+  enabled: boolean;
+  concurrencyPolicy: 'FORBID' | 'ALLOW';
+  maxRetries: number;
+  retryIntervalSeconds: number;
+  parameters: Record<string, unknown>;
+  nextTriggerTime?: string;
+  lastTriggerTime?: string;
+  lastRunStatus?: string;
+  revision: number;
+}
+
+export interface SqlTaskDependencyVO {
+  id: number;
+  taskId: number;
+  upstreamTaskId: number;
+  dependencyType: 'SUCCESS' | 'COMPLETED';
+}
+
+export interface SqlTaskScheduleRunVO {
+  id: number;
+  scheduleId?: number;
+  taskId: number;
+  triggerType: 'CRON' | 'MANUAL' | 'BACKFILL' | 'RETRY';
+  scheduledTime: string;
+  businessDate?: string;
+  status: string;
+  attemptNo: number;
+  executionId?: number;
+  backfillBatchId?: number;
+  message?: string;
+  createdBy: string;
+}
+
+export interface SqlTaskScheduleRunPageVO {
+  items: SqlTaskScheduleRunVO[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface SqlTaskBackfillBatchVO {
+  id: number;
+  taskId: number;
+  startDate: string;
+  endDate: string;
+  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL_FAILED' | 'FAILED' | 'CANCELLED';
+  totalCount: number;
+  submittedCount: number;
+  succeededCount: number;
+  failedCount: number;
+  requestedBy: string;
+  createTime: string;
+  updateTime: string;
+}
+
+export interface SqlTaskBackfillBatchPageVO {
+  items: SqlTaskBackfillBatchVO[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
 export type TaskExecutionStatus =
   | 'PENDING' | 'QUEUED' | 'RUNNING' | 'SUCCEEDED'
   | 'FAILED' | 'CANCELLING' | 'CANCELLED';

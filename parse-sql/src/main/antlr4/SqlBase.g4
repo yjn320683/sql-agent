@@ -42,12 +42,11 @@ statement
         (WITH tableProperties)?                                        #createTable
     | DROP TABLE (IF EXISTS)? qualifiedName                            #dropTable
     | with? (INSERT | REPLACE) IGNORE? (OVERWRITE|INTO) TABLE? qualifiedName
-        (PARTITION '(' identifier ('=' valueExpression)?
-        (',' identifier ('=' valueExpression)?)* ')')?
+        (PARTITION '(' partitionAssignment (',' partitionAssignment)* ')')?
         columnAliases? query (DISTRIBUTED BY distributeElement (',' distributeElement)*)?
-        (ON DUPLICATE KEY UPDATE .*?)?
                                                                        #insertInto
-    | DELETE FROM table=qualifiedName (WHERE booleanExpression)?       #delete
+    | DELETE FROM table=qualifiedName (AS? alias=identifier)?
+        (WHERE booleanExpression)?                                     #delete
     | UPDATE relation (AS? identifier)? (',' relation (AS? identifier)?)* SET setItem (',' setItem)*
         (FROM relation (',' relation)*)?
         (WHERE where=booleanExpression)?                               #update
@@ -58,7 +57,8 @@ statement
     | ALTER TABLE tableName=qualifiedName
         ADD (COLUMN|COLUMNS) ('(')? column=tableElement
         (',' column=tableElement)*    (')')?                           #addColumn
-    | CREATE (OR REPLACE)? VIEW qualifiedName AS query                 #createView
+    | CREATE TEMPORARY VIEW qualifiedName columnAliases? AS query      #createTemporaryView
+    | CREATE (OR REPLACE)? VIEW qualifiedName columnAliases? AS query  #createView
     | DROP VIEW (IF EXISTS)? qualifiedName                             #dropView
     | EXPLAIN ('(' explainOption (',' explainOption)* ')')? statement  #explain
     | SHOW TABLES ((FROM | IN) qualifiedName)? (LIKE pattern=STRING)?  #showTables
@@ -69,7 +69,10 @@ statement
     | DESC qualifiedName                                               #showColumns
     | SHOW FUNCTIONS                                                   #showFunctions
     | SHOW SESSION                                                     #showSession
-    | SET SESSION? qualifiedName EQ expression                         #setSession
+    // SET is script context rather than a lineage expression. Hive values commonly contain
+    // URIs, queue names and engine-specific punctuation, so preserve their tokens up to ';'.
+    | SET SESSION? ((qualifiedName | STRING | MINUS identifier) (EQ setValue)?)?
+                                                                       #setSession
     | RESET SESSION qualifiedName                                      #resetSession
     | SHOW PARTITIONS (FROM | IN) qualifiedName
         (WHERE booleanExpression)?
@@ -85,6 +88,14 @@ query
     ;
 updateItem
     : left=expression EQ right=expression
+    ;
+
+partitionAssignment
+    : name=identifier (EQ value=valueExpression)?
+    ;
+
+setValue
+    : (~';')+
     ;
 
 
@@ -161,8 +172,8 @@ lateralViewSet: qualifiedName (',' qualifiedName)*;
 groupingElement
     : groupingExpressions (WITH (ROLLUP | CUBE))?                                #singleGroupingSet
     | ROLLUP '(' (expression (',' expression)*)? ')'                    #rollup
-    | CUBE '(' (qualifiedName (',' qualifiedName)*)? ')'                #cube
-//    | GROUPING SETS '(' groupingSet (',' groupingSet)* ')'              #multipleGroupingSets
+    | CUBE '(' (expression (',' expression)*)? ')'                      #cube
+    | GROUPING SETS '(' groupingSet (',' groupingSet)* ')'              #multipleGroupingSets
     ;
 
 groupingExpressions
@@ -177,8 +188,8 @@ distributeExpressions
     |  expression
     ;
 groupingSet
-    : '(' (qualifiedName (',' qualifiedName)*)? ')'
-    | qualifiedName
+    : '(' (expression (',' expression)*)? ')'
+    | expression
     ;
 
 namedQuery
@@ -470,13 +481,11 @@ explainOption
 
 qualifiedName
     // Allow digit-start identifiers after dot (e.g., schema.30_day_table)
-    : identifier ('.' identifier | DOT_IDENTIFIER)*
+    : (identifier | PLACEHOLDER) ('.' (identifier | PLACEHOLDER) | DOT_IDENTIFIER)*
     ;
 
 identifier
     : IDENTIFIER          #unquotedIdentifier
-    | INTEGER_VALUE IDENTIFIER         #unquotedIdentifier
-    | IDENTIFIER (IDENTIFIER)? #unquotedIdentifier
     | quotedIdentifier       #quotedIdentifierAlternative
     | nonReserved            #unquotedIdentifier
     | BACKQUOTED_IDENTIFIER  #backQuotedIdentifier
@@ -514,7 +523,7 @@ nonReserved
     | TABLESAMPLE | SYSTEM | BERNOULLI | POISSONIZED | USE | TO
     | RESCALED | APPROXIMATE | AT | CONFIDENCE
     | SET | RESET
-    | VIEW | REPLACE
+    | VIEW | REPLACE | TEMPORARY
     | IF | NULLIF
     | normalForm
     | POSITION
@@ -622,6 +631,7 @@ WITH: W I T H;
 RECURSIVE: R E C U R S I V E;
 VALUES: V A L U E S;
 CREATE: C R E A T E;
+TEMPORARY: T E M P O R A R Y;
 TABLE: T A B L E;
 VIEW: V I E W;
 REPLACE: R E P L A C E;

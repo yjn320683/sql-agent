@@ -6,10 +6,13 @@ import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.model.dto.SqlTaskParameterDTO;
 import com.yjn.sqlagent.model.entity.SqlTaskVersionStep;
-import com.yjn.sqlagent.parsesql.HiveSqlParser;
+import com.yjn.sqlagent.parsesql.ParseRequest;
+import com.yjn.sqlagent.parsesql.SqlDialect;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import com.yjn.sqlagent.parsesql.SqlParseException;
-import com.yjn.sqlagent.parsesql.SqlParseResult;
 import com.yjn.sqlagent.parsesql.SqlStatementType;
+import com.yjn.sqlagent.parsesql.StatementLineage;
+import com.yjn.sqlagent.parsesql.TableMetadataProvider;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -22,6 +25,7 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class TaskSqlStructureService {
@@ -39,11 +43,22 @@ public class TaskSqlStructureService {
     }
 
     private final ObjectMapper objectMapper;
-    private final HiveSqlParser sqlParser;
+    private final SqlLineageParser sqlParser;
+    private final TableMetadataProvider metadataProvider;
 
     public TaskSqlStructureService(ObjectMapper objectMapper) {
+        this(objectMapper, TableMetadataProvider.NONE);
+    }
+
+    @Autowired
+    public TaskSqlStructureService(ObjectMapper objectMapper, BackendHiveTableMetadataProvider metadataProvider) {
+        this(objectMapper, (TableMetadataProvider) metadataProvider);
+    }
+
+    TaskSqlStructureService(ObjectMapper objectMapper, TableMetadataProvider metadataProvider) {
         this.objectMapper = objectMapper;
-        this.sqlParser = new HiveSqlParser();
+        this.sqlParser = new SqlLineageParser();
+        this.metadataProvider = metadataProvider;
     }
 
     public String serializeParameters(List<SqlTaskParameterDTO> parameters) {
@@ -91,7 +106,7 @@ public class TaskSqlStructureService {
             if (!numbers.add(part.number)) throw badRequest("Step编号重复：" + part.number);
             if (part.number <= previous) throw badRequest("Step编号必须按脚本顺序递增");
             previous = part.number;
-            SqlParseResult parsed = parseStatement(part.sql);
+            StatementLineage parsed = parseStatement(part.sql);
             SqlTaskVersionStep row = new SqlTaskVersionStep();
             row.setTaskId(taskId);
             row.setVersionNo(versionNo);
@@ -144,11 +159,12 @@ public class TaskSqlStructureService {
         return result;
     }
 
-    private SqlParseResult parseStatement(String sql) {
-        List<String> statements = sqlParser.splitStatements(sql);
+    private StatementLineage parseStatement(String sql) {
+        List<String> statements = sqlParser.splitStatements(sql, SqlDialect.HIVE);
         if (statements.size() != 1) throw badRequest("每个Step只能包含一条SQL语句");
         try {
-            SqlParseResult parsed = sqlParser.parseStatement(statements.get(0));
+            StatementLineage parsed = sqlParser.parseStatement(ParseRequest.builder(statements.get(0))
+                    .dialect(SqlDialect.HIVE).metadataProvider(metadataProvider).build());
             SqlStatementType type = parsed.getStatementType();
             if (type != SqlStatementType.SELECT && type != SqlStatementType.WITH
                     && type != SqlStatementType.INSERT) {

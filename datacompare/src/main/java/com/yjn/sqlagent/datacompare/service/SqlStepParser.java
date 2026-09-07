@@ -1,9 +1,12 @@
 package com.yjn.sqlagent.datacompare.service;
 
 import com.yjn.sqlagent.datacompare.model.SqlStep;
-import com.yjn.sqlagent.parsesql.HiveSqlParser;
-import com.yjn.sqlagent.parsesql.SqlParseResult;
+import com.yjn.sqlagent.parsesql.ParseRequest;
+import com.yjn.sqlagent.parsesql.SqlDialect;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import com.yjn.sqlagent.parsesql.SqlStatementType;
+import com.yjn.sqlagent.parsesql.StatementLineage;
+import com.yjn.sqlagent.parsesql.TableMetadataProvider;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Comparator;
@@ -16,15 +19,27 @@ import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.stream.Collectors;
 import org.springframework.stereotype.Service;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class SqlStepParser {
     private static final java.util.regex.Pattern STEP = java.util.regex.Pattern.compile(
             "(?i)^\\s*====\\s*step\\s*:\\s*(\\d+).*?====\\s*$");
-    private final HiveSqlParser sqlParser;
+    private final SqlLineageParser sqlParser;
+    private final TableMetadataProvider metadataProvider;
 
-    public SqlStepParser(HiveSqlParser sqlParser) {
+    public SqlStepParser(SqlLineageParser sqlParser) {
+        this(sqlParser, TableMetadataProvider.NONE);
+    }
+
+    @Autowired
+    public SqlStepParser(SqlLineageParser sqlParser, HiveTableMetadataProvider metadataProvider) {
+        this(sqlParser, (TableMetadataProvider) metadataProvider);
+    }
+
+    SqlStepParser(SqlLineageParser sqlParser, TableMetadataProvider metadataProvider) {
         this.sqlParser = sqlParser;
+        this.metadataProvider = metadataProvider;
     }
 
     public List<SqlStep> parse(String sql) {
@@ -35,7 +50,7 @@ public class SqlStepParser {
             for (int index = 0; index < statements.size(); index++) {
                 String statement = statements.get(index).trim();
                 if (statement.isEmpty()) continue;
-                SqlParseResult parsed = parseStatement(statement);
+                StatementLineage parsed = parseStatement(statement);
                 if (parsed.getStatementType() == SqlStatementType.SET) continue;
                 SqlStep step = new SqlStep();
                 step.setGroup(entry.getKey());
@@ -70,7 +85,7 @@ public class SqlStepParser {
         StringBuilder result = new StringBuilder();
         for (SqlStep step : selected) {
             String statement = step.getSql();
-            statement = sqlParser.rewriteTables(statement, replacements);
+            statement = sqlParser.rewriteTables(request(statement), replacements);
             result.append(statement.trim()).append('\n');
         }
         return result.toString();
@@ -93,13 +108,13 @@ public class SqlStepParser {
     }
 
     private List<String> splitStatements(String sql) {
-        return sqlParser.splitStatements(sql);
+        return sqlParser.splitStatements(sql, SqlDialect.HIVE);
     }
 
-    private SqlParseResult parseStatement(String statement) {
+    private StatementLineage parseStatement(String statement) {
         try {
-            SqlParseResult parsed = sqlParser.parseStatement(statement);
-            if (parsed.hasUnresolvedTableReferences()) {
+            StatementLineage parsed = sqlParser.parseStatement(request(statement));
+            if (!parsed.getUnresolvedTableReferences().isEmpty()) {
                 throw new IllegalArgumentException("SQL包含动态表名："
                         + String.join(", ", parsed.getUnresolvedTableReferences()));
             }
@@ -107,6 +122,10 @@ public class SqlStepParser {
         } catch (Exception e) {
             throw new IllegalArgumentException("SQL关系解析失败，不能安全生成验数SQL", e);
         }
+    }
+
+    private ParseRequest request(String sql) {
+        return ParseRequest.builder(sql).dialect(SqlDialect.HIVE).metadataProvider(metadataProvider).build();
     }
 
     private void wireDependencies(List<SqlStep> steps) {

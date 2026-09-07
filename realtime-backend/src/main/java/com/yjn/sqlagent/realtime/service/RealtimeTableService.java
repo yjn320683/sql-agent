@@ -47,6 +47,20 @@ public class RealtimeTableService {
         repository.updateFromPhysical(id, request, physical, actor); return repository.required(id);
     }
 
+    /** 仅供同步 Schema 演进流程调用；依然只允许 Paimon Catalog 支持的安全增量变更。 */
+    public Map<String, Object> applySyncEvolution(long id, Map<String, Object> request, String actor) {
+        Map<String, Object> table = repository.required(id);
+        if (!"sync".equals(table.get("creationSource"))) {
+            throw new IllegalStateException("该表不是同步任务维护的实时表");
+        }
+        if (!request.containsKey("addColumns") || maps(request.get("addColumns")).isEmpty()) {
+            throw new IllegalArgumentException("Schema 演进仅支持新增字段");
+        }
+        Map<String, Object> physical = catalog.safeAlter(text(table.get("databaseName")), text(table.get("tableName")), request);
+        repository.updateFromPhysical(id, request, physical, actor);
+        return repository.required(id);
+    }
+
     public Map<String, Object> detail(long id) {
         Map<String, Object> result = new LinkedHashMap<>(repository.required(id));
         try {

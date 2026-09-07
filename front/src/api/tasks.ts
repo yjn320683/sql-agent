@@ -14,6 +14,11 @@ import type {
   TaskExecutionStatus,
   TaskExecutionVO,
   TaskExecutionCreateRequest,
+  TaskVersionCheckSummaryVO,
+  SqlTaskDependencyVO,
+  SqlTaskBackfillBatchPageVO,
+  SqlTaskScheduleRunPageVO,
+  SqlTaskScheduleVO,
 } from '../types';
 
 export function listTasks(keyword = '', page = 1, pageSize = 20, status = 'active', updatedBy = ''): Promise<SqlTaskPageVO> {
@@ -62,6 +67,36 @@ export const activateTaskVersion = (taskId: number, versionNo: number, taskRevis
   requestJson<SqlTaskVersionVO>(`/api/tasks/${taskId}/versions/${versionNo}/activate`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ taskRevision, versionRevision }),
   });
+
+export const getTaskVersionCheckSummary = (taskId: number, versionNo: number): Promise<TaskVersionCheckSummaryVO> =>
+  requestJson<TaskVersionCheckSummaryVO>(`/api/tasks/${taskId}/versions/${versionNo}/check-summary`);
+
+export const getTaskSchedule = (taskId: number): Promise<SqlTaskScheduleVO> =>
+  requestJson<SqlTaskScheduleVO>(`/api/tasks/${taskId}/schedule`);
+
+export const saveTaskSchedule = (taskId: number, body: Omit<SqlTaskScheduleVO, 'id' | 'taskId' | 'nextTriggerTime' | 'lastTriggerTime' | 'lastRunStatus'>): Promise<SqlTaskScheduleVO> =>
+  requestJson<SqlTaskScheduleVO>(`/api/tasks/${taskId}/schedule`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+export const getTaskDependencies = (taskId: number): Promise<SqlTaskDependencyVO[]> =>
+  requestJson<SqlTaskDependencyVO[]>(`/api/tasks/${taskId}/dependencies`);
+
+export const saveTaskDependencies = (taskId: number, items: Array<Pick<SqlTaskDependencyVO, 'upstreamTaskId' | 'dependencyType'>>): Promise<SqlTaskDependencyVO[]> =>
+  requestJson<SqlTaskDependencyVO[]>(`/api/tasks/${taskId}/dependencies`, {
+    method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
+  });
+
+export const createTaskBackfill = (taskId: number, body: { startDate: string; endDate: string; parameters: Record<string, unknown> }) =>
+  requestJson<Record<string, unknown>>(`/api/tasks/${taskId}/backfills`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+  });
+
+export const listTaskBackfills = (taskId: number, page = 1, pageSize = 20): Promise<SqlTaskBackfillBatchPageVO> =>
+  requestJson<SqlTaskBackfillBatchPageVO>(`/api/tasks/${taskId}/backfills?page=${page}&pageSize=${pageSize}`);
+
+export const listTaskScheduleRuns = (taskId: number, page = 1, pageSize = 20): Promise<SqlTaskScheduleRunPageVO> =>
+  requestJson<SqlTaskScheduleRunPageVO>(`/api/tasks/${taskId}/schedule-runs?page=${page}&pageSize=${pageSize}`);
 
 export const executeTask = (taskId: number, body: TaskExecutionCreateRequest): Promise<TaskExecutionVO> =>
   requestJson<TaskExecutionVO>(`/api/tasks/${taskId}/executions`, {

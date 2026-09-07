@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createSyncTask, getStateHistory, getSyncTask, listManagedTasks, listSyncTasks } from './api';
+import { applySyncSchemaChange, createSyncTask, getStateHistory, getSyncProgress, getSyncTask, listManagedTasks, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, resolveSyncDirtyRecord } from './api';
 import type { SyncTaskSave } from './types';
 
 const response = (data: unknown) => Promise.resolve({
@@ -90,5 +90,23 @@ describe('实时同步统一接口契约', () => {
       taskType: 'compute', pageNo: 2, pageSize: 50, keyword: 'agg', status: 'running',
       owner: 'owner-a', lastOperator: 'operator-b', sourceKeyword: 'ods.orders',
     });
+  });
+
+  it('同步可观测接口保留任务和实例上下文', async () => {
+    const fetchMock = vi.fn(() => response({ items: [], total: 0 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await getSyncProgress(31, 99, true);
+    await listSyncDirtyRecords(31, false, 2, 50);
+    await resolveSyncDirtyRecord(31, 7);
+    await listSyncSchemaChanges(31, true);
+    await applySyncSchemaChange(31, 8);
+    const urls = (fetchMock.mock.calls as unknown as Array<[string, RequestInit?]>).map(([url]) => url);
+    expect(urls).toEqual([
+      '/api/realtime/sync-tasks/31/instances/99/sync-progress?refresh=true',
+      '/api/realtime/sync-tasks/31/dirty-records?unresolvedOnly=false&page=2&pageSize=50',
+      '/api/realtime/sync-tasks/31/dirty-records/7/resolve',
+      '/api/realtime/sync-tasks/31/schema-changes?refresh=true',
+      '/api/realtime/sync-tasks/31/schema-changes/8/apply',
+    ]);
   });
 });

@@ -1,6 +1,8 @@
 package com.yjn.sqlagent.datacompare.service;
 
 import com.yjn.sqlagent.datacompare.model.TableColumn;
+import com.yjn.sqlagent.parsesql.SqlDialect;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.LinkedHashSet;
@@ -10,6 +12,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 /**
@@ -25,12 +28,22 @@ public class HiveDdlService {
             "(?is)^\\s*ALTER\\s+TABLE\\s+(" + IDENTIFIER + ")\\s+ADD\\s+(?:COLUMN|COLUMNS)\\s+(.+?)\\s*$");
     private static final Pattern CHANGE = Pattern.compile(
             "(?is)^\\s*ALTER\\s+TABLE\\s+(" + IDENTIFIER + ")\\s+CHANGE\\s+(?:COLUMN\\s+)?(.+?)\\s*$");
+    private final SqlLineageParser sqlParser;
+
+    public HiveDdlService() {
+        this(new SqlLineageParser());
+    }
+
+    @Autowired
+    public HiveDdlService(SqlLineageParser sqlParser) {
+        this.sqlParser = sqlParser;
+    }
 
     public List<DdlStatement> parse(String script) {
         List<DdlStatement> result = new ArrayList<>();
         if (script == null || script.trim().isEmpty()) return result;
-        for (String raw : HiveJdbcClient.splitStatements(script)) {
-            String statement = raw.trim();
+        for (String raw : sqlParser.splitStatements(script, SqlDialect.HIVE)) {
+            String statement = sqlParser.stripComments(raw);
             if (statement.isEmpty()) continue;
             Matcher add = ADD.matcher(statement);
             Matcher change = CHANGE.matcher(statement);

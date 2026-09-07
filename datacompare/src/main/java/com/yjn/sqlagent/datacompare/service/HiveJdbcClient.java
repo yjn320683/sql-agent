@@ -2,6 +2,8 @@ package com.yjn.sqlagent.datacompare.service;
 
 import com.yjn.sqlagent.datacompare.config.DataCompareProperties;
 import com.yjn.sqlagent.datacompare.model.TableColumn;
+import com.yjn.sqlagent.parsesql.SqlDialect;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -15,6 +17,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.function.Consumer;
 import java.util.regex.Pattern;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -22,10 +25,17 @@ public class HiveJdbcClient {
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_$]*(\\.[A-Za-z_][A-Za-z0-9_$]*)?");
     private final String jdbcUrl;
     private final String jdbcUser;
+    private final SqlLineageParser sqlParser;
 
     public HiveJdbcClient(DataCompareProperties properties) {
+        this(properties, new SqlLineageParser());
+    }
+
+    @Autowired
+    public HiveJdbcClient(DataCompareProperties properties, SqlLineageParser sqlParser) {
         this.jdbcUrl = properties.getHiveJdbcUrl();
         this.jdbcUser = properties.getHiveJdbcUser();
+        this.sqlParser = sqlParser;
     }
 
     public void execute(String sql, Consumer<Statement> statementListener) throws SQLException {
@@ -41,7 +51,7 @@ public class HiveJdbcClient {
         try (Connection connection = openConnection();
              Statement statement = connection.createStatement()) {
             statementListener.accept(statement);
-            for (String sql : splitStatements(script)) {
+            for (String sql : sqlParser.splitStatements(script, SqlDialect.HIVE)) {
                 if (sql.trim().isEmpty()) continue;
                 logger.accept("[HIVE] " + compact(sql));
                 statement.execute(sql);
@@ -156,19 +166,4 @@ public class HiveJdbcClient {
         return sql.replaceAll("\\s+", " ").trim().substring(0, Math.min(500, sql.replaceAll("\\s+", " ").trim().length()));
     }
 
-    public static List<String> splitStatements(String script) {
-        List<String> result = new ArrayList<>();
-        StringBuilder current = new StringBuilder();
-        boolean single = false;
-        for (int i = 0; i < script.length(); i++) {
-            char ch = script.charAt(i);
-            if (ch == '\'' && (i == 0 || script.charAt(i - 1) != '\\')) single = !single;
-            if (ch == ';' && !single) {
-                if (current.toString().trim().length() > 0) result.add(current.toString());
-                current.setLength(0);
-            } else current.append(ch);
-        }
-        if (current.toString().trim().length() > 0) result.add(current.toString());
-        return result;
-    }
 }

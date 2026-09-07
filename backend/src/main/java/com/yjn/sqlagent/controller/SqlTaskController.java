@@ -15,10 +15,12 @@ import com.yjn.sqlagent.model.vo.SqlTaskVersionPageVO;
 import com.yjn.sqlagent.model.vo.SqlTaskVersionVO;
 import com.yjn.sqlagent.model.vo.TaskExecutionPageVO;
 import com.yjn.sqlagent.model.vo.TaskExecutionVO;
+import com.yjn.sqlagent.model.vo.TaskVersionCheckSummaryVO;
 import com.yjn.sqlagent.service.CurrentUserService;
 import com.yjn.sqlagent.service.SqlTaskService;
 import com.yjn.sqlagent.service.SqlTaskVersionService;
 import com.yjn.sqlagent.service.TaskExecutionService;
+import com.yjn.sqlagent.service.TaskVersionCheckService;
 import javax.servlet.http.HttpServletRequest;
 import javax.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -39,15 +41,27 @@ public class SqlTaskController {
     private final TaskExecutionService executionService;
     private final SqlTaskVersionService versionService;
     private final CurrentUserService currentUserService;
+    private final TaskVersionCheckService versionCheckService;
 
     public SqlTaskController(SqlTaskService taskService,
                              TaskExecutionService executionService,
                              SqlTaskVersionService versionService,
-                             CurrentUserService currentUserService) {
+                             CurrentUserService currentUserService,
+                             TaskVersionCheckService versionCheckService) {
         this.taskService = taskService;
         this.executionService = executionService;
         this.versionService = versionService;
         this.currentUserService = currentUserService;
+        this.versionCheckService = versionCheckService;
+    }
+
+    @GetMapping("/{taskId}/versions/{versionNo}/check-summary")
+    public BaseResponse<TaskVersionCheckSummaryVO> versionCheckSummary(
+            @PathVariable long taskId,
+            @PathVariable int versionNo,
+            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(versionCheckService.summary(taskId, versionNo));
     }
 
     @GetMapping

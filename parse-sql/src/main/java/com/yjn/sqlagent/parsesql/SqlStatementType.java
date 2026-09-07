@@ -5,7 +5,13 @@ public enum SqlStatementType {
     SELECT,
     WITH,
     INSERT,
+    REPLACE,
     CREATE_TABLE_AS_SELECT,
+    CREATE_VIEW,
+    CREATE_TEMPORARY_VIEW,
+    UPDATE,
+    DELETE,
     SET,
+    USE,
     OTHER
 }

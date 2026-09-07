@@ -1,8 +1,8 @@
-import { EyeOutlined, LinkOutlined, SearchOutlined } from '@ant-design/icons';
-import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import { CheckOutlined, EyeOutlined, LinkOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
+import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { getChangeLogDetail, getInstanceInfo, listAlerts, listChangeLogs, listInstances, listMappings, previewSavedSyncTask, stopInstance } from '../api';
-import type { RealtimeAlert, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
+import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, listAlerts, listChangeLogs, listInstances, listMappings, listSyncDirtyRecords, listSyncSchemaChanges, previewSavedSyncTask, resolveSyncDirtyRecord, stopInstance } from '../api';
+import type { RealtimeAlert, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
 import InstanceInspectorModal, { InstanceConfigView, StructuredKeyValueTable, type InstanceInspectorKind } from './InstanceInspectorModal';
 import InstanceLogPanel from './InstanceLogPanel';
 import InstanceListToolbar, { type InstanceSearchField, type InstanceSortOrder } from './InstanceListToolbar';
@@ -109,6 +109,14 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
   const [activeDrawerTab, setActiveDrawerTab] = useState('instances');
   const [detailCommand, setDetailCommand] = useState('');
   const [detailCommandLoading, setDetailCommandLoading] = useState(false);
+  const [syncProgress, setSyncProgress] = useState<SyncProgressSnapshot>();
+  const [dirtyRecords, setDirtyRecords] = useState<SyncDirtyRecord[]>([]);
+  const [dirtyTotal, setDirtyTotal] = useState(0);
+  const [dirtyPageNo, setDirtyPageNo] = useState(1);
+  const [unresolvedOnly, setUnresolvedOnly] = useState(true);
+  const [schemaChanges, setSchemaChanges] = useState<SyncSchemaChange[]>([]);
+  const [dataLinkLoading, setDataLinkLoading] = useState(false);
+  const [handlingId, setHandlingId] = useState<number>();
   const requestSequenceRef = useRef(0);
 
   const reload = useCallback(async (silent = false) => {
@@ -119,21 +127,33 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
       const [allInstances, taskMappings, taskChanges, allAlerts] = await Promise.all([
         listInstances(task.id), listMappings(task.id), listChangeLogs(task.id), listAlerts(),
       ]);
+      const [dirtyPage, schemaEvents] = await Promise.all([
+        listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20).catch(() => undefined),
+        listSyncSchemaChanges(task.id).catch(() => undefined),
+      ]);
       if (sequence !== requestSequenceRef.current) return;
       const production = allInstances.filter((item) => item.executionMode !== 'DEBUG');
       setInstances(production);
       setMappings(taskMappings);
       setChanges(taskChanges);
       setAlerts(allAlerts.filter((item) => item.taskId === task.id));
+      if (dirtyPage) { setDirtyRecords(dirtyPage.items); setDirtyTotal(dirtyPage.total); }
+      if (schemaEvents) setSchemaChanges(schemaEvents);
+      const selected = selectRuntimeInstance(production);
+      if (selected) {
+        try { setSyncProgress(await getSyncProgress(task.id, selected.id, ACTIVE.includes(selected.status))); }
+        catch { setSyncProgress(undefined); }
+      } else setSyncProgress(undefined);
     } catch (error) { if (sequence === requestSequenceRef.current) message.error((error as Error).message); }
     finally { if (!silent && sequence === requestSequenceRef.current) setDataLoading(false); }
-  }, [task]);
+  }, [dirtyPageNo, task, unresolvedOnly]);
 
   useEffect(() => {
     if (!task) return;
-    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setDetailCommand(''); setActiveDrawerTab('instances');
-    void reload();
-  }, [reload, task]);
+    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setDetailCommand(''); setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab('instances');
+  }, [task?.id]);
+
+  useEffect(() => { void reload(); }, [reload]);
 
   useEffect(() => {
     if (!task || !instances.some((item) => ACTIVE.includes(item.status))) return undefined;
@@ -226,6 +246,30 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
     });
   };
 
+  const refreshSchemaChanges = async () => {
+    if (!task) return;
+    try { setDataLinkLoading(true); setSchemaChanges(await listSyncSchemaChanges(task.id, true)); message.success('Schema 差异检测完成'); }
+    catch (error) { message.error((error as Error).message); }
+    finally { setDataLinkLoading(false); }
+  };
+
+  const resolveDirty = async (record: SyncDirtyRecord) => {
+    if (!task) return;
+    try {
+      setHandlingId(record.id); await resolveSyncDirtyRecord(task.id, record.id);
+      const page = await listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20); setDirtyRecords(page.items); setDirtyTotal(page.total);
+      message.success('已标记为处理完成');
+    } catch (error) { message.error((error as Error).message); }
+    finally { setHandlingId(undefined); }
+  };
+
+  const applySchema = (event: SyncSchemaChange) => {
+    if (!task) return;
+    Modal.confirm({ title: '应用新增字段？', content: '仅向受管 Paimon 表追加字段，不会删除字段或自动修改不兼容类型。', okText: '应用', cancelText: '取消',
+      onOk: async () => { try { setHandlingId(event.id); await applySyncSchemaChange(task.id, event.id); setSchemaChanges(await listSyncSchemaChanges(task.id)); message.success('Schema 变更已应用'); } catch (error) { message.error((error as Error).message); } finally { setHandlingId(undefined); } },
+    });
+  };
+
   const renderChangeSummary = (value: string, row: TaskChangeLog) => {
     const summary = row.summary || value || `${row.operator} 执行 ${normalizeChangeAction(row.action)}`;
     const canOpen = row.detailKind !== 'text'
@@ -239,6 +283,10 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
 
   if (!task) return null;
   const runtimeInstance = selectRuntimeInstance(instances);
+  const snapshotFinished = syncProgress?.snapshotFinished;
+  const snapshotRemaining = syncProgress?.snapshotRemaining;
+  const snapshotTotal = snapshotFinished != null && snapshotRemaining != null ? snapshotFinished + snapshotRemaining : undefined;
+  const snapshotPercent = snapshotTotal && snapshotFinished != null ? Math.round(snapshotFinished / snapshotTotal * 100) : undefined;
   const instanceContent = logInstance ? (
     <InstanceLogPanel taskId={task.id} instance={logInstance} backLabel="返回实例列表" onBack={() => setLogInstance(undefined)} />
   ) : <>
@@ -267,6 +315,29 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
         { key: 'instances', label: '实例列表', children: instanceContent },
         { key: 'detail', label: '任务详情', children: <div className="task-detail-sections"><InstanceConfigView value={task} /><section className="realtime-instance-config-section"><Typography.Title level={5}>命令预览</Typography.Title><div className="task-command-preview"><Button type="link" icon={<EyeOutlined />} loading={detailCommandLoading} onClick={async () => { try { setDetailCommandLoading(true); setDetailCommand((await previewSavedSyncTask(task.id)).command); } catch (error) { message.error((error as Error).message); } finally { setDetailCommandLoading(false); } }}>预览</Button><Input.TextArea className="task-command-preview-textarea" value={detailCommand} placeholder="点击预览生成 Paimon Action 等价命令" readOnly rows={10} wrap="off" /></div></section></div> },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} instance={runtimeInstance} active={activeDrawerTab === 'runtime'} checkpointIntervalSeconds={task.taskConfig.checkpointInterval} /> },
+        { key: 'data-link', label: '数据链路', children: <div className="sync-data-link-panel">
+          <div className="sync-link-summary">
+            <div><span>当前实例</span><strong>{runtimeInstance?.id ?? '-'}</strong></div>
+            <div><span>全量快照</span><strong>{snapshotPercent == null ? '-' : `${snapshotPercent}%`}</strong></div>
+            <div><span>源端延迟</span><strong>{syncProgress?.sourceLagMs == null ? '-' : `${syncProgress.sourceLagMs} ms`}</strong></div>
+            <div><span>未处理脏数据</span><strong>{dirtyTotal}</strong></div>
+          </div>
+          <Tabs className="ui-flat-tabs" items={[
+            { key: 'dirty', label: `脏数据（${dirtyTotal}）`, children: <><div className="realtime-detail-toolbar"><Space><Select value={unresolvedOnly ? 'unresolved' : 'all'} onChange={(value) => { setUnresolvedOnly(value === 'unresolved'); setDirtyPageNo(1); }} options={[{ label: '仅未处理', value: 'unresolved' }, { label: '全部记录', value: 'all' }]} /><Button icon={<ReloadOutlined />} loading={dataLoading} onClick={() => void reload()}>刷新</Button></Space></div><Table<SyncDirtyRecord> rowKey="id" size="small" loading={dataLoading} dataSource={dirtyRecords} pagination={false} scroll={{ x: 1280 }} locale={{ emptyText: '暂无脏数据记录' }} columns={[
+              { title: '时间', dataIndex: 'createTime', width: 180 }, { title: '实例', dataIndex: 'taskInstanceId', width: 90, render: displayValue },
+              { title: '源表', width: 260, render: (_, row) => [row.sourceDatabase, row.sourceTable].filter(Boolean).join('.') || '-' },
+              { title: '操作', dataIndex: 'operationType', width: 100, render: displayValue }, { title: '主键', dataIndex: 'primaryKeyValue', width: 160, ellipsis: true, render: displayValue },
+              { title: '错误', dataIndex: 'errorMessage', ellipsis: true }, { title: '状态', dataIndex: 'resolved', width: 100, render: (value) => value ? <Tag color="success">已处理</Tag> : <Tag color="error">未处理</Tag> },
+              { title: '操作', fixed: 'right', width: 170, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `脏数据 #${row.id}`, value: row })}>查看</Typography.Link>{!row.resolved && <Button type="link" size="small" icon={<CheckOutlined />} loading={handlingId === row.id} onClick={() => void resolveDirty(row)}>标记处理</Button>}</Space> },
+            ]} /><Pagination size="small" current={dirtyPageNo} pageSize={20} total={dirtyTotal} showTotal={(value) => `共 ${value} 条`} onChange={setDirtyPageNo} /></> },
+            { key: 'schema', label: `Schema 演进（${schemaChanges.filter((item) => item.status !== 'APPLIED').length}）`, children: <><div className="realtime-detail-toolbar"><Typography.Text type="secondary">自动识别安全新增字段；删列和不兼容类型必须人工处理。</Typography.Text><Button icon={<ReloadOutlined />} loading={dataLinkLoading} onClick={() => void refreshSchemaChanges()}>检测差异</Button></div><Table<SyncSchemaChange> rowKey="id" size="small" loading={dataLinkLoading} dataSource={schemaChanges} pagination={false} scroll={{ x: 1200 }} locale={{ emptyText: '暂无 Schema 变更' }} columns={[
+              { title: '检测时间', dataIndex: 'detectedAt', width: 180 }, { title: '源表', width: 240, render: (_, row) => `${row.sourceDatabase}.${row.sourceTable}` }, { title: '目标表', width: 260, render: (_, row) => `${row.targetDatabase}.${row.targetTable}` },
+              { title: '变更类型', dataIndex: 'changeType', width: 150, render: (value) => value === 'ADD_COLUMNS' ? '新增字段' : value === 'INCOMPATIBLE' ? '类型不兼容' : value },
+              { title: '说明', dataIndex: 'message' }, { title: '状态', dataIndex: 'status', width: 110, render: (value) => <Tag color={value === 'APPLIED' ? 'success' : value === 'BLOCKED' ? 'error' : 'processing'}>{value === 'APPLIED' ? '已应用' : value === 'BLOCKED' ? '需人工处理' : '待应用'}</Tag> },
+              { title: '操作', fixed: 'right', width: 150, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `Schema 变更 #${row.id}`, value: row.change })}>查看</Typography.Link>{row.status === 'PENDING' && row.changeType === 'ADD_COLUMNS' && <Button type="link" size="small" loading={handlingId === row.id} onClick={() => applySchema(row)}>应用</Button>}</Space> },
+            ]} /></> },
+          ]} />
+        </div> },
         { key: 'alerts', label: '告警记录', children: <Table rowKey="id" size="small" dataSource={alerts} locale={{ emptyText: '暂无告警记录' }} columns={[{ title: '级别', dataIndex: 'severity', width: 100, render: (value: string) => <Tag color={value === 'critical' ? 'red' : 'orange'}>{value}</Tag> }, { title: '标题', dataIndex: 'title', width: 240 }, { title: '详情', dataIndex: 'detail' }, { title: '时间', dataIndex: 'createTime', width: 180 }]} /> },
         { key: 'changes', label: '变更记录', children: <><div className="realtime-detail-toolbar"><Space><Select showSearch optionFilterProp="label" value={changeAction} onChange={setChangeAction} options={[{ label: '全部操作', value: 'all' }, ...changeActionOptions]} /><Input allowClear prefix={<SearchOutlined />} value={changeKeyword} onChange={(event) => setChangeKeyword(event.target.value)} placeholder="搜索操作人 / 操作类型 / 变更说明" /></Space></div><Table rowKey="id" size="small" dataSource={filteredChanges} pagination={false} locale={{ emptyText: changeKeyword.trim() || changeAction !== 'all' ? '没有匹配的变更记录' : '暂无变更记录' }} columns={[{ title: '操作时间', dataIndex: 'createTime', width: 180 }, { title: '操作人', dataIndex: 'operator', width: 120 }, { title: '操作类型', dataIndex: 'action', width: 150, render: (value: string) => normalizeChangeAction(value) }, { title: '变更明细', dataIndex: 'detail', render: renderChangeSummary }]} /></> },
       ]} />

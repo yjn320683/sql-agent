@@ -170,6 +170,12 @@ export interface TaskSyncRuntimeMetrics {
   lastCommitAttempts?: number | null;
   busyMaxMsPerSecond?: number | null;
   backpressuredMaxMsPerSecond?: number | null;
+  sourceLagMs?: number | null;
+  sourceEmitLagMs?: number | null;
+  sourceIdleMs?: number | null;
+  snapshotSplitsFinished?: number | null;
+  snapshotSplitsRemaining?: number | null;
+  dirtyRecords?: number | null;
   unavailableReasons?: Record<string, string>;
 }
 
@@ -182,9 +188,70 @@ export interface TaskRuntimeVertexMetric {
   inputRate?: number | null;
   outputRate?: number | null;
   commitRate?: number | null;
+  sourceLagMs?: number | null;
+  sourceEmitLagMs?: number | null;
+  sourceIdleMs?: number | null;
+  snapshotSplitsFinished?: number | null;
+  snapshotSplitsRemaining?: number | null;
+  dirtyRecords?: number | null;
   busyMaxMsPerSecond?: number | null;
   backpressuredMaxMsPerSecond?: number | null;
   unavailableReason?: string;
+}
+
+export interface SyncProgressSnapshot {
+  taskId?: number;
+  taskInstanceId?: number;
+  snapshotFinished?: number | null;
+  snapshotRemaining?: number | null;
+  snapshotProgress?: number | null;
+  sourceLagMs?: number | null;
+  sourceIdleMs?: number | null;
+  dirtyRecordCount?: number;
+  offsetSummary?: string;
+  observedAt?: string;
+  metrics?: TaskSyncRuntimeMetrics;
+}
+
+export interface SyncDirtyRecord {
+  id: number;
+  taskId: number;
+  taskInstanceId?: number;
+  sourceDatabase?: string;
+  sourceTable?: string;
+  operationType?: string;
+  primaryKeyValue?: string;
+  errorCode?: string;
+  errorMessage?: string;
+  rawPayload?: unknown;
+  resolved?: boolean | number;
+  resolvedBy?: string;
+  resolvedAt?: string;
+  createTime?: string;
+}
+
+export interface SyncDirtyRecordPage {
+  items: SyncDirtyRecord[];
+  page: number;
+  pageSize: number;
+  total: number;
+}
+
+export interface SyncSchemaChange {
+  id: number;
+  taskId: number;
+  realtimeTableId: number;
+  sourceDatabase?: string;
+  sourceTable?: string;
+  targetDatabase?: string;
+  targetTable?: string;
+  changeType: 'ADD_COLUMNS' | 'INCOMPATIBLE' | string;
+  status: 'PENDING' | 'APPLIED' | 'BLOCKED' | string;
+  change?: { addColumns?: RealtimeTableColumn[]; incompatibleColumns?: Array<Record<string, string>> };
+  detectedAt?: string;
+  appliedBy?: string;
+  appliedAt?: string;
+  message?: string;
 }
 
 export interface TaskRuntimeException {

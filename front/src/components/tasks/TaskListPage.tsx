@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Drawer, Dropdown, Empty, Input, Modal, Pagination, Segmented, Space, Switch, Table, Tooltip, Typography, message } from 'antd';
 import {
   BranchesOutlined, BugOutlined, CopyOutlined, EditOutlined, InboxOutlined,
+  CalendarOutlined,
   FullscreenExitOutlined, FullscreenOutlined, MoreOutlined, PlusOutlined,
   ReloadOutlined, RobotOutlined, SearchOutlined, UndoOutlined,
 } from '@ant-design/icons';
@@ -13,6 +14,7 @@ import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import TaskExecutionPanel from './TaskExecutionPanel';
 import TaskStatusTag from './TaskStatusTag';
 import TaskVersionDrawer from './TaskVersionDrawer';
+import TaskScheduleDrawer from './TaskScheduleDrawer';
 
 const EMPTY: SqlTaskPageVO = { items: [], page: 1, pageSize: 20, total: 0 };
 const formatter = new Intl.DateTimeFormat('zh-CN', {
@@ -52,6 +54,7 @@ export default function TaskListPage({
   const [debuggingTaskId, setDebuggingTaskId] = useState<number>();
   const [executionTask, setExecutionTask] = useState<SqlTaskVO>();
   const [versionTask, setVersionTask] = useState<SqlTaskVO>();
+  const [scheduleTask, setScheduleTask] = useState<SqlTaskVO>();
   const [executionFullscreen, setExecutionFullscreen] = useState(false);
 
   const load = useCallback(async () => {
@@ -202,11 +205,12 @@ export default function TaskListPage({
           <Button type="link" size="small" icon={<BranchesOutlined />} onClick={() => setVersionTask(row)}>版本</Button>
           <Tooltip title={row.archived ? '归档任务不能发起请求' : '交给 Agent'}><Button className="task-row-compact-action task-row-agent-action" type="link" size="small" icon={<RobotOutlined />} disabled={row.archived} aria-label="交给 Agent" onClick={() => navigate(`/chat?taskId=${row.id}`)}>Agent</Button></Tooltip>
           <Dropdown trigger={['click']} menu={{ items: [
+            { key: 'schedule', icon: <CalendarOutlined />, label: '调度与补数', disabled: row.archived },
             { key: 'copy', icon: <CopyOutlined />, label: '复制任务' },
             row.archived
               ? { key: 'restore', icon: <UndoOutlined />, label: '恢复任务' }
               : { key: 'archive', icon: <InboxOutlined />, label: '归档任务', danger: true },
-          ], onClick: ({ key }) => { if (key === 'copy') void copy(row); else changeArchived(row, key === 'archive'); } }}>
+          ], onClick: ({ key }) => { if (key === 'schedule') setScheduleTask(row); else if (key === 'copy') void copy(row); else changeArchived(row, key === 'archive'); } }}>
             <Tooltip title="更多"><Button type="text" size="small" icon={<MoreOutlined />} /></Tooltip>
           </Dropdown>
         </div>
@@ -304,6 +308,7 @@ export default function TaskListPage({
           onActivated={(activatedTask) => { setVersionTask(activatedTask); void load(); }}
         />
       ) : null}
+      {scheduleTask ? <TaskScheduleDrawer open task={scheduleTask} onClose={() => setScheduleTask(undefined)} /> : null}
     </div>
   );
 }

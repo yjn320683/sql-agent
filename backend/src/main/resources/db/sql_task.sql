@@ -131,3 +131,104 @@ CREATE TABLE IF NOT EXISTS sql_task_execution_step (
   KEY idx_execution_step_status (execution_id, status),
   KEY idx_execution_step_task (task_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SQL Agent Hive任务执行Step表';
+
+CREATE TABLE IF NOT EXISTS sql_task_version_check (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  version_no INT NOT NULL,
+  version_revision BIGINT NOT NULL,
+  version_checksum CHAR(64) NOT NULL,
+  check_type VARCHAR(16) NOT NULL,
+  status VARCHAR(32) NOT NULL,
+  passed TINYINT(1) NULL,
+  complete TINYINT(1) NOT NULL DEFAULT 1,
+  error_count INT NOT NULL DEFAULT 0,
+  warning_count INT NOT NULL DEFAULT 0,
+  duration_ms BIGINT NULL,
+  result_summary VARCHAR(1024) NULL,
+  result_payload LONGTEXT NULL,
+  checked_by VARCHAR(20) NOT NULL,
+  checked_at DATETIME NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_task_version_check (task_id, version_no, check_type)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务版本最近一次检查结果';
+
+CREATE TABLE IF NOT EXISTS sql_task_schedule (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  schedule_type VARCHAR(16) NOT NULL DEFAULT 'MANUAL',
+  cron_expression VARCHAR(128) NULL,
+  timezone VARCHAR(64) NOT NULL DEFAULT 'Asia/Shanghai',
+  enabled TINYINT(1) NOT NULL DEFAULT 0,
+  concurrency_policy VARCHAR(16) NOT NULL DEFAULT 'FORBID',
+  max_retries INT NOT NULL DEFAULT 0,
+  retry_interval_seconds INT NOT NULL DEFAULT 60,
+  parameter_values LONGTEXT NULL,
+  next_trigger_time DATETIME NULL,
+  last_trigger_time DATETIME NULL,
+  last_run_status VARCHAR(16) NULL,
+  revision BIGINT NOT NULL DEFAULT 1,
+  created_by VARCHAR(20) NOT NULL,
+  updated_by VARCHAR(20) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_schedule_task (task_id),
+  KEY idx_schedule_due (enabled,next_trigger_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线任务结构化调度配置';
+
+CREATE TABLE IF NOT EXISTS sql_task_dependency (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  upstream_task_id BIGINT NOT NULL,
+  dependency_type VARCHAR(16) NOT NULL DEFAULT 'SUCCESS',
+  created_by VARCHAR(20) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_task_upstream (task_id,upstream_task_id),
+  KEY idx_dependency_upstream (upstream_task_id,task_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线任务依赖DAG';
+
+CREATE TABLE IF NOT EXISTS sql_task_schedule_run (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  schedule_id BIGINT NULL,
+  task_id BIGINT NOT NULL,
+  trigger_type VARCHAR(16) NOT NULL,
+  scheduled_time DATETIME NOT NULL,
+  business_date DATE NULL,
+  status VARCHAR(16) NOT NULL COMMENT 'WAITING、SUBMITTED、RETRYING、RETRIED、SKIPPED、FAILED、CANCELLED、SUCCEEDED',
+  attempt_no INT NOT NULL DEFAULT 1,
+  execution_id BIGINT NULL,
+  backfill_batch_id BIGINT NULL,
+  parameter_values LONGTEXT NULL,
+  message VARCHAR(1024) NULL,
+  created_by VARCHAR(20) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_schedule_run_task_time (task_id,scheduled_time),
+  KEY idx_schedule_run_status (status,update_time),
+  KEY idx_schedule_run_execution (execution_id),
+  KEY idx_schedule_run_backfill (backfill_batch_id,business_date)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线任务调度运行记录';
+
+CREATE TABLE IF NOT EXISTS sql_task_backfill_batch (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  task_id BIGINT NOT NULL,
+  start_date DATE NOT NULL,
+  end_date DATE NOT NULL,
+  status VARCHAR(16) NOT NULL,
+  total_count INT NOT NULL DEFAULT 0,
+  submitted_count INT NOT NULL DEFAULT 0,
+  succeeded_count INT NOT NULL DEFAULT 0,
+  failed_count INT NOT NULL DEFAULT 0,
+  parameter_values LONGTEXT NULL,
+  requested_by VARCHAR(20) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  KEY idx_backfill_task_time (task_id,create_time),
+  KEY idx_backfill_status (status,update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线任务补数批次';

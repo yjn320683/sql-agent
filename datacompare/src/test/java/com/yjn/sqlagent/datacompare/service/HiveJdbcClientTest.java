@@ -3,6 +3,8 @@ package com.yjn.sqlagent.datacompare.service;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 
 import com.yjn.sqlagent.datacompare.config.DataCompareProperties;
+import com.yjn.sqlagent.parsesql.SqlDialect;
+import com.yjn.sqlagent.parsesql.SqlLineageParser;
 import java.util.List;
 import org.junit.jupiter.api.Test;
 
@@ -30,8 +32,8 @@ class HiveJdbcClientTest {
 
     @Test
     void splitsStatementsWithoutBreakingQuotedSemicolon() {
-        List<String> statements = HiveJdbcClient.splitStatements(
-                "SET x='a;b'; INSERT OVERWRITE TABLE dw.t SELECT 'x;y';");
+        List<String> statements = new SqlLineageParser().splitStatements(
+                "SET x='a;b'; INSERT OVERWRITE TABLE dw.t SELECT 'x;y';", SqlDialect.HIVE);
 
         assertEquals(2, statements.size());
         assertEquals("SET x='a;b'", statements.get(0).trim());

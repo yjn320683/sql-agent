@@ -1044,6 +1044,12 @@ public class RealtimeRuntimeService {
         row.put("committedRecords", aggregateSuffix(metrics, "sink.numRecordsOut", "sum", false));
         row.put("lastCommitDurationMs", aggregateSuffix(metrics, "commit.lastCommitDuration", "max", true));
         row.put("lastCommitAttempts", aggregateSuffix(metrics, "commit.lastCommitAttempts", "max", true));
+        row.put("sourceLagMs", aggregateSuffix(metrics, "currentFetchEventTimeLag", "max", true));
+        row.put("sourceEmitLagMs", aggregateSuffix(metrics, "currentEmitEventTimeLag", "max", true));
+        row.put("sourceIdleMs", aggregateSuffix(metrics, "sourceIdleTime", "max", true));
+        row.put("snapshotSplitsFinished", aggregateSuffix(metrics, "numSnapshotSplitsFinished", "sum", false));
+        row.put("snapshotSplitsRemaining", aggregateSuffix(metrics, "numSnapshotSplitsRemaining", "sum", false));
+        row.put("dirtyRecords", aggregateSuffix(metrics, "numRecordsInErrors", "sum", false));
         row.put("busyMaxMsPerSecond", aggregateExact(metrics, "busyTimeMsPerSecond", "max"));
         row.put("backpressuredMaxMsPerSecond", aggregateExact(metrics, "backPressuredTimeMsPerSecond", "max"));
         return row;
@@ -1074,6 +1080,12 @@ public class RealtimeRuntimeService {
         result.put("lastCommitAttempts", optionalAggregate(sinks, "lastCommitAttempts", true, "lastCommitAttempts", "Paimon 未提供提交尝试次数", reasons));
         result.put("busyMaxMsPerSecond", optionalAggregate(vertices, "busyMaxMsPerSecond", true, "busyMaxMsPerSecond", "Flink 未提供 Busy 指标", reasons));
         result.put("backpressuredMaxMsPerSecond", optionalAggregate(vertices, "backpressuredMaxMsPerSecond", true, "backpressuredMaxMsPerSecond", "Flink 未提供反压指标", reasons));
+        result.put("sourceLagMs", optionalAggregate(sources, "sourceLagMs", true, "sourceLagMs", "MySQL CDC 未提供读取延迟指标", reasons));
+        result.put("sourceEmitLagMs", optionalAggregate(sources, "sourceEmitLagMs", true, "sourceEmitLagMs", "MySQL CDC 未提供发送延迟指标", reasons));
+        result.put("sourceIdleMs", optionalAggregate(sources, "sourceIdleMs", true, "sourceIdleMs", "MySQL CDC 未提供空闲时间指标", reasons));
+        result.put("snapshotSplitsFinished", optionalAggregate(sources, "snapshotSplitsFinished", false, "snapshotSplitsFinished", "当前 Source 未提供已完成快照分片数", reasons));
+        result.put("snapshotSplitsRemaining", optionalAggregate(sources, "snapshotSplitsRemaining", false, "snapshotSplitsRemaining", "当前 Source 未提供剩余快照分片数", reasons));
+        result.put("dirtyRecords", optionalAggregate(vertices, "dirtyRecords", false, "dirtyRecords", "Flink 未提供异常记录指标", reasons));
         result.put("unavailableReasons", reasons); return result;
     }
 
@@ -1105,7 +1117,10 @@ public class RealtimeRuntimeService {
         return id.endsWith("numRecordsInPerSecond") || id.endsWith("numRecordsOutPerSecond")
                 || id.endsWith("busyTimeMsPerSecond") || id.endsWith("backPressuredTimeMsPerSecond")
                 || id.endsWith("sink.numRecordsOut") || id.endsWith("sink.numRecordsOutPerSecond")
-                || id.endsWith("commit.lastCommitDuration") || id.endsWith("commit.lastCommitAttempts");
+                || id.endsWith("commit.lastCommitDuration") || id.endsWith("commit.lastCommitAttempts")
+                || id.endsWith("currentFetchEventTimeLag") || id.endsWith("currentEmitEventTimeLag")
+                || id.endsWith("sourceIdleTime") || id.endsWith("numSnapshotSplitsFinished")
+                || id.endsWith("numSnapshotSplitsRemaining") || id.endsWith("numRecordsInErrors");
     }
 
     private Double aggregateExact(Map<String, Map<String, Double>> values, String id, String aggregate) {

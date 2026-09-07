@@ -159,6 +159,10 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
   const taskManagers = resources?.flink?.taskManagers ?? [];
   const roleText = { source: 'Source', sink: 'Sink', source_sink: 'Source / Sink', operator: '中间算子' } as const;
   const monitorError = runtime?.updatedAt ? `${error}；当前保留 ${formatTimestamp(runtime.updatedAt)} 的成功快照。` : error;
+  const snapshotFinished = sync?.snapshotSplitsFinished;
+  const snapshotRemaining = sync?.snapshotSplitsRemaining;
+  const snapshotTotal = snapshotFinished != null && snapshotRemaining != null ? snapshotFinished + snapshotRemaining : undefined;
+  const snapshotPercent = snapshotTotal && snapshotFinished != null ? Math.round((snapshotFinished / snapshotTotal) * 100) : undefined;
 
   return <div className="sync-runtime-monitor">
     <div className="sync-runtime-toolbar">
@@ -181,6 +185,9 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
       <div className="sync-runtime-card-grid">
         <div><span>{metricTitle('Job 状态', 'Flink Job 当前执行状态')}</span><strong>{renderFlinkState(runtime?.status ?? instance.status)}</strong></div>
         <div><span>{metricTitle('Source 输出', '所有 Source 顶点 numRecordsOutPerSecond 的 subtask 求和')}</span><strong>{metricValue(formatRate(sync?.sourceOutputRate), sync?.sourceOutputRate, unavailableReason('sourceOutputRate', 'Source 输出速率暂不可用'))}</strong></div>
+        <div><span>{metricTitle('源端延迟', 'MySQL CDC 当前抓取事件时间与处理时间之间的最大延迟')}</span><strong>{metricValue(formatDuration(sync?.sourceLagMs), sync?.sourceLagMs, unavailableReason('sourceLagMs', '源端延迟暂不可用'))}</strong></div>
+        <div><span>{metricTitle('全量快照', '已完成与剩余 snapshot split 计算的首次全量同步进度')}</span><strong>{metricValue(snapshotPercent == null ? '-' : `${snapshotPercent}%`, snapshotPercent, unavailableReason('snapshotSplitsFinished', '快照分片指标暂不可用'))}</strong></div>
+        <div><span>{metricTitle('异常记录', 'Flink 算子报告的异常输入记录累计值')}</span><strong>{metricValue(valueOrDash(sync?.dirtyRecords), sync?.dirtyRecords, unavailableReason('dirtyRecords', '异常记录指标暂不可用'))}</strong></div>
         <div><span>{metricTitle('Paimon 提交', 'Paimon Committer 成功提交后的 sink.numRecordsOutPerSecond，按 subtask 求和')}</span><strong>{metricValue(formatRate(sync?.committedRate), sync?.committedRate, unavailableReason('committedRate', 'Paimon 提交速率暂不可用'))}</strong></div>
         <div><span>{metricTitle('Checkpoint 健康', '结合最近成功、最近失败、配置周期和运行时长判断')}</span><strong><Tooltip title={health.reason}><Tag color={health.color}>{health.text}</Tag></Tooltip></strong></div>
       </div>
@@ -188,6 +195,9 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
         <div className="sync-runtime-section-title"><Typography.Text strong>数据流</Typography.Text><Typography.Text type="secondary">Flink Subtask 聚合 / Paimon Committer</Typography.Text></div>
         <div className="runtime-stat-grid sync-runtime-stat-grid">
           <div><Statistic title={metricTitle('Sink 接收', '所有终端 Sink 顶点 numRecordsInPerSecond 的 subtask 求和')} value={valueOrDash(sync?.sinkInputRate)} suffix={sync?.sinkInputRate == null ? undefined : 'records/s'} valueRender={(node) => metricValue(node, sync?.sinkInputRate, unavailableReason('sinkInputRate', 'Sink 接收速率暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('Source 发送延迟', 'MySQL CDC 当前发送事件时间与处理时间之间的最大延迟')} value={formatDuration(sync?.sourceEmitLagMs)} valueRender={(node) => metricValue(node, sync?.sourceEmitLagMs, unavailableReason('sourceEmitLagMs', 'Source 发送延迟暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('Source 空闲时间', 'MySQL CDC Source 距离最近一次活动的时间')} value={formatDuration(sync?.sourceIdleMs)} valueRender={(node) => metricValue(node, sync?.sourceIdleMs, unavailableReason('sourceIdleMs', 'Source 空闲指标暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('快照分片', '首次全量同步已完成 / 总分片')} value={snapshotFinished == null || snapshotTotal == null ? '-' : `${snapshotFinished} / ${snapshotTotal}`} valueRender={(node) => metricValue(node, snapshotFinished, unavailableReason('snapshotSplitsFinished', '快照分片指标暂不可用'))} /></div>
           <div><Statistic title={metricTitle('已提交记录', 'Paimon Committer 成功提交后累计的 sink.numRecordsOut')} value={valueOrDash(sync?.committedRecords)} valueRender={(node) => metricValue(node, sync?.committedRecords, unavailableReason('committedRecords', 'Paimon 累计提交记录暂不可用'))} /></div>
           <div><Statistic title={metricTitle('最近提交耗时', 'Paimon commit.lastCommitDuration，多个 Committer 取最大值')} value={formatDuration(sync?.lastCommitDurationMs)} valueRender={(node) => metricValue(node, sync?.lastCommitDurationMs, unavailableReason('lastCommitDurationMs', '最近提交耗时暂不可用'))} /></div>
           <div><Statistic title={metricTitle('最近提交尝试', 'Paimon commit.lastCommitAttempts，多个 Committer 取最大值')} value={valueOrDash(sync?.lastCommitAttempts)} valueRender={(node) => metricValue(node, sync?.lastCommitAttempts, unavailableReason('lastCommitAttempts', '最近提交尝试次数暂不可用'))} /></div>
@@ -225,6 +235,7 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
           { title: metricTitle('输入', '该顶点 numRecordsInPerSecond 的 subtask 求和'), dataIndex: 'inputRate', width: 150, render: (value, row) => metricValue(formatRate(value), value, row.unavailableReason) },
           { title: metricTitle('输出', '该顶点 numRecordsOutPerSecond 的 subtask 求和'), dataIndex: 'outputRate', width: 150, render: (value, row) => metricValue(formatRate(value), value, row.unavailableReason) },
           { title: metricTitle('提交', '该顶点 Paimon sink.numRecordsOutPerSecond 的 subtask 求和'), dataIndex: 'commitRate', width: 150, render: (value, row) => metricValue(formatRate(value), value, row.unavailableReason || '该算子未提供 Paimon 提交指标') },
+          { title: metricTitle('源端延迟', 'Source 当前抓取事件延迟'), dataIndex: 'sourceLagMs', width: 140, render: (value, row) => metricValue(formatDuration(value), value, row.unavailableReason || '该算子未提供源端延迟') },
           { title: metricTitle('Busy 最大', '该顶点最忙 subtask 的 busyTimeMsPerSecond'), dataIndex: 'busyMaxMsPerSecond', width: 190, render: (value, row) => renderBackpressure(value, row.unavailableReason) },
           { title: metricTitle('Backpressure 最大', '该顶点反压最高 subtask 的 backPressuredTimeMsPerSecond'), dataIndex: 'backpressuredMaxMsPerSecond', width: 220, render: (value, row) => renderBackpressure(value, row.unavailableReason) },
         ]} />

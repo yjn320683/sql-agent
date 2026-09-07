@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yjn.sqlagent.mapper.SqlTaskVersionCheckMapper">
+  <resultMap id="checkMap" type="com.yjn.sqlagent.model.entity.SqlTaskVersionCheck">
+    <id column="id" property="id"/>
+    <result column="task_id" property="taskId"/>
+    <result column="version_no" property="versionNo"/>
+    <result column="version_revision" property="versionRevision"/>
+    <result column="version_checksum" property="versionChecksum"/>
+    <result column="check_type" property="checkType"/>
+    <result column="status" property="status"/>
+    <result column="passed" property="passed"/>
+    <result column="complete" property="complete"/>
+    <result column="error_count" property="errorCount"/>
+    <result column="warning_count" property="warningCount"/>
+    <result column="duration_ms" property="durationMs"/>
+    <result column="result_summary" property="resultSummary"/>
+    <result column="result_payload" property="resultPayload"/>
+    <result column="checked_by" property="checkedBy"/>
+    <result column="checked_at" property="checkedAt"/>
+    <result column="create_time" property="createTime"/>
+    <result column="update_time" property="updateTime"/>
+  </resultMap>
+
+  <insert id="upsert">
+    INSERT INTO sql_task_version_check
+      (task_id, version_no, version_revision, version_checksum, check_type, status, passed, complete, error_count,
+       warning_count, duration_ms, result_summary, result_payload, checked_by, checked_at)
+    VALUES
+      (#{check.taskId}, #{check.versionNo}, #{check.versionRevision}, #{check.versionChecksum}, #{check.checkType}, #{check.status},
+       #{check.passed}, #{check.complete}, #{check.errorCount}, #{check.warningCount},
+       #{check.durationMs}, #{check.resultSummary}, #{check.resultPayload},
+       #{check.checkedBy}, #{check.checkedAt})
+    ON DUPLICATE KEY UPDATE
+      version_revision = VALUES(version_revision), version_checksum = VALUES(version_checksum),
+      status = VALUES(status), passed = VALUES(passed), complete = VALUES(complete),
+      error_count = VALUES(error_count), warning_count = VALUES(warning_count),
+      duration_ms = VALUES(duration_ms), result_summary = VALUES(result_summary),
+      result_payload = VALUES(result_payload), checked_by = VALUES(checked_by),
+      checked_at = VALUES(checked_at), update_time = NOW()
+  </insert>
+
+  <select id="listLatest" resultMap="checkMap">
+    SELECT id, task_id, version_no, version_revision, version_checksum, check_type, status, passed, complete,
+           error_count, warning_count, duration_ms, result_summary, result_payload,
+           checked_by, checked_at, create_time, update_time
+    FROM sql_task_version_check
+    WHERE task_id = #{taskId} AND version_no = #{versionNo}
+    ORDER BY check_type
+  </select>
+
+  <select id="selectLatestCompareStatus" resultType="string">
+    SELECT status
+    FROM data_compare_job_detail
+    WHERE task_id = #{taskId} AND candidate_version_no = #{versionNo}
+      AND candidate_checksum = #{versionChecksum}
+    ORDER BY id DESC
+    LIMIT 1
+  </select>
+</mapper>
