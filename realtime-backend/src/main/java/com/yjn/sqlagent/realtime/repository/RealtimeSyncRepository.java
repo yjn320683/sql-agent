@@ -394,9 +394,17 @@ public class RealtimeSyncRepository {
     }
 
     public void updateSavepointPath(long instanceId, String savepointPath) {
-        if (text(savepointPath).isEmpty()) return;
         jdbc.update("UPDATE rt_task_instance SET savepoint_path=?,update_time=NOW() WHERE id=? AND managed_flag=1",
-                savepointPath, instanceId);
+                text(savepointPath).isEmpty() ? null : savepointPath, instanceId);
+    }
+
+    public Map<String, Object> activeStopOperation(long taskId, long instanceId) {
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT id,operator,request_json requestJson FROM rt_task_operation"
+                        + " WHERE task_id=? AND task_instance_id=? AND operation_type='STOP'"
+                        + " AND operation_status='EXECUTING' AND active_flag=1 ORDER BY id DESC LIMIT 1",
+                taskId, instanceId);
+        return rows.isEmpty() ? null : rows.get(0);
     }
 
     public List<Map<String, Object>> activeManagedInstances() {

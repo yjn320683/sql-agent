@@ -37,15 +37,10 @@ describe('实时同步统一接口契约', () => {
   });
 
   it('创建请求把公共告警和 Flink 配置从同步私有配置中剥离', async () => {
-    const fetchMock = vi.fn()
-      .mockImplementationOnce(() => response(31))
-      .mockImplementationOnce(() => response({
-        id: 31, taskType: 'sync', name: task.name, owner: task.owner, description: task.description,
-        flinkVersion: task.flinkVersion, status: 'not_running', alarmConfig: {}, flinkConf: {},
-        taskConfig: { sourceServerId: 7, sourceType: 'mysql-cdc', cdcConfig: task.taskConfig.cdcConfig },
-      }));
+    const fetchMock = vi.fn(() => response(31));
     vi.stubGlobal('fetch', fetchMock);
-    await createSyncTask(task);
+    expect(await createSyncTask(task)).toBe(31);
+    expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     const body = JSON.parse(String(init.body));
     expect(body.alarmConfig).toEqual({ alarmType: 'task-failed', alarmGroup: '实时告警组' });

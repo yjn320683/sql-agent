@@ -24,6 +24,7 @@ import {
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { modeOf, storageKeyOf, validRememberedPath } from '../realtime/mode';
+import RouteAiAssistant from './ai/RouteAiAssistant';
 
 interface Props {
   obId: string;
@@ -231,6 +232,7 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
           </Dropdown>
         </header>
         <div className="app-mode-content"><Outlet /></div>
+        <RouteAiAssistant />
       </main>
     </div>
   );

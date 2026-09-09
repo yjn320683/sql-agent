@@ -69,6 +69,23 @@ export default function RealtimeManagedTaskDetailModal({ task, loading, initialT
     return () => window.clearInterval(timer);
   }, [instances, reload, task]);
 
+  useEffect(() => {
+    if (!task) return;
+    if (activeTab === 'runtime' && selectRuntimeInstance(instances.filter((item) => item.executionMode !== 'DEBUG'))) return;
+    const contextType = task.taskType === 'compute' ? 'REALTIME_COMPUTE_TASK' : 'REALTIME_EXPORT_TASK';
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType,
+        entityId: String(task.id),
+        title: `${task.name} · ${activeTab}`,
+        revision: task.updateTime ?? '0',
+      },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [activeTab, instances, task]);
+
   const filteredInstances = useMemo(() => instances.filter((item) => {
     if (status !== 'all' && item.status !== status) return false;
     if (!keyword.trim()) return true;

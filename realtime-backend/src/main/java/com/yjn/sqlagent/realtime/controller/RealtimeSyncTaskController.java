@@ -8,6 +8,7 @@ import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
 import com.yjn.sqlagent.realtime.service.RealtimeServerService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
+import com.yjn.sqlagent.realtime.service.RealtimeSyncTargetValidationService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -34,12 +35,14 @@ public class RealtimeSyncTaskController {
     private final RealtimeRuntimeService runtime;
     private final RealtimeServerService servers;
     private final RealtimeSyncConfigValidator validator;
+    private final RealtimeSyncTargetValidationService targetValidator;
     private final RealtimeActorProvider actors;
 
     public RealtimeSyncTaskController(RealtimeSyncRepository repository, RealtimeRuntimeService runtime,
-            RealtimeServerService servers, RealtimeSyncConfigValidator validator, RealtimeActorProvider actors) {
+            RealtimeServerService servers, RealtimeSyncConfigValidator validator,
+            RealtimeSyncTargetValidationService targetValidator, RealtimeActorProvider actors) {
         this.repository = repository; this.runtime = runtime; this.servers = servers;
-        this.validator = validator; this.actors = actors;
+        this.validator = validator; this.targetValidator = targetValidator; this.actors = actors;
     }
 
     @GetMapping
@@ -55,7 +58,7 @@ public class RealtimeSyncTaskController {
     @PostMapping
     public RealtimeResponse<Map<String, Object>> create(@Valid @RequestBody SyncTaskRequest request) {
         String actor = actors.requireActor();
-        validator.validate(request);
+        validateSubmission(request, null);
         long id = repository.createTask(request, actor);
         return RealtimeResponse.success(repository.requiredTask(id));
     }
@@ -64,7 +67,7 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<Map<String, Object>> update(@PathVariable long id,
             @Valid @RequestBody SyncTaskRequest request) {
         String actor = actors.requireActor();
-        validator.validate(request);
+        validateSubmission(request, id);
         repository.updateTask(id, request, actor);
         return RealtimeResponse.success(repository.requiredTask(id));
     }
@@ -77,13 +80,13 @@ public class RealtimeSyncTaskController {
     @PostMapping("/command-preview")
     public RealtimeResponse<Map<String, Object>> previewRequest(@Valid @RequestBody SyncTaskRequest request,
             @RequestParam(required = false) Long excludeTaskId) {
-        actors.requireActor(); validator.validate(request);
+        actors.requireActor(); validateSubmission(request, excludeTaskId);
         return RealtimeResponse.success(runtime.previewRequest(request, excludeTaskId));
     }
 
     @GetMapping("/{id}/command-preview")
     public RealtimeResponse<Map<String, Object>> preview(@PathVariable long id) {
-        actors.requireActor(); validator.validateTask(repository.requiredTask(id));
+        actors.requireActor(); repository.requiredTask(id);
         return RealtimeResponse.success(runtime.previewSaved(id, new TaskActionRequest(), false));
     }
 
@@ -91,7 +94,7 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<Map<String, Object>> debugPreview(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest request) {
         actors.requireActor();
-        validator.validateTask(repository.requiredTask(id));
+        repository.requiredTask(id);
         return RealtimeResponse.success(runtime.previewSaved(id, request == null ? new TaskActionRequest() : request, true));
     }
 
@@ -99,7 +102,7 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<Map<String, Object>> start(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest request) {
         String actor = actors.requireActor();
-        validator.validateTask(repository.requiredTask(id));
+        repository.requiredTask(id);
         return RealtimeResponse.success(runtime.start(id, request == null ? new TaskActionRequest() : request,
                 actor, false));
     }
@@ -108,7 +111,7 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<Map<String, Object>> debug(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest request) {
         String actor = actors.requireActor();
-        validator.validateTask(repository.requiredTask(id));
+        repository.requiredTask(id);
         return RealtimeResponse.success(runtime.start(id, request == null ? new TaskActionRequest() : request,
                 actor, true));
     }
@@ -230,6 +233,20 @@ public class RealtimeSyncTaskController {
                 .header(HttpHeaders.CONTENT_DISPOSITION,
                         ContentDisposition.attachment().filename(filename, StandardCharsets.UTF_8).build().toString())
                 .body(content);
+    }
+
+    private void validateSubmission(SyncTaskRequest request, Long taskId) {
+        validator.validate(request);
+        Map<String, Object> normalized = repository.validatePreview(request, taskId);
+        Map<String, Object> persisted = Map.of();
+        if (taskId != null) {
+            Object value = repository.requiredTask(taskId).get("taskConfig");
+            if (value instanceof Map<?, ?>) {
+                @SuppressWarnings("unchecked") Map<String, Object> config = (Map<String, Object>) value;
+                persisted = config;
+            }
+        }
+        targetValidator.validateAddedTargets(persisted, normalized);
     }
 
     private long latestManagedActive(long taskId) {

@@ -290,6 +290,13 @@ public class RealtimeRuntimeService {
             }
             String savepoint = parseSavepoint(combinedOutput);
             repository.updateSavepointPath(instanceId, savepoint);
+            if (!debug && "savepoint".equals(stopType)) {
+                String waitingLog = append(text(instance.get("startupLog")), mask(combinedOutput));
+                repository.updateInstanceSubmission(instanceId, "stopping", empty(jobId), empty(applicationId),
+                        text(instance.get("trackingUrl")), waitingLog, null);
+                // 停止命令返回不等于外部作业已终止，操作锁由状态同步确认终态后释放。
+                return;
+            }
             String terminalStatus = debug
                     ? ("debug_success_running".equalsIgnoreCase(text(instance.get("status")))
                             ? "killed_success" : "canceled")
@@ -614,6 +621,11 @@ public class RealtimeRuntimeService {
         }
         statusDetectionFailures.remove(instanceId);
         String previous = text(instance.get("status"));
+        Map<String, Object> pendingStop = "stopping".equals(previous)
+                ? repository.activeStopOperation(taskId, instanceId) : null;
+        if (pendingStop != null && !isTerminal(status)) {
+            return repository.requiredInstance(taskId, instanceId);
+        }
         if (isTerminal(previous) && isTerminal(status) && !previous.equals(status)) {
             return repository.requiredInstance(taskId, instanceId);
         }
@@ -634,13 +646,39 @@ public class RealtimeRuntimeService {
                 repository.addAlert(taskId, "warning", "同步任务状态纠偏",
                         "外部作业状态为 " + status + "，数据库状态从 " + previous + " 修正");
             }
-            if (!"DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
+            if (pendingStop == null && !"DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
                 String changeActor = actor == null || actor.trim().isEmpty() ? "system" : actor.trim();
                 repository.addChange(taskId, null, null, instanceId, changeActor, "REFRESH",
                         (manual ? "手动刷新" : "状态对账") + "：实例状态 " + previous + " → " + status);
             }
+            if (pendingStop != null && isTerminal(status)) {
+                completePendingStop(taskId, instanceId, status, pendingStop);
+            }
         }
         return repository.requiredInstance(taskId, instanceId);
+    }
+
+    private void completePendingStop(long taskId, long instanceId, String status,
+            Map<String, Object> operation) {
+        long operationId = number(operation.get("id"));
+        Map<String, Object> latest = repository.requiredInstance(taskId, instanceId);
+        String savepoint = text(latest.get("savepointPath"));
+        String actor = text(operation.get("operator"), "system");
+        if ("failed".equals(status)) {
+            repository.completeOperation(operationId, "FAILED", null,
+                    text(latest.get("failureMessage"), "外部作业停止时失败"));
+            return;
+        }
+        if (savepoint.isEmpty()) {
+            String reason = "外部作业已终止，但停止命令未返回 Savepoint 路径";
+            repository.completeOperation(operationId, "FAILED", null, reason);
+            repository.addAlert(taskId, "warning", "同步任务停止结果异常", reason);
+            return;
+        }
+        repository.completeOperation(operationId, "SUCCESS",
+                json(Map.of("instanceStatus", status, "savepointPath", savepoint)), null);
+        repository.addChange(taskId, operationId, null, instanceId, actor,
+                "STOP", "停止类型：savepoint，savepoint：" + savepoint);
     }
 
     /** 调试通过必须持续运行到最短时长，并至少完成一次当前运行窗口内的 Checkpoint。 */
@@ -721,6 +759,13 @@ public class RealtimeRuntimeService {
                     if (listed.exitCode == 0) {
                         if (listed.output.contains(jobId)) flink = "running";
                         else if (!withinJobVisibilityGrace(instance)) flink = "canceled";
+                    } else {
+                        // 首次查询与 Flink list 之间 Application 可能刚好结束，再读一次 YARN 权威终态。
+                        CommandResult latest = execute(
+                                List.of(properties.getYarnBin(), "application", "-status", applicationId), 30);
+                        output = append(output, latest.output);
+                        String latestYarn = yarnStatus(latest.output);
+                        if (isTerminal(latestYarn)) yarn = latestYarn;
                     }
                 } catch (RuntimeException cliFailure) {
                     output = append(output, safe(cliFailure));

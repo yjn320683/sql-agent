@@ -46,11 +46,13 @@ def cancel_chat(session_id: str) -> bool:
 async def run_chat(
     session_id: str,
     ob_id: str,
-    task_id: int,
+    task_id: int | None,
     message: str,
     command: str | None = None,
     execution_id: int | None = None,
     version_no: int | None = None,
+    context: dict[str, Any] | None = None,
+    intent: str | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """保证同一会话只有一个活动 turn，再执行对话。"""
 
@@ -62,7 +64,7 @@ async def run_chat(
     try:
         async for event in _run_chat_claimed(
             session_id, ob_id, task_id, message, command=command, execution_id=execution_id,
-            version_no=version_no,
+            version_no=version_no, context=context, intent=intent,
         ):
             yield event
     finally:
@@ -72,21 +74,32 @@ async def run_chat(
 async def _run_chat_claimed(
     session_id: str,
     ob_id: str,
-    task_id: int,
+    task_id: int | None,
     message: str,
     command: str | None = None,
     execution_id: int | None = None,
     version_no: int | None = None,
+    context: dict[str, Any] | None = None,
+    intent: str | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     """先尝试续接已有会话；session 不存在则新建。"""
 
-    parsed_command = normalize_command(command, message)
+    resolved_command = command or ("platform_assist" if context is not None and task_id is None else None)
+    parsed_command = normalize_command(resolved_command, message)
     effective_message = _build_agent_message(
-        parsed_command.command, task_id, execution_id, version_no, parsed_command.message
+        parsed_command.command, task_id, execution_id, version_no, parsed_command.message,
+        context=context, intent=intent,
     )
     emitted = False
     try:
-        async for evt in _stream_resume_or_retry(session_id, ob_id, parsed_command.command, effective_message):
+        async for evt in _stream_resume_or_retry(
+            session_id,
+            ob_id,
+            parsed_command.command,
+            effective_message,
+            context_type=(context or {}).get("contextType"),
+            intent=intent,
+        ):
             emitted = True
             yield evt
         return
@@ -100,7 +113,13 @@ async def _run_chat_claimed(
 
     try:
         async for evt in _stream_once(
-            build_options(ob_id, parsed_command.command, session_id=session_id),
+            build_options(
+                ob_id,
+                parsed_command.command,
+                session_id=session_id,
+                context_type=(context or {}).get("contextType"),
+                intent=intent,
+            ),
             session_id,
             effective_message,
         ):
@@ -122,11 +141,17 @@ async def _stream_resume_or_retry(
     ob_id: str,
     command: str,
     message: str,
+    context_type: str | None = None,
+    intent: str | None = None,
 ) -> AsyncIterator[dict[str, str]]:
     buffered_events: list[dict[str, str]] = []
     has_connection_error = False
     passthrough = False
-    async for event in _stream_once(build_options(ob_id, command, resume=session_id), session_id, message):
+    async for event in _stream_once(
+        build_options(ob_id, command, resume=session_id, context_type=context_type, intent=intent),
+        session_id,
+        message,
+    ):
         if passthrough:
             yield event
             continue
@@ -150,7 +175,10 @@ async def _stream_resume_or_retry(
                 _mcp_connection_error_summary(buffered_events),
             )
             async for retry_event in _stream_once(
-                build_options(ob_id, command, session_id=session_id),
+                build_options(
+                    ob_id, command, session_id=session_id,
+                    context_type=context_type, intent=intent,
+                ),
                 session_id,
                 _fresh_retry_message(message),
             ):
@@ -170,7 +198,10 @@ async def _stream_resume_or_retry(
             _mcp_connection_error_summary(buffered_events),
         )
         async for retry_event in _stream_once(
-            build_options(ob_id, command, session_id=session_id),
+            build_options(
+                ob_id, command, session_id=session_id,
+                context_type=context_type, intent=intent,
+            ),
             session_id,
             _fresh_retry_message(message),
         ):
@@ -228,11 +259,26 @@ def _event_text(event: dict[str, str]) -> str:
 
 def _build_agent_message(
     command: str,
-    task_id: int,
+    task_id: int | None,
     execution_id: int | None,
     version_no: int | None,
     message: str,
+    context: dict[str, Any] | None = None,
+    intent: str | None = None,
 ) -> str:
+    if context is not None:
+        safe_context = json.dumps(context, ensure_ascii=False, default=str)
+        return (
+            f"当前 command：{command}\n"
+            f"当前 intent：{intent or '未指定'}\n"
+            f"当前页面业务上下文：{safe_context}\n"
+            "必须先用只读 MCP 工具核对上下文实体的真实数据；draft 只是当前页面未保存内容。\n"
+            "若建议修改 SQL、DDL 或配置，必须调用 platform_proposal_present 输出可确认的 Proposal，"
+            "不得直接执行、保存、发布、启动、停止或删除。\n\n"
+            f"用户需求：\n{message}"
+        )
+    if task_id is None:
+        raise ValueError("缺少业务上下文")
     source_instruction = (
         f"必须先调用 sql_task_version_get(taskId={task_id}, versionNo={version_no}) 查询指定版本及其 SQL。"
         if version_no is not None

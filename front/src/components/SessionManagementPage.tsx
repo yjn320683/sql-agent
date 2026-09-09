@@ -292,6 +292,18 @@ export default function SessionManagementPage() {
       ),
     },
     {
+      title: '来源',
+      key: 'context',
+      width: 260,
+      ellipsis: true,
+      render: (_, session) => session.contextType ? (
+        <div className="session-context-cell">
+          <Tag color="blue">页面 AI</Tag>
+          <Typography.Text ellipsis>{session.contextTitle || session.contextType}</Typography.Text>
+        </div>
+      ) : <Typography.Text type="secondary">SQL 助手</Typography.Text>,
+    },
+    {
       title: '最后活跃',
       dataIndex: 'lastActiveAt',
       key: 'lastActiveAt',

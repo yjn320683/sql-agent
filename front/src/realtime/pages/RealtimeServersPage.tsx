@@ -3,6 +3,7 @@ import { Button, Descriptions, Drawer, Form, Input, Modal, Popconfirm, Space, Ta
 import { DeleteOutlined, EditOutlined, EyeOutlined, LinkOutlined, PlusOutlined, ProfileOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { createServer, deleteServer, listServers, listSyncTasks, testServer, testServerRequest, updateServer } from '../api';
 import type { RealtimeServer, RealtimeServerSave, SyncTaskListItem } from '../types';
+import type { AiProposal } from '../../types';
 import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 
 export default function RealtimeServersPage() {
@@ -27,6 +28,39 @@ export default function RealtimeServersPage() {
     finally { setLoading(false); }
   }, []);
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!drawerOpen) return undefined;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>; const proposal = event.detail;
+      if (!proposal || proposal.target !== 'server-form'
+        || !['FORM', 'CONFIG'].includes(proposal.kind.toUpperCase()) || !proposal.patch) return;
+      const safePatch = proposal.patch as Partial<RealtimeServerSave>;
+      form.setFieldsValue({
+        name: safePatch.name,
+        databaseName: safePatch.databaseName,
+        databasePrefix: safePatch.databasePrefix,
+        description: safePatch.description,
+      });
+      event.preventDefault();
+    };
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'REALTIME_SERVER',
+        entityId: editing ? String(editing.id) : undefined,
+        title: editing ? `编辑 Server · ${editing.name}` : '新建 Server',
+        revision: editing?.updateTime ?? '0',
+        draft: { name: form.getFieldValue('name'), databaseName: form.getFieldValue('databaseName'), databasePrefix: form.getFieldValue('databasePrefix'), description: form.getFieldValue('description') },
+      },
+    }));
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    publishAiContext();
+    return () => {
+      window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+      window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+    };
+  }, [drawerOpen, editing, form]);
 
   const open = (server?: RealtimeServer) => {
     setEditing(server); setDrawerOpen(true);

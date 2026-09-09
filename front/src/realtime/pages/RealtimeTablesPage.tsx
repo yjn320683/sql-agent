@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react';
 import { Button, Descriptions, Form, Input, Modal, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
 import { createRealtimeTable, getRealtimeTable, listRealtimeDatabases, listRealtimeTables, refreshRealtimeTable, safeUpdateRealtimeTable } from '../api';
+import type { AiProposal } from '../../types';
 import type { RealtimeTable, RealtimeTableColumn } from '../types';
 import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import { createRealtimeTableDdl } from '../utils/realtimeTableDdl';
@@ -20,8 +21,44 @@ export default function RealtimeTablesPage() {
   const [creating, setCreating] = useState(false);
   const detailDdl = detail?.ddl || createRealtimeTableDdl(detail);
   const [addColumn, setAddColumn] = useState(false); const [form] = Form.useForm<RealtimeTableFormValue>(); const [columnForm] = Form.useForm();
+  const safeUpdateDraft = Form.useWatch([], columnForm);
   const load = useCallback(async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) }); if (keyword) query.set('keyword', keyword); if (status !== 'all') query.set('status', status); if (source !== 'all') query.set('source', source); if (producer) query.set('producer', producer); const result = await listRealtimeTables(query); setRows(result.records); setTotal(result.total); } catch (error) { message.error((error as Error).message); } finally { setLoading(false); } }, [keyword, page, pageSize, producer, source, status]);
   useEffect(() => { void load(); void listRealtimeDatabases().then(setDatabases).catch(() => setDatabases([])); }, [load]);
+  useEffect(() => {
+    if (editing) return;
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: detail ? {
+        contextType: 'REALTIME_TABLE',
+        entityId: String(detail.id),
+        title: `实时表 · ${detail.databaseName}.${detail.tableName}`,
+        revision: detail.updateTime ?? detail.lastSyncedAt ?? '0',
+        draft: addColumn ? { safeUpdate: safeUpdateDraft } : undefined,
+      } : { contextType: 'REALTIME_TABLE', title: '实时表管理' },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [addColumn, detail, editing, safeUpdateDraft]);
+  useEffect(() => {
+    if (!addColumn || !detail) return;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>;
+      const proposal = event.detail;
+      if (proposal?.target !== 'realtime-table-safe-update' || !proposal.patch
+        || !['FORM', 'CONFIG'].includes(proposal.kind.toUpperCase())) return;
+      const patch = proposal.patch as Record<string, unknown>;
+      columnForm.setFieldsValue({
+        comment: patch.comment,
+        options: patch.options,
+        addColumns: patch.addColumns,
+        columnComments: patch.columnComments,
+      });
+      event.preventDefault();
+    };
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+  }, [addColumn, columnForm, detail]);
   const openDetail = async (id: number) => { setDetailLoading(true); try { setDetail(await getRealtimeTable(id)); } catch (error) { message.error((error as Error).message); } finally { setDetailLoading(false); } };
   const openSafeUpdate = async (id: number) => { try { const table = await getRealtimeTable(id); setDetail(table); columnForm.setFieldsValue({ comment: table.tableComment, options: { 'snapshot.time-retained': table.options?.['snapshot.time-retained'], 'compaction.min.file-num': table.options?.['compaction.min.file-num'] }, addColumns: [], columnComments: [] }); setAddColumn(true); } catch (error) { message.error((error as Error).message); } };
   const submit = async () => { try {

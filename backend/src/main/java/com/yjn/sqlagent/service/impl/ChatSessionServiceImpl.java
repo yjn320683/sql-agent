@@ -4,6 +4,7 @@ import com.yjn.sqlagent.mapper.ChatSessionMapper;
 import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.model.dto.SessionManageQueryDTO;
+import com.yjn.sqlagent.model.dto.AiContextDTO;
 import com.yjn.sqlagent.model.entity.ChatSession;
 import com.yjn.sqlagent.model.vo.SessionPageVO;
 import com.yjn.sqlagent.model.vo.SessionVO;
@@ -27,7 +28,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
 
     @Override
     @Transactional
-    public void touch(String obId, String sessionId, String message) {
+    public void touch(String obId, String sessionId, String message, AiContextDTO context) {
         ChatSession existing = mapper.selectById(sessionId);
         LocalDateTime now = LocalDateTime.now();
         if (existing == null) {
@@ -35,6 +36,7 @@ public class ChatSessionServiceImpl implements ChatSessionService {
             row.setSessionId(sessionId);
             row.setObId(obId);
             row.setTitle(buildTitle(message));
+            applyContext(row, context);
             row.setCreatedAt(now);
             row.setLastActiveAt(now);
             row.setArchived(0);
@@ -46,14 +48,34 @@ public class ChatSessionServiceImpl implements ChatSessionService {
                     throw concurrentInsert;
                 }
                 assertOwner(winner, obId);
+                bindOrAssertContext(winner, context);
                 winner.setLastActiveAt(now);
                 mapper.updateById(winner);
             }
         } else {
             assertOwner(existing, obId);
+            bindOrAssertContext(existing, context);
             existing.setLastActiveAt(now);
             mapper.updateById(existing);
         }
+    }
+
+    private void applyContext(ChatSession row, AiContextDTO context) {
+        if (context == null) return;
+        row.setContextType(context.getContextType());
+        row.setContextId(context.getEntityId());
+        row.setContextTitle(context.getTitle());
+    }
+
+    private void bindOrAssertContext(ChatSession existing, AiContextDTO context) {
+        if (context == null) return;
+        if (existing.getContextType() == null) {
+            applyContext(existing, context);
+            return;
+        }
+        boolean sameType = existing.getContextType().equals(context.getContextType());
+        boolean sameId = java.util.Objects.equals(existing.getContextId(), context.getEntityId());
+        if (!sameType || !sameId) throw badRequest("该 AI 会话属于其他业务对象，请为当前页面新建会话");
     }
 
     @Override
@@ -149,6 +171,9 @@ public class ChatSessionServiceImpl implements ChatSessionService {
         vo.setCreatedAt(session.getCreatedAt());
         vo.setLastActiveAt(session.getLastActiveAt());
         vo.setArchived(Integer.valueOf(1).equals(session.getArchived()));
+        vo.setContextType(session.getContextType());
+        vo.setContextId(session.getContextId());
+        vo.setContextTitle(session.getContextTitle());
         return vo;
     }
 

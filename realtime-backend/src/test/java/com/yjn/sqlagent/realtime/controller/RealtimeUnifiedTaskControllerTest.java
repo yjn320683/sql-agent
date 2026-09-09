@@ -12,6 +12,7 @@ import com.yjn.sqlagent.realtime.model.TaskActionRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
+import com.yjn.sqlagent.realtime.service.RealtimeSyncTargetValidationService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -29,7 +30,7 @@ class RealtimeUnifiedTaskControllerTest {
         RealtimeActorProvider actors = mock(RealtimeActorProvider.class);
         when(actors.requireActor()).thenReturn("tester");
         controller = new RealtimeUnifiedTaskController(repository, mock(RealtimeRuntimeService.class),
-                mock(RealtimeSyncConfigValidator.class), actors);
+                mock(RealtimeSyncConfigValidator.class), mock(RealtimeSyncTargetValidationService.class), actors);
     }
 
     @Test

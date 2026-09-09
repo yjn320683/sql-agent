@@ -1,5 +1,6 @@
 import type {
   ChatRequest,
+  AiProposal,
   DonePayload,
   MessageVO,
   PermissionRequestPayload,
@@ -88,6 +89,7 @@ export interface StreamCallbacks {
   onToolResult: (payload: ToolResultPayload) => void;
   onPermissionRequest: (payload: PermissionRequestPayload) => void;
   onUserQuestionRequest: (payload: UserQuestionRequestPayload) => void;
+  onProposal?: (payload: AiProposal) => void;
   onDone: (payload: DonePayload) => void;
   onError: (message: string) => void;
 }
@@ -154,7 +156,7 @@ export async function streamChat(
   }
 }
 
-function dispatchFrame(frame: string, cb: StreamCallbacks): string | undefined {
+export function dispatchFrame(frame: string, cb: StreamCallbacks): string | undefined {
   let event = 'message';
   const dataLines: string[] = [];
   for (const line of frame.split(/\r?\n/)) {
@@ -173,6 +175,14 @@ function dispatchFrame(frame: string, cb: StreamCallbacks): string | undefined {
       delta?: string;
       message?: string;
       semanticType?: ToolResultPayload['semanticType'];
+      target?: string;
+      kind?: string;
+      before?: string;
+      after?: string;
+      patch?: Record<string, unknown>;
+      baseRevision?: number | string;
+      summary?: string;
+      risks?: string[];
     } = {};
   try {
     payload = JSON.parse(raw);
@@ -214,6 +224,18 @@ function dispatchFrame(frame: string, cb: StreamCallbacks): string | undefined {
         requestId: payload.requestId ?? '',
         questions: Array.isArray(payload.questions) ? payload.questions : [],
         rawInput: payload.rawInput,
+      });
+      break;
+    case 'proposal':
+      cb.onProposal?.({
+        target: payload.target ?? '当前页面',
+        kind: payload.kind ?? 'FORM',
+        before: payload.before,
+        after: payload.after,
+        patch: payload.patch,
+        baseRevision: payload.baseRevision,
+        summary: payload.summary,
+        risks: payload.risks,
       });
       break;
     case 'done':

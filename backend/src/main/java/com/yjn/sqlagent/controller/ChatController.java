@@ -10,6 +10,7 @@ import com.yjn.sqlagent.model.vo.MessageVO;
 import com.yjn.sqlagent.model.vo.SessionPageVO;
 import com.yjn.sqlagent.model.vo.SessionVO;
 import com.yjn.sqlagent.service.AgentProxyService;
+import com.yjn.sqlagent.service.AiContextService;
 import com.yjn.sqlagent.service.ChatSessionService;
 import com.yjn.sqlagent.service.CurrentUserService;
 import com.yjn.sqlagent.service.HistoryService;
@@ -43,6 +44,7 @@ public class ChatController {
     private final SqlTaskService sqlTaskService;
     private final TaskExecutionService taskExecutionService;
     private final SqlTaskVersionService sqlTaskVersionService;
+    private final AiContextService aiContextService;
 
     public ChatController(AgentProxyService agentProxyService,
                           ChatSessionService chatSessionService,
@@ -50,7 +52,8 @@ public class ChatController {
                           CurrentUserService currentUserService,
                           SqlTaskService sqlTaskService,
                           TaskExecutionService taskExecutionService,
-                          SqlTaskVersionService sqlTaskVersionService) {
+                          SqlTaskVersionService sqlTaskVersionService,
+                          AiContextService aiContextService) {
         this.agentProxyService = agentProxyService;
         this.chatSessionService = chatSessionService;
         this.historyService = historyService;
@@ -58,20 +61,22 @@ public class ChatController {
         this.sqlTaskService = sqlTaskService;
         this.taskExecutionService = taskExecutionService;
         this.sqlTaskVersionService = sqlTaskVersionService;
+        this.aiContextService = aiContextService;
     }
 
     @PostMapping(value = "/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> stream(@Valid @RequestBody ChatRequestDTO request,
                                                 HttpServletRequest servletRequest) {
         String obId = currentUserService.requireObId(servletRequest);
-        sqlTaskService.require(request.getTaskId());
-        if (request.getExecutionId() != null) {
+        com.yjn.sqlagent.model.dto.AiContextDTO context = aiContextService.normalizeAndValidate(request);
+        if (request.getTaskId() != null) sqlTaskService.require(request.getTaskId());
+        if (request.getExecutionId() != null && request.getTaskId() != null) {
             taskExecutionService.requireBelongsToTask(request.getExecutionId(), request.getTaskId());
         }
-        if (request.getVersionNo() != null) {
+        if (request.getVersionNo() != null && request.getTaskId() != null) {
             sqlTaskVersionService.get(request.getTaskId(), request.getVersionNo());
         }
-        chatSessionService.touch(obId, request.getSessionId(), request.getMessage());
+        chatSessionService.touch(obId, request.getSessionId(), request.getMessage(), context);
         return agentProxyService.streamChat(
                 request.getSessionId(),
                 obId,
@@ -79,6 +84,8 @@ public class ChatController {
                 request.getExecutionId(),
                 request.getVersionNo(),
                 request.getCommand(),
+                request.getIntent(),
+                context,
                 request.getMessage());
     }
 

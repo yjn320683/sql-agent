@@ -10,6 +10,9 @@ export interface SessionVO {
   createdAt: string;
   lastActiveAt: string;
   archived: boolean;
+  contextType?: AiContextType;
+  contextId?: string;
+  contextTitle?: string;
 }
 
 export type SessionStatus = 'active' | 'archived' | 'all';
@@ -48,14 +51,66 @@ export type SqlCommand =
   | 'sql_optimize'
   | 'sql_fix'
   | 'sql_explain'
-  | 'sql_static_check';
+  | 'sql_static_check'
+  | 'platform_assist';
+
+export type AiContextType =
+  | 'OFFLINE_TASK'
+  | 'OFFLINE_VERSION'
+  | 'OFFLINE_EXECUTION'
+  | 'OFFLINE_SCHEDULE'
+  | 'DATA_COMPARE'
+  | 'CATALOG_TABLE'
+  | 'REALTIME_SYNC_TASK'
+  | 'REALTIME_INSTANCE'
+  | 'REALTIME_COMPUTE_TASK'
+  | 'REALTIME_EXPORT_TASK'
+  | 'REALTIME_TABLE'
+  | 'REALTIME_SERVER'
+  | 'REALTIME_ALERT'
+  | 'PLATFORM_STATUS';
+
+export type AiIntent =
+  | 'GENERATE'
+  | 'OPTIMIZE'
+  | 'FIX'
+  | 'EXPLAIN'
+  | 'REVIEW'
+  | 'DIAGNOSE'
+  | 'RECOMMEND'
+  | 'COMPARE'
+  | 'SEARCH'
+  | 'SUMMARIZE';
+
+export interface AiContext {
+  contextType: AiContextType;
+  entityId?: string;
+  parentId?: string;
+  title?: string;
+  versionNo?: number;
+  revision?: number | string;
+  draft?: Record<string, unknown>;
+}
+
+export interface AiProposal {
+  target: string;
+  kind: 'SQL' | 'DDL' | 'CONFIG' | 'FORM' | string;
+  before?: string;
+  after?: string;
+  patch?: Record<string, unknown>;
+  baseRevision?: number | string;
+  summary?: string;
+  risks?: string[];
+}
 
 export interface ChatRequest {
   sessionId: string;
-  taskId: number;
+  taskId?: number;
   executionId?: number;
   versionNo?: number;
-  command: SqlCommand;
+  command?: SqlCommand;
+  intent?: AiIntent;
+  context?: AiContext;
   message: string;
 }
 

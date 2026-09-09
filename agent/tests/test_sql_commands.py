@@ -22,3 +22,10 @@ def test_normalize_command_defaults_to_generate():
 
     assert result.command == DEFAULT_SQL_COMMAND
     assert result.message == "写一个订单汇总"
+
+
+def test_normalize_command_accepts_platform_assist():
+    result = normalize_command("platform_assist", "分析当前页面")
+
+    assert result.command == "platform_assist"
+    assert result.message == "分析当前页面"

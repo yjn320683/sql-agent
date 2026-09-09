@@ -8,13 +8,16 @@
         <id column="session_id" property="sessionId"/>
         <result column="ob_id" property="obId"/>
         <result column="title" property="title"/>
+        <result column="context_type" property="contextType"/>
+        <result column="context_id" property="contextId"/>
+        <result column="context_title" property="contextTitle"/>
         <result column="created_at" property="createdAt"/>
         <result column="last_active_at" property="lastActiveAt"/>
         <result column="archived" property="archived"/>
     </resultMap>
 
     <select id="listActive" resultMap="chatSessionMap">
-        SELECT session_id, ob_id, title, created_at, last_active_at, archived
+        SELECT session_id, ob_id, title, context_type, context_id, context_title, created_at, last_active_at, archived
         FROM chat_session
         WHERE ob_id = #{obId}
           AND archived = 0
@@ -37,6 +40,7 @@
         <if test="keyword != null and keyword != ''">
             AND (
                 INSTR(LOWER(COALESCE(title, '')), LOWER(#{keyword})) &gt; 0
+                OR INSTR(LOWER(COALESCE(context_title, '')), LOWER(#{keyword})) &gt; 0
                 OR INSTR(session_id, #{keyword}) &gt; 0
             )
         </if>
@@ -49,7 +53,7 @@
     </select>
 
     <select id="listManaged" resultMap="chatSessionMap">
-        SELECT session_id, ob_id, title, created_at, last_active_at, archived
+        SELECT session_id, ob_id, title, context_type, context_id, context_title, created_at, last_active_at, archived
         FROM chat_session
         <include refid="managedConditions"/>
         ORDER BY

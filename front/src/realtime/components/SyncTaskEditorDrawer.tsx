@@ -12,6 +12,7 @@ import {
   Spin,
   Steps,
   Table,
+  Tag,
   Tabs,
   Typography,
   message,
@@ -40,6 +41,7 @@ import type {
 import SyncMoreConfigRows from './SyncMoreConfigRows';
 import ComputedColumnEditorModal from './ComputedColumnEditorModal';
 import { computedColumnName } from './computedColumns';
+import type { AiProposal } from '../../types';
 
 interface Props {
   open: boolean;
@@ -52,6 +54,30 @@ const emptyTableConfig = (): TablePrivateConfig => ({ primaryKeys: [], partition
 const sameOrderedValues = (left: string[] = [], right: string[] = []) => left.length === right.length && left.every((value, index) => value === right[index]);
 const metadataColumnOptions = ['database_name', 'table_name', 'op_ts'].map((value) => ({ label: value, value }));
 const booleanValue = (value: unknown) => value === true || String(value).toLowerCase() === 'true';
+const MYSQL_SCHEMA_REQUEST_CONCURRENCY = 6;
+
+export const createAsyncLimiter = (limit: number) => {
+  let active = 0;
+  const pending: Array<() => void> = [];
+  const runNext = () => {
+    if (active >= limit) return;
+    const next = pending.shift();
+    if (!next) return;
+    active += 1;
+    next();
+  };
+  return function limitTask<T>(task: () => Promise<T>): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      pending.push(() => {
+        task().then(resolve, reject).finally(() => {
+          active -= 1;
+          runNext();
+        });
+      });
+      runNext();
+    });
+  };
+};
 
 const platformParamDefaults: Record<string, string> = {
   'table_conf.bucket': '2',
@@ -113,6 +139,9 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   const [params, setParams] = useState<TaskParam[]>([]);
   const [tables, setTables] = useState<SyncSourceTableOption[]>([]);
   const [schemas, setSchemas] = useState<Record<string, MysqlTableSchema>>({});
+  const [schemaLoadingTables, setSchemaLoadingTables] = useState<Set<string>>(new Set());
+  const [schemaErrorTables, setSchemaErrorTables] = useState<Set<string>>(new Set());
+  const [schemaReloadRevision, setSchemaReloadRevision] = useState(0);
   const [tableConfigs, setTableConfigs] = useState<Record<string, TablePrivateConfig>>({});
   const [step, setStep] = useState(0);
   const [mode, setMode] = useState<'wizard' | 'advanced'>('wizard');
@@ -124,13 +153,51 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   const [previewLoading, setPreviewLoading] = useState(false);
   const [computedColumnTable, setComputedColumnTable] = useState<string>();
   const initializedKeyRef = useRef('');
+  const schemasRef = useRef<Record<string, MysqlTableSchema>>({});
+  const schemaErrorsRef = useRef<Set<string>>(new Set());
+  const schemaSourceRef = useRef('');
+  const schemaGenerationRef = useRef(0);
+  const selectedTablesRef = useRef<string[]>([]);
+  const schemaRequestsRef = useRef(new Map<string, Promise<MysqlTableSchema | undefined>>());
+  const [limitSchemaRequest] = useState(() => createAsyncLimiter(MYSQL_SCHEMA_REQUEST_CONCURRENCY));
   const serverId = Form.useWatch('sourceServerId', form) as number | undefined;
   const selectedTables = Form.useWatch(['taskConfig', 'cdcConfig', 'selectedTables'], form) as string[] | undefined;
+  selectedTablesRef.current = selectedTables ?? [];
   const targetDatabase = Form.useWatch('targetDatabase', form) as string | undefined;
   const domainPrefix = Form.useWatch(['taskConfig', 'cdcConfig', 'domainPrefix'], form) as string | undefined;
   const updateBlocked = Boolean(task?.editPolicy?.updateBlocked || (task?.editPolicy && !task.editPolicy.editable));
   const structureLocked = Boolean(task?.editPolicy?.productionLocked || task?.editPolicy?.structureLocked);
   const lockedTables = task?.editPolicy?.lockedTables ?? [];
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>; const proposal = event.detail; if (!proposal) return;
+      const kind = proposal.kind.toUpperCase();
+      if ((kind === 'FORM' || kind === 'CONFIG')
+        && ['sync-task-form', 'sync-mapping', 'sync-config'].includes(proposal.target) && proposal.patch) {
+        form.setFieldsValue(proposal.patch);
+        event.preventDefault();
+      }
+    };
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'REALTIME_SYNC_TASK',
+        entityId: task ? String(task.id) : undefined,
+        title: form.getFieldValue('name') || (task ? `实时同步任务 #${task.id}` : '新建实时同步任务'),
+        revision: task?.updateTime ?? '0',
+        draft: { config: form.getFieldsValue(true), tableConfigs },
+      },
+    }));
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    publishAiContext();
+    return () => {
+      window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+      window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+    };
+  }, [form, open, tableConfigs, task]);
 
   useEffect(() => {
     if (!open) { initializedKeyRef.current = ''; return; }
@@ -228,22 +295,95 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
     void listSyncSourceTables(serverId, source?.databaseName ?? '', task?.id).then(setTables).catch((error) => message.error((error as Error).message)).finally(() => setMetadataLoading(false));
   }, [open, serverId, servers, form, task?.id]);
 
+  const selectedTablesKey = (selectedTables ?? []).join('\u0000');
   useEffect(() => {
-    if (!serverId || !selectedTables?.length) return;
-    const missing = selectedTables.filter((table) => !schemas[table]);
-    if (!missing.length) return;
+    if (!open || !serverId || !selectedTables?.length) {
+      schemaSourceRef.current = '';
+      schemaGenerationRef.current += 1;
+      schemasRef.current = {};
+      schemaErrorsRef.current = new Set();
+      setSchemas({});
+      setSchemaLoadingTables(new Set());
+      setSchemaErrorTables(new Set());
+      return;
+    }
     const sourceDatabase = servers.find((item) => item.id === serverId)?.databaseName ?? '';
-    void Promise.all(missing.map((table) => getMysqlSchema(serverId, sourceDatabase, table))).then((items) => {
-      setSchemas((current) => ({ ...current, ...Object.fromEntries(items.map((item) => [item.table, item])) }));
-      setTableConfigs((current) => {
-        const next = { ...current };
-        items.forEach((item) => {
-          if (!next[item.table]) next[item.table] = emptyTableConfig();
-        });
+    if (!sourceDatabase) return;
+    const sourceKey = `${serverId}\u0000${sourceDatabase}`;
+    const sourceChanged = schemaSourceRef.current !== sourceKey;
+    if (sourceChanged) {
+      schemaSourceRef.current = sourceKey;
+      schemaGenerationRef.current += 1;
+      schemasRef.current = {};
+      schemaErrorsRef.current = new Set();
+    }
+    const generation = schemaGenerationRef.current;
+    const selected = [...selectedTables];
+    const selectedSet = new Set(selected);
+    const retainedSchemas = sourceChanged ? {} : Object.fromEntries(
+      Object.entries(schemasRef.current).filter(([table]) => selectedSet.has(table)),
+    );
+    const retainedErrors = new Set(sourceChanged ? []
+      : [...schemaErrorsRef.current].filter((table) => selectedSet.has(table)));
+    schemasRef.current = retainedSchemas;
+    schemaErrorsRef.current = retainedErrors;
+    setSchemas(retainedSchemas);
+    setSchemaErrorTables(retainedErrors);
+
+    const tablesToLoad = selected.filter((table) => !retainedSchemas[table] && !retainedErrors.has(table));
+    setSchemaLoadingTables(new Set(tablesToLoad));
+    if (!tablesToLoad.length) return;
+
+    void Promise.all(tablesToLoad.map(async (table) => {
+      const requestKey = `${generation}\u0000${sourceKey}\u0000${table}`;
+      let request = schemaRequestsRef.current.get(requestKey);
+      if (!request) {
+        request = limitSchemaRequest(async () => {
+          if (schemaGenerationRef.current !== generation
+            || schemaSourceRef.current !== sourceKey
+            || !selectedTablesRef.current.includes(table)) return undefined;
+          return getMysqlSchema(serverId, sourceDatabase, table).catch(() => undefined);
+        }).finally(() => schemaRequestsRef.current.delete(requestKey));
+        schemaRequestsRef.current.set(requestKey, request);
+      }
+      return [table, await request] as const;
+    })).then((rows) => {
+      if (schemaGenerationRef.current !== generation || schemaSourceRef.current !== sourceKey) return;
+      const currentSelected = new Set(selectedTablesRef.current);
+      const nextSchemas = { ...schemasRef.current };
+      const nextErrors = new Set(schemaErrorsRef.current);
+      rows.forEach(([table, schema]) => {
+        if (!currentSelected.has(table)) return;
+        if (!schema) {
+          nextErrors.add(table);
+          return;
+        }
+        nextSchemas[table] = schema;
+        nextErrors.delete(table);
+        setTableConfigs((current) => current[table]
+          ? current : { ...current, [table]: emptyTableConfig() });
+      });
+      schemasRef.current = nextSchemas;
+      schemaErrorsRef.current = nextErrors;
+      setSchemas(nextSchemas);
+      setSchemaErrorTables(nextErrors);
+    }).finally(() => {
+      if (schemaGenerationRef.current !== generation || schemaSourceRef.current !== sourceKey) return;
+      setSchemaLoadingTables((current) => {
+        const next = new Set(current);
+        tablesToLoad.forEach((table) => next.delete(table));
         return next;
       });
-    }).catch((error) => message.error((error as Error).message));
-  }, [serverId, selectedTables, schemas, servers]);
+    });
+  }, [limitSchemaRequest, open, schemaReloadRevision, selectedTablesKey, serverId, servers]);
+
+  const retrySchema = (table: string) => {
+    const next = new Set(schemaErrorsRef.current);
+    next.delete(table);
+    schemaErrorsRef.current = next;
+    setSchemaErrorTables(next);
+    setSchemaReloadRevision((current) => current + 1);
+  };
 
   const setPrivate = (table: string, key: keyof TablePrivateConfig, value: string[]) => {
     setTableConfigs((current) => ({ ...current, [table]: { ...(current[table] ?? emptyTableConfig()), [key]: value } }));
@@ -346,6 +486,20 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
 
   const mappingColumns = [
     { title: '源表', dataIndex: 'table', width: 180 },
+    {
+      title: '表结构',
+      width: 96,
+      render: (_: unknown, row: { table: string }) => {
+        if (schemaLoadingTables.has(row.table)) return <Tag>读取中</Tag>;
+        if (schemaErrorTables.has(row.table)) {
+          return <Space direction="vertical" size={2}>
+            <Tag color="error">读取失败</Tag>
+            <Button size="small" onClick={() => retrySchema(row.table)}>重试</Button>
+          </Space>;
+        }
+        return schemas[row.table] ? <Tag color="success">已读取</Tag> : <Tag>待读取</Tag>;
+      },
+    },
     {
       title: '计算列',
       width: 400,

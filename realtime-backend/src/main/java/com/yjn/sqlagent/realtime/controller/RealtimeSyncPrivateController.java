@@ -53,7 +53,7 @@ public class RealtimeSyncPrivateController {
     public RealtimeResponse<Map<String, Object>> debugCommandPreview(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest request) {
         actors.requireActor();
-        validator.validateTask(repository.requiredTask(id));
+        repository.requiredTask(id);
         return RealtimeResponse.success(runtime.previewSaved(
                 id, request == null ? new TaskActionRequest() : request, true));
     }

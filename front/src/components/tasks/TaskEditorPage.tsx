@@ -14,7 +14,7 @@ import { activateTaskVersion, createTask, getTask, getTaskVersion, getTaskVersio
 import { ApiError } from '../../api/client';
 import { checkTaskQuality, completeSql, explainTaskSql, previewSqlStructure, validateTaskSql } from '../../api/workspace';
 import type {
-  HiveExplainVO, HiveValidationVO, SqlStructurePreviewVO, SqlTaskSaveRequest, SqlTaskVO,
+  AiProposal, HiveExplainVO, HiveValidationVO, SqlStructurePreviewVO, SqlTaskSaveRequest, SqlTaskVO,
   SqlTaskVersionSaveRequest, SqlTaskVersionVO, TaskQualityVO, TaskVersionCheckSummaryVO,
 } from '../../types';
 import WorkspaceBottomPanel, { type WorkbenchTab } from './WorkspaceBottomPanel';
@@ -164,6 +164,44 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
 
   useEffect(() => { callbackRef.current = { onDirtyChange, onTaskSaved }; }, [onDirtyChange, onTaskSaved]);
   useEffect(() => { callbackRef.current.onDirtyChange?.(dirty); }, [dirty]);
+  useEffect(() => {
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>;
+      const proposal = event.detail;
+      if (!proposal || !canEdit) return;
+      const kind = proposal.kind.toUpperCase();
+      if (kind === 'SQL' && proposal.target === 'offline-sql' && proposal.after !== undefined) {
+        setSqlValue(proposal.after);
+      } else if (kind === 'DDL' && proposal.target === 'offline-ddl' && proposal.after !== undefined) {
+        setDdlValue(proposal.after);
+      } else if ((kind === 'FORM' || kind === 'CONFIG') && proposal.target === 'offline-task-form' && proposal.patch) {
+        form.setFieldsValue(proposal.patch as unknown as SqlTaskSaveRequest);
+      } else return;
+      setDirty(true);
+      setValidation(undefined);
+      setExplain(undefined);
+      setQuality(undefined);
+      event.preventDefault();
+    };
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+  }, [canEdit, form]);
+  useEffect(() => {
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        revision: taskVersion?.revision ?? task?.revision,
+        title: taskName || (id ? `离线任务 #${id}` : '新建离线任务'),
+        draft: { sql: sqlValue, ddl: ddlValue, database, selectedText: editorRef.current?.view?.state.sliceDoc(
+          editorRef.current.view.state.selection.main.from,
+          editorRef.current.view.state.selection.main.to,
+        ) || undefined },
+      },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [database, ddlValue, id, sqlValue, task?.revision, taskName, taskVersion?.revision]);
   useEffect(() => {
     const beforeUnload = (event: BeforeUnloadEvent) => { if (dirty) event.preventDefault(); };
     window.addEventListener('beforeunload', beforeUnload);

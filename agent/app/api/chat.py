@@ -21,6 +21,8 @@ async def chat_stream(req: ChatRequest) -> EventSourceResponse:
             command=req.command,
             execution_id=req.execution_id,
             version_no=req.version_no,
+            context=req.context.model_dump(by_alias=True) if req.context else None,
+            intent=req.intent,
         )
     )
 

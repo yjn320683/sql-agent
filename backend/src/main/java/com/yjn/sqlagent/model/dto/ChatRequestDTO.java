@@ -2,8 +2,9 @@ package com.yjn.sqlagent.model.dto;
 
 import javax.validation.constraints.NotBlank;
 import javax.validation.constraints.Min;
-import javax.validation.constraints.NotNull;
 import javax.validation.constraints.Size;
+import javax.validation.Valid;
+import javax.validation.constraints.AssertTrue;
 import lombok.Data;
 
 @Data
@@ -15,7 +16,6 @@ public class ChatRequestDTO {
             message = "sessionId 必须为标准 UUID")
     private String sessionId;
 
-    @NotNull(message = "taskId 不能为空")
     @Min(value = 1, message = "taskId 必须大于0")
     private Long taskId;
 
@@ -30,5 +30,15 @@ public class ChatRequestDTO {
     private String message;
 
     private String command;
+
+    @Valid
+    private AiContextDTO context;
+
+    private String intent;
+
+    @AssertTrue(message = "taskId 和 context 至少提供一个")
+    public boolean isContextPresent() {
+        return taskId != null || context != null;
+    }
 
 }

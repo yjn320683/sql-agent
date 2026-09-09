@@ -10,6 +10,7 @@ import SyncMoreConfigRows from '../components/SyncMoreConfigRows';
 import RealtimeManagedSqlInspector from '../components/RealtimeManagedSqlInspector';
 import RealtimeManagedTaskDetailModal from '../components/RealtimeManagedTaskDetailModal';
 import type { ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeServer, RealtimeTable, TaskParam } from '../types';
+import type { AiProposal } from '../../types';
 import TaskDevelopmentSteps, { taskStepsCollapsedKey } from '../../components/tasks/TaskDevelopmentSteps';
 
 const defaults = (taskType: ManagedTaskType): ManagedTaskSave => ({ taskType, name: '', owner: '1', description: '', flinkVersion: '2.2.1', alarmConfig: {}, flinkConf: { parallelism: 1, checkpointIntervalSeconds: 60, taskManagerMemoryGb: 2, jobManagerMemoryGb: 1, flinkConfOverrides: {} }, taskConfig: taskType === 'compute' ? { computeConfig: { defaultDatabase: '', sql: '' } } : { exportConfig: { sourceDatabase: '', targetServerId: undefined as unknown as number, mappings: [], sink: { batchSize: 500, flushIntervalMs: 2000, maxRetries: 3 } } } });
@@ -30,6 +31,38 @@ export default function RealtimeManagedTaskEditorPage({ taskType }: { taskType: 
     return () => { active = false; };
   }, [form, id, taskType]);
   const serverId = Form.useWatch(['taskConfig', 'exportConfig', 'targetServerId'], form); const sourceDatabase = Form.useWatch(['taskConfig', 'exportConfig', 'sourceDatabase'], form); const computeSql = Form.useWatch(['taskConfig', 'computeConfig', 'sql'], form) ?? ''; const computeDatabase = Form.useWatch(['taskConfig', 'computeConfig', 'defaultDatabase'], form);
+  useEffect(() => {
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>; const proposal = event.detail; if (!proposal) return;
+      const kind = proposal.kind.toUpperCase();
+      if (taskType === 'compute' && kind === 'SQL' && proposal.target === 'flink-sql' && proposal.after !== undefined) {
+        form.setFieldValue(['taskConfig', 'computeConfig', 'sql'], proposal.after);
+      } else if ((kind === 'FORM' || kind === 'CONFIG')
+        && proposal.target === (taskType === 'compute' ? 'compute-task-form' : 'export-form') && proposal.patch) {
+        form.setFieldsValue(proposal.patch as unknown as ManagedTaskSave);
+      } else return;
+      event.preventDefault();
+    };
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: taskType === 'compute' ? 'REALTIME_COMPUTE_TASK' : 'REALTIME_EXPORT_TASK',
+        entityId: id ? String(id) : undefined,
+        title: form.getFieldValue('name') || `${id ? '编辑' : '新建'}实时${label}任务`,
+        revision: loadedTask?.updateTime ?? '0',
+        draft: taskType === 'compute'
+          ? { sql: computeSql, database: computeDatabase }
+          : { config: form.getFieldsValue(true) },
+      },
+    }));
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    publishAiContext();
+    return () => {
+      window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+      window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+    };
+  }, [computeDatabase, computeSql, form, id, label, loadedTask?.updateTime, taskType]);
   useEffect(() => {
     if (taskType === 'compute' && !computeDatabase && availableDatabases.length) form.setFieldValue(['taskConfig', 'computeConfig', 'defaultDatabase'], availableDatabases[0]);
   }, [availableDatabases, computeDatabase, form, taskType]);

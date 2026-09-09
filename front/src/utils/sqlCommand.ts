@@ -8,10 +8,13 @@ export const SQL_COMMAND_LABELS: Record<SqlCommand, string> = {
   sql_fix: '/sql修复',
   sql_explain: '/sql解释',
   sql_static_check: '/sql静态检查',
+  platform_assist: '页面 AI',
 };
 
 const PREFIX_TO_COMMAND: Record<string, SqlCommand> = Object.fromEntries(
-  Object.entries(SQL_COMMAND_LABELS).map(([command, label]) => [label, command as SqlCommand]),
+  Object.entries(SQL_COMMAND_LABELS)
+    .filter(([command]) => command !== 'platform_assist')
+    .map(([command, label]) => [label, command as SqlCommand]),
 ) as Record<string, SqlCommand>;
 
 export function parseSqlCommandPrefix(input: string): {

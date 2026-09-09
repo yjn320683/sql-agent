@@ -28,8 +28,10 @@ def build_options(ob_id: str, command: str, **kwargs) -> ClaudeAgentOptions:
     env["MCP_TOOL_TIMEOUT_SECONDS"] = str(settings.mcp_tool_timeout_seconds)
     extra_args = _build_extra_args(env)
     kwargs.pop("max_turns", None)
+    context_type = kwargs.pop("context_type", None)
+    intent = kwargs.pop("intent", None)
     return ClaudeAgentOptions(
-        system_prompt=build_system_prompt(ob_id, command),
+        system_prompt=build_system_prompt(ob_id, command, context_type=context_type, intent=intent),
         mcp_servers={
             "sql_agent": {
                 "type": "stdio",

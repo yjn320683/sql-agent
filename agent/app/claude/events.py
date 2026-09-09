@@ -33,17 +33,23 @@ class EventMapper:
                     events.append(sse_event("text", {"delta": block.text}))
                 elif isinstance(block, ToolUseBlock):
                     self._tool_names_by_id[block.id] = block.name
-                    events.append(
-                        sse_event("tool_use", {"id": block.id, "name": block.name, "input": block.input})
-                    )
+                    if block.name.endswith("platform_proposal_present"):
+                        events.append(sse_event("proposal", block.input))
+                    else:
+                        events.append(
+                            sse_event("tool_use", {"id": block.id, "name": block.name, "input": block.input})
+                        )
                 elif isinstance(block, dict) and block.get("type") == "tool_use":
                     tool_use_id = block.get("id")
                     tool_name = block.get("name", "")
                     if tool_use_id:
                         self._tool_names_by_id[tool_use_id] = tool_name
-                    events.append(
-                        sse_event("tool_use", {"id": tool_use_id, "name": tool_name, "input": block.get("input")})
-                    )
+                    if tool_name.endswith("platform_proposal_present"):
+                        events.append(sse_event("proposal", block.get("input") or {}))
+                    else:
+                        events.append(
+                            sse_event("tool_use", {"id": tool_use_id, "name": tool_name, "input": block.get("input")})
+                        )
         elif isinstance(msg, UserMessage):
             for tool_use_id, content, is_error in _iter_tool_results(msg.content):
                 if tool_use_id:

@@ -237,6 +237,19 @@ export default function DataCatalogPage() {
     return () => { active = false; };
   }, [activeTab, ddl, detail, freshness, partitionPage, partitions, selected, selectedKey, statistics, storage]);
 
+  useEffect(() => {
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: selected ? {
+        contextType: 'CATALOG_TABLE',
+        entityId: `${selected.db}.${selected.table}`,
+        title: `数据目录 · ${selected.db}.${selected.table}`,
+      } : { contextType: 'CATALOG_TABLE', title: '数据目录' },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [selected]);
+
   const chooseTable = (table: HiveTableVO) => {
     setSelected(table);
     setActiveTab('columns');

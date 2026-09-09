@@ -232,7 +232,18 @@ export default function TaskListPage({
             <Button type="primary" onClick={() => { setPage(1); setCommittedKeyword(keyword.trim()); }}>查询</Button>
             <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
           </Space>
-          <span className="result-count">共 {data.total} 个任务</span>
+          {embedded ? (
+            <Space>
+              <Tooltip title="新建任务">
+                <Button
+                  type="primary"
+                  aria-label="新建任务"
+                  icon={<PlusOutlined />}
+                  onClick={() => onCreateTask ? onCreateTask() : navigate('/tasks/new')}
+                />
+              </Tooltip>
+            </Space>
+          ) : null}
         </div>
         <Table
           rowKey="id"

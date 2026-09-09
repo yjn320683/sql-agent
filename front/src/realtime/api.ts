@@ -91,8 +91,8 @@ export const listSyncTasks = async (query: URLSearchParams): Promise<SyncTaskPag
   return { items: page.records, total: page.total, page: page.pageNo, pageSize: page.pageSize };
 };
 export const getSyncTask = async (id: number) => fromUnifiedTask(await requestJson<UnifiedTaskWire>(`/v1/api/tasks/${id}/detail`));
-export const createSyncTask = async (value: SyncTaskSave) => { const id = await requestJson<number>('/v1/api/tasks/create', json('POST', toUnifiedTask(value))); return getSyncTask(id); };
-export const updateSyncTask = async (id: number, value: SyncTaskSave) => { await requestJson<number>(`/v1/api/tasks/${id}/update`, json('POST', toUnifiedTask(value))); return getSyncTask(id); };
+export const createSyncTask = (value: SyncTaskSave) => requestJson<number>('/v1/api/tasks/create', json('POST', toUnifiedTask(value)));
+export const updateSyncTask = (id: number, value: SyncTaskSave) => requestJson<number>(`/v1/api/tasks/${id}/update`, json('POST', toUnifiedTask(value)));
 export const deleteSyncTask = (id: number) => requestJson<void>(`/v1/api/tasks/${id}/delete`, json('POST'));
 export const previewSyncTask = (value: SyncTaskSave, excludeTaskId?: number) => requestJson<{ command: string; arguments: string[] }>(`/v1/api/tasks/command-preview${excludeTaskId ? `?excludeTaskId=${excludeTaskId}` : ''}`, json('POST', toUnifiedTask(value)));
 export const previewSavedSyncTask = (id: number, debug = false, value?: Record<string, unknown>) => requestJson<{ command: string; arguments: string[] }>(debug ? `/api/tasks/${id}/debug-command-preview` : `/v1/api/tasks/${id}/command-preview`, debug ? json('POST', value ?? {}) : undefined);

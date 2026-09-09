@@ -1,6 +1,7 @@
 package com.yjn.sqlagent.service;
 
 import com.yjn.sqlagent.model.dto.UserQuestionAnswerDTO;
+import com.yjn.sqlagent.model.dto.AiContextDTO;
 import com.yjn.sqlagent.model.dto.SqlCompletionRequestDTO;
 import com.yjn.sqlagent.model.dto.SqlStructurePreviewDTO;
 import java.util.Map;
@@ -17,6 +18,8 @@ public interface AgentProxyService {
             Long executionId,
             Integer versionNo,
             String command,
+            String intent,
+            AiContextDTO context,
             String message);
 
     /** 转发工具权限决策到 agent。 */

@@ -17,9 +17,31 @@ from app.claude import events
 
 
 class ClaudeEventsTests(unittest.TestCase):
+    @staticmethod
+    def _message(message_type, **values):
+        value = object.__new__(message_type)
+        for key, item in values.items():
+            setattr(value, key, item)
+        return value
+
+    def test_platform_proposal_has_dedicated_sse_event(self) -> None:
+        mapper = events.EventMapper()
+        assistant_msg = self._message(events.AssistantMessage,
+            content=[{
+                "type": "tool_use",
+                "id": "toolu_proposal",
+                "name": "mcp__sql_agent__platform_proposal_present",
+                "input": {"target": "sql", "kind": "SQL", "before": "select 1", "after": "select 2", "baseRevision": 3},
+            }],
+            model="test-model",
+        )
+        mapped = mapper.map_message_events(assistant_msg)
+        self.assertEqual("proposal", mapped[0]["event"])
+        self.assertEqual("select 2", json.loads(mapped[0]["data"])["after"])
+
     def test_ask_user_question_result_is_not_exposed_as_error(self) -> None:
         mapper = events.EventMapper()
-        assistant_msg = events.AssistantMessage(
+        assistant_msg = self._message(events.AssistantMessage,
             content=[
                 {
                     "type": "tool_use",
@@ -31,7 +53,7 @@ class ClaudeEventsTests(unittest.TestCase):
             model="test-model",
         )
 
-        user_msg = events.UserMessage(
+        user_msg = self._message(events.UserMessage,
             content=[
                 {
                     "type": "tool_result",

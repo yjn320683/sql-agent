@@ -8,6 +8,9 @@ public class SessionVO {
 
     private String sessionId;
     private String title;
+    private String contextType;
+    private String contextId;
+    private String contextTitle;
     private LocalDateTime createdAt;
     private LocalDateTime lastActiveAt;
     private Boolean archived;

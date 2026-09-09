@@ -10,6 +10,7 @@ import static org.mockito.Mockito.when;
 import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.mapper.ChatSessionMapper;
+import com.yjn.sqlagent.model.dto.AiContextDTO;
 import com.yjn.sqlagent.model.dto.SessionManageQueryDTO;
 import com.yjn.sqlagent.model.entity.ChatSession;
 import com.yjn.sqlagent.model.vo.SessionPageVO;
@@ -37,6 +38,47 @@ class ChatSessionServiceImplTest {
         verify(mapper).insert(captor.capture());
         assertEquals("138284", captor.getValue().getObId());
         assertEquals("session-1", captor.getValue().getSessionId());
+    }
+
+    @Test
+    void pageSessionStoresSourceAndRejectsReuseForAnotherEntity() {
+        when(mapper.selectById("session-1")).thenReturn(null);
+        ChatSessionServiceImpl service = new ChatSessionServiceImpl(mapper);
+        AiContextDTO context = new AiContextDTO();
+        context.setContextType("REALTIME_SYNC_TASK");
+        context.setEntityId("31");
+        context.setTitle("实时同步任务 #31");
+
+        service.touch("138284", "session-1", "诊断延迟", context);
+
+        ArgumentCaptor<ChatSession> captor = ArgumentCaptor.forClass(ChatSession.class);
+        verify(mapper).insert(captor.capture());
+        assertEquals("REALTIME_SYNC_TASK", captor.getValue().getContextType());
+        assertEquals("31", captor.getValue().getContextId());
+        assertEquals("实时同步任务 #31", captor.getValue().getContextTitle());
+
+        ChatSession existing = captor.getValue();
+        when(mapper.selectById("session-1")).thenReturn(existing);
+        AiContextDTO other = new AiContextDTO();
+        other.setContextType("REALTIME_SYNC_TASK");
+        other.setEntityId("32");
+        assertThrows(BusinessException.class, () -> service.touch("138284", "session-1", "继续", other));
+    }
+
+    @Test
+    void legacySessionBindsToFirstPageContext() {
+        ChatSession existing = session("legacy", "138284");
+        when(mapper.selectById("legacy")).thenReturn(existing);
+        AiContextDTO context = new AiContextDTO();
+        context.setContextType("DATA_COMPARE");
+        context.setEntityId("12");
+        context.setTitle("验数任务 #12");
+
+        new ChatSessionServiceImpl(mapper).touch("138284", "legacy", "分析差异", context);
+
+        assertEquals("DATA_COMPARE", existing.getContextType());
+        assertEquals("12", existing.getContextId());
+        verify(mapper).updateById(existing);
     }
 
     @Test

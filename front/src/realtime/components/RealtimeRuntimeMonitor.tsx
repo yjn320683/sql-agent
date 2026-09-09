@@ -130,6 +130,17 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
     const timer = window.setInterval(() => void load(true), 5000);
     return () => window.clearInterval(timer);
   }, [active, live, load]);
+  useEffect(() => {
+    if (!active || !instance) return;
+    window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'REALTIME_INSTANCE',
+        entityId: String(instance.id),
+        parentId: String(taskId),
+        title: `实时实例 #${instance.id}`,
+      },
+    }));
+  }, [active, instance, taskId]);
 
   if (!instance) return <Empty description="当前任务暂无生产实例" />;
 

@@ -4,6 +4,15 @@
 
 ## 已实现工具
 
+### 数据开发页面上下文与 Proposal
+
+| 工具 | 用途 | 关键入参 |
+| --- | --- | --- |
+| `platform_context_get` | 查询调度、验数、实时任务/实例/表/Server/告警或平台状态的脱敏事实；实时实例会尽力补充 Flink 概览、资源与 Checkpoint | `contextType`, `entityId` |
+| `platform_proposal_present` | 展示不执行的 SQL、DDL 或字段补丁 Proposal | `target`, `kind`, `before`, `after`, `patch`, `baseRevision`, `summary`, `risks` |
+
+`platform_context_get` 不返回 Server 密码、Token、完整连接串、脏数据原始载荷或内部调用栈。Proposal 只允许前端确认写入本地草稿，不代表保存或执行成功。
+
 ### SQL 任务与执行实例
 
 | 工具 | 用途 | 关键入参 |
@@ -12,7 +21,7 @@
 | `sql_task_execution_get` | 查询一个实例的状态、运行标识、错误摘要和有限脱敏日志尾部 | `executionId` |
 | `sql_task_execution_list` | 查询任务最近执行实例 | `taskId`, `limit` |
 
-每次对话必须先调用 `sql_task_get`。指定了 `executionId` 时再调用 `sql_task_execution_get`；未指定但需要实际运行事实时先调用 `sql_task_execution_list`。
+仅 SQL 专用命令和离线任务/版本页面必须先调用 `sql_task_get`。指定了 `executionId` 时再调用 `sql_task_execution_get`；未指定但需要实际运行事实时先调用 `sql_task_execution_list`。其它页面按 `platform-assist.md` 的 contextType 路由，不能强行调用离线任务工具。
 
 ### 平台与 Hive
 

@@ -18,6 +18,8 @@ from sql_agent_mcp_server.domains.hadoop_runtime.service import HadoopRuntimeSer
 from sql_agent_mcp_server.domains.hadoop_runtime.tools import register_hadoop_runtime_tools
 from sql_agent_mcp_server.domains.sql_task.service import SqlTaskService
 from sql_agent_mcp_server.domains.sql_task.tools import register_sql_task_tools
+from sql_agent_mcp_server.domains.platform_context.service import PlatformContextService
+from sql_agent_mcp_server.domains.platform_context.tools import register_platform_context_tools
 from sql_agent_mcp_server.settings import Settings, get_settings
 
 LOGGER = get_logger(__name__)
@@ -52,11 +54,13 @@ def create_mcp(settings: Settings | None = None) -> FastMCP:
     )
     data_map_service = DataMapService.from_settings(resolved_settings)
     sql_task_service = SqlTaskService.from_settings(resolved_settings)
+    platform_context_service = PlatformContextService.from_settings(resolved_settings)
     register_hive_metadata_tools(mcp, hive_service)
     register_hive_execution_tools(mcp, hive_execution_service, sql_task_service)
     register_hadoop_runtime_tools(mcp, hadoop_runtime_service)
     register_data_map_tools(mcp, data_map_service)
     register_sql_task_tools(mcp, sql_task_service)
+    register_platform_context_tools(mcp, platform_context_service)
     return mcp
 
 

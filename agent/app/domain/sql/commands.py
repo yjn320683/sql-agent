@@ -16,6 +16,7 @@ COMMAND_PREFIXES: dict[str, SqlCommand] = {
 }
 
 VALID_COMMANDS = set(COMMAND_PREFIXES.values())
+VALID_COMMANDS.add("platform_assist")
 
 
 @dataclass(frozen=True)

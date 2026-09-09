@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.model.dto.AgentChatRequestDTO;
+import com.yjn.sqlagent.model.dto.AiContextDTO;
 import com.yjn.sqlagent.model.dto.PermissionDecisionDTO;
 import com.yjn.sqlagent.model.dto.UserQuestionAnswerDTO;
 import com.yjn.sqlagent.service.AgentProxyService;
@@ -56,6 +57,8 @@ public class AgentProxyServiceImpl implements AgentProxyService {
             Long executionId,
             Integer versionNo,
             String command,
+            String intent,
+            AiContextDTO context,
             String message) {
         AgentChatRequestDTO body = new AgentChatRequestDTO();
         body.setSessionId(sessionId);
@@ -64,6 +67,8 @@ public class AgentProxyServiceImpl implements AgentProxyService {
         body.setExecutionId(executionId);
         body.setVersionNo(versionNo);
         body.setCommand(command);
+        body.setIntent(intent);
+        body.setContext(context);
         body.setMessage(message);
 
         String errorId = UUID.randomUUID().toString();

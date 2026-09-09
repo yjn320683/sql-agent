@@ -7,7 +7,7 @@ import {
   createTaskBackfill, getTaskDependencies, getTaskSchedule, listTaskBackfills, listTaskScheduleRuns,
   listTasks, saveTaskDependencies, saveTaskSchedule,
 } from '../../api/tasks';
-import type { SqlTaskBackfillBatchPageVO, SqlTaskDependencyVO, SqlTaskScheduleRunPageVO, SqlTaskScheduleVO, SqlTaskVO } from '../../types';
+import type { AiProposal, SqlTaskBackfillBatchPageVO, SqlTaskDependencyVO, SqlTaskScheduleRunPageVO, SqlTaskScheduleVO, SqlTaskVO } from '../../types';
 
 interface Props { task: SqlTaskVO; open: boolean; onClose: () => void; }
 
@@ -43,7 +43,9 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [backfillRange, setBackfillRange] = useState<[Dayjs, Dayjs]>();
   const [backfillParameters, setBackfillParameters] = useState('{}');
+  const [activeTab, setActiveTab] = useState('schedule');
   const scheduleType = Form.useWatch('scheduleType', form);
+  const scheduleDraft = Form.useWatch([], form);
 
   const load = useCallback(async () => {
     if (!open) return;
@@ -69,6 +71,56 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
   }, [form, open, runPage, task.id]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!open) return;
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'OFFLINE_SCHEDULE',
+        entityId: String(task.id),
+        title: `调度与依赖 · ${task.name}`,
+        revision: schedule?.revision ?? 0,
+        draft: {
+          activeTab,
+          schedule: scheduleDraft,
+          dependencies: dependencyIds.map((upstreamTaskId) => ({
+            upstreamTaskId,
+            dependencyType: dependencyTypes[upstreamTaskId] || 'SUCCESS',
+          })),
+        },
+      },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [activeTab, dependencyIds, dependencyTypes, open, schedule?.revision, scheduleDraft, task.id, task.name]);
+  useEffect(() => {
+    if (!open) return;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>;
+      const proposal = event.detail;
+      const kind = proposal?.kind?.toUpperCase();
+      if (!['offline-schedule', 'offline-dependencies'].includes(proposal?.target || '')
+        || !proposal?.patch || (kind !== 'FORM' && kind !== 'CONFIG')) return;
+      const patch = proposal.patch as Record<string, unknown>;
+      const allowed = ['scheduleType', 'cronExpression', 'timezone', 'enabled', 'concurrencyPolicy', 'maxRetries', 'retryIntervalSeconds'] as const;
+      const fields = Object.fromEntries(allowed.filter((key) => patch[key] !== undefined).map((key) => [key, patch[key]]));
+      if (patch.parameters && typeof patch.parameters === 'object') fields.parametersText = JSON.stringify(patch.parameters, null, 2);
+      form.setFieldsValue(fields as Partial<ScheduleFields>);
+      const proposedDependencies = Array.isArray(patch.dependencies) ? patch.dependencies : Array.isArray(patch.dependencyIds) ? patch.dependencyIds : undefined;
+      if (proposedDependencies) {
+        const normalized = proposedDependencies.map((item) => typeof item === 'number'
+          ? { upstreamTaskId: item, dependencyType: 'SUCCESS' as const }
+          : item as { upstreamTaskId?: number; dependencyType?: 'SUCCESS' | 'COMPLETED' })
+          .filter((item) => Number.isInteger(item.upstreamTaskId) && item.upstreamTaskId !== task.id);
+        setDependencyIds(normalized.map((item) => item.upstreamTaskId as number));
+        setDependencyTypes(Object.fromEntries(normalized.map((item) => [item.upstreamTaskId, item.dependencyType || 'SUCCESS'])));
+      }
+      event.preventDefault();
+    };
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+  }, [form, open, task.id]);
 
   const parseParameters = (text: string) => {
     try {
@@ -174,5 +226,5 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
     </div> },
   ];
 
-  return <Drawer width="min(860px, 96vw)" open={open} onClose={onClose} title={<Space><CalendarOutlined /><span>任务调度 · {task.name}</span></Space>} destroyOnHidden><Tabs className="ui-flat-tabs" items={items} /></Drawer>;
+  return <Drawer width="min(860px, 96vw)" open={open} onClose={onClose} title={<Space><CalendarOutlined /><span>任务调度 · {task.name}</span></Space>} destroyOnHidden><Tabs className="ui-flat-tabs" activeKey={activeTab} onChange={setActiveTab} items={items} /></Drawer>;
 }

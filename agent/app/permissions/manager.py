@@ -41,6 +41,8 @@ SQL_MCP_TOOLS = {
     "mcp__sql_agent__sql_task_version_get",
     "mcp__sql_agent__sql_task_execution_get",
     "mcp__sql_agent__sql_task_execution_list",
+    "mcp__sql_agent__platform_context_get",
+    "mcp__sql_agent__platform_proposal_present",
 }
 AUTO_ALLOWED_TOOLS = READ_ONLY_TOOLS | SQL_MCP_TOOLS
 PERMISSION_TIMEOUT_SECONDS = 300

@@ -150,6 +150,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
 
   useEffect(() => {
     if (!task) return;
+    if (activeDrawerTab === 'runtime' && selectRuntimeInstance(instances)) return;
     setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setDetailCommand(''); setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab('instances');
   }, [task?.id]);
 
@@ -166,6 +167,21 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
     const latest = instances.find((item) => item.id === logInstance.id);
     if (latest && latest !== logInstance) setLogInstance(latest);
   }, [instances, logInstance]);
+
+  useEffect(() => {
+    if (!task) return;
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'REALTIME_SYNC_TASK',
+        entityId: String(task.id),
+        title: `${task.name} · ${activeDrawerTab === 'data-link' ? '脏数据与 Schema 演进' : activeDrawerTab}`,
+        revision: task.updateTime,
+      },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [activeDrawerTab, instances, task]);
 
   const filteredInstances = useMemo(() => instances.filter((item) => {
     if (status !== 'all' && item.status !== status) return false;

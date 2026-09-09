@@ -80,6 +80,25 @@ public class RealtimePaimonCatalogService {
         catch (Exception ex) { throw failure("读取 Paimon 表结构失败", ex); }
     }
 
+    /** 精确检查目标表是否存在；不扫描目标库的全部表。 */
+    public Set<String> existingTables(String database, List<String> tableNames) {
+        Set<String> result = new java.util.LinkedHashSet<>();
+        if (tableNames == null || tableNames.isEmpty()) return result;
+        try (Catalog catalog = catalog()) {
+            for (String tableName : tableNames) {
+                try {
+                    catalog.getTable(Identifier.create(database, tableName));
+                    result.add(tableName);
+                } catch (Catalog.TableNotExistException ignored) {
+                    // 目标表不存在正是新增同步表的正常情况。
+                }
+            }
+            return result;
+        } catch (Exception ex) {
+            throw failure("Paimon物理表检查失败", ex);
+        }
+    }
+
     public Map<Long, Map<String, Object>> describeExisting(List<Map<String, Object>> tables) {
         Map<Long, Map<String, Object>> result = new LinkedHashMap<>();
         try (Catalog catalog = catalog()) {

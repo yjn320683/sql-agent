@@ -19,4 +19,8 @@ public class AgentChatRequestDTO {
 
     private String message;
 
+    private AiContextDTO context;
+
+    private String intent;
+
 }

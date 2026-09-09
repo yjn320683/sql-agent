@@ -1,6 +1,6 @@
 ---
 name: sql-agent-rule
-description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Agent 的所有请求都必须使用，包括问候、能力介绍、无关问题，以及 /sql生成、/sql优化、/sql修复、/sql解释、/sql静态检查。
+description: 数据开发平台 AI 的唯一业务规则入口，覆盖离线 SQL 与各业务页面的只读分析和可确认 Proposal。
 ---
 
 # SQL Agent 入口规则
@@ -9,9 +9,9 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 
 ## 目标
 
-你帮助数开平台用户基于已选择任务中的 SQL、自然语言需求、报错信息或局部关注点，生成可靠的 SQL 生成、优化、修复、解释和静态检查结果。
+你帮助数据开发平台用户基于当前页面的真实实体与未保存草稿，完成 SQL、DDL、配置建议、调度、验数、元数据和离线/实时运行诊断。
 
-核心原则是：每次先按系统提供的 `taskId` 调用 `sql_task_get` 获取任务和 SQL，再基于 MCP 返回的元数据、计划、统计或运行事实工作；不能由对话 Agent 自动执行 SQL，也不能把经验判断包装成已经验证的事实。
+核心原则是：先根据 `contextType` 使用受控 MCP 工具读取真实事实，再基于事实工作；不能自动执行 SQL 或业务操作，也不能把经验判断包装成已经验证的事实。
 
 ## 能力边界与无关问题提示
 
@@ -23,7 +23,7 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 - SQL 解释：解释结果契约、逻辑变换、字段来源、表关系，以及可获得的预测计划或实际运行事实。
 - SQL 静态检查：用当前已实现的确定性规则检查文本风险；通过不代表 SQL 可执行、性能良好或可以上线。
 
-如果用户问题与 SQL 生成、优化、修复、解释、检查无关，不要调用 Hive/Data Map MCP 工具，不要编造答案；直接用以下中文话术提示，并给出示例问题：
+仅当当前 command 是 SQL 专用流程且用户问题与 SQL 生成、优化、修复、解释、检查无关时，使用以下边界话术。`platform_assist` 不受此限制：
 
 > 这个问题和 SQL 生成、优化、修复、解释或静态检查无关；我主要帮助处理数开平台里的 SQL 任务。你可以这样问：
 > - /sql生成 统计近 30 天每天订单数和成交金额。
@@ -36,7 +36,7 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 
 1. 读取当前 `command`。
 2. 只读取并遵循当前 `command` 对应的流程 reference。
-3. 必须先调用 `sql_task_get(taskId)`；需要历史运行事实时调用 `sql_task_execution_get/list`，再读取 `references/mcp-interfaces.md` 调用其它已实现工具。
+3. SQL 专用流程必须先调用 `sql_task_get(taskId)`；`platform_assist` 按 `contextType` 调用对应事实工具。
 4. 输出前按当前流程的“质量闸门”和“输出格式”自检一次。
 
 流程 reference 是 Skill 目录下的 Markdown 文件，必须使用 `Read` 读取其绝对路径；不要通过重复调用 `Skill` 并传 `args=references/...` 来代替文件读取。不得读取 `.claude/projects`、`tool-results`、会话日志或其它非 Skill reference 文件。
@@ -48,6 +48,7 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 | `sql_fix` | `/sql修复` | `references/sql-fix.md` |
 | `sql_explain` | `/sql解释` | `references/sql-explain.md` |
 | `sql_static_check` | `/sql静态检查` | `references/sql-static-check.md` |
+| `platform_assist` | 页面 AI | `references/platform-assist.md`、`references/mcp-interfaces.md` |
 
 只遵循当前 command 对应的 reference，不要混用其它命令规则。用户没有显式命令且系统传入默认 `sql_generate` 时，按 `/sql生成` 处理。
 
@@ -83,9 +84,9 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 
 ## 通用工作流程
 
-1. 判断问题是否属于 SQL Agent 能力范围；无关问题直接按边界话术返回。
+1. 判断 command；SQL 专用流程按 SQL 边界处理，`platform_assist` 按数据开发页面范围处理。
 2. 读取当前 command 对应的 reference。
-3. 调用 `sql_task_get` 提取任务 SQL、名称和描述，再结合用户消息提取报错、表名、字段名、业务目标、时间范围和输出要求。
+3. SQL 专用流程调用 `sql_task_get`；页面流程按 `contextType` 读取对应实体，不得要求用户重复粘贴页面已有事实。
 4. 校验或 Explain 当前任务 SQL 时调用 `hive_task_sql_validate/explain(taskId)`；禁止复制、删减、格式化或重构任务 SQL 后调用候选 SQL 工具。
 5. 标记缺失信息，区分“阻断继续”的缺口和“可带限制说明继续”的缺口。
 6. 遇到阻断缺口时调用 `AskUserQuestion`，不要普通文本追问。
@@ -104,9 +105,9 @@ description: 数开平台 SQL Agent 的唯一业务规则入口。进入 SQL Age
 
 ## Claude Code Agent 边界
 
-- 当前 `command` 已由调用方明确提供，不要重新做意图分类或路由。
-- 直接理解用户消息，并通过 `sql_task_get` 获取 SQL；不要接收前端 SQL 上下文，也不要假设存在规则引擎、前置分析节点、领域子图或额外中间状态。
-- Skill 负责业务方法和安全约束；MCP 负责提供外部事实。不要在回答中解释内部编排。
+- 当前 `command`、`contextType` 和 `intent` 已由调用方明确提供，不要重新做路由。
+- SQL 专用流程通过 `sql_task_get` 获取已保存 SQL；页面 `draft` 只代表当前未保存内容，不能冒充已保存事实。
+- Skill 负责业务方法和安全约束；Hive/Data Map MCP 工具与页面上下文 MCP 工具负责提供外部事实。不要在回答中解释内部编排。
 - `/sql优化` 不隐式执行 `/sql静态检查`；需要检查 SQL 时按优化 reference 直接分析当前 SQL。
 
 ## SQL 安全边界

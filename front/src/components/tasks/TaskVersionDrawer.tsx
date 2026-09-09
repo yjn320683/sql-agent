@@ -8,7 +8,7 @@ import {
 import { diffLines } from 'diff';
 import { useNavigate } from 'react-router-dom';
 import { activateTaskVersion, createTaskVersion, getTask, getTaskVersion, listTaskVersions } from '../../api/tasks';
-import type { SqlTaskVO, SqlTaskVersionStatus, SqlTaskVersionVO } from '../../types';
+import type { AiProposal, SqlTaskVO, SqlTaskVersionStatus, SqlTaskVersionVO } from '../../types';
 import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import TaskExecutionModal from './TaskExecutionModal';
 
@@ -65,6 +65,7 @@ export default function TaskVersionDrawer({ open, task, editingVersionNo, hasUns
   const [diffLoading, setDiffLoading] = useState(false);
   const [error, setError] = useState('');
   const [highlightedVersionNo, setHighlightedVersionNo] = useState<number>();
+  const versionNoteDraft = Form.useWatch('note', form);
 
   const loadList = useCallback(async (
     targetPage = page,
@@ -99,6 +100,44 @@ export default function TaskVersionDrawer({ open, task, editingVersionNo, hasUns
     setCreateOpen(createOnOpen);
     void loadList(1, pageSize, '');
   }, [createOnOpen, open, task.id]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  useEffect(() => {
+    if (!open) return;
+    const selected = selectedVersionNos.length === 1
+      ? items.find((item) => item.versionNo === selectedVersionNos[0])
+      : undefined;
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: {
+        contextType: 'OFFLINE_VERSION',
+        entityId: selected ? String(selected.versionNo) : undefined,
+        parentId: String(task.id),
+        versionNo: selected?.versionNo,
+        revision: selected?.revision ?? task.revision,
+        title: selected ? `${task.name} · v${selected.versionNo}` : `版本管理 · ${task.name}`,
+        draft: createOpen ? { versionNote: versionNoteDraft } : undefined,
+      },
+    }));
+    publishAiContext();
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    return () => window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+  }, [createOpen, items, open, selectedVersionNos, task.id, task.name, task.revision, versionNoteDraft]);
+
+  useEffect(() => {
+    if (!open || !createOpen) return;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>;
+      const proposal = event.detail;
+      const kind = proposal?.kind?.toUpperCase();
+      if (proposal?.target !== 'version-note' || !proposal.patch || (kind !== 'FORM' && kind !== 'CONFIG')) return;
+      const note = proposal.patch.note ?? proposal.patch.versionNote ?? proposal.patch.summary;
+      if (typeof note !== 'string' || !note.trim()) return;
+      form.setFieldValue('note', note.slice(0, 512));
+      event.preventDefault();
+    };
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+  }, [createOpen, form, open]);
 
   const submitSearch = () => {
     const nextKeyword = keyword.trim();

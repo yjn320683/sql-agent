@@ -1,7 +1,8 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Button, Form, Input, InputNumber, Modal, Select, Space, Table, Tabs, message, type FormInstance } from 'antd';
 import { CopyOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
 import type { RealtimeTableColumn } from '../types';
+import type { AiProposal } from '../../types';
 import {
   REALTIME_TABLE_OPTION_KEYS,
   createRealtimeTableDdl,
@@ -29,6 +30,31 @@ export default function RealtimeTableCreateModal({ open, form, databases, submit
   const [ddlInput, setDdlInput] = useState('');
   const watched = Form.useWatch([], form) as RealtimeTableFormValue | undefined;
   const preview = useMemo(() => createRealtimeTableDdl(toRealtimeTableDraft(watched)), [watched]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const applyAiProposal = (rawEvent: Event) => {
+      if (rawEvent.defaultPrevented) return;
+      const event = rawEvent as CustomEvent<AiProposal>; const proposal = event.detail; if (!proposal) return;
+      const kind = proposal.kind.toUpperCase();
+      try {
+        if (kind === 'DDL' && proposal.target === 'realtime-table-ddl' && proposal.after) form.setFieldsValue(parseRealtimeTableDdl(proposal.after));
+        else if ((kind === 'FORM' || kind === 'CONFIG') && proposal.target === 'realtime-table-form' && proposal.patch) form.setFieldsValue(proposal.patch as RealtimeTableFormValue);
+        else return;
+        setMode('visual'); event.preventDefault();
+      } catch (error) { message.error(`AI DDL 无法应用：${(error as Error).message}`); }
+    };
+    const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
+      detail: { contextType: 'REALTIME_TABLE', title: '新建实时表', revision: '0', draft: { ddl: preview, form: watched } },
+    }));
+    window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+    window.addEventListener('sql-agent:ai-context-request', publishAiContext);
+    publishAiContext();
+    return () => {
+      window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
+      window.removeEventListener('sql-agent:ai-context-request', publishAiContext);
+    };
+  }, [form, open, preview, watched]);
 
   const parseDdl = () => {
     try {

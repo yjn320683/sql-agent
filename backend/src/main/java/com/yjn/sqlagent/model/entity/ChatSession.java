@@ -16,6 +16,12 @@ public class ChatSession {
 
     private String title;
 
+    private String contextType;
+
+    private String contextId;
+
+    private String contextTitle;
+
     private LocalDateTime createdAt;
 
     private LocalDateTime lastActiveAt;

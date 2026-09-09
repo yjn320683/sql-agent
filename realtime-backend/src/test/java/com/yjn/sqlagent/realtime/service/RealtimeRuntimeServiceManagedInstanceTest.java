@@ -306,6 +306,42 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void terminalYarnStateIsRecheckedWhenFlinkListFails() {
+        RealtimeRuntimeService reconciler = spy(service);
+        Map<String, Object> staleRunning = Map.of(
+                "id", 32L, "taskId", 8L, "managed", true,
+                "status", "running", "executionMode", "PRODUCTION",
+                "jobId", "cccccccccccccccccccccccccccccccc",
+                "yarnApplicationId", "application_1_32",
+                "trackingUrl", "http://flink.example/",
+                "startedAt", "2026-08-27T10:00:00");
+        when(repository.requiredInstance(8L, 32L)).thenReturn(staleRunning);
+        doAnswer(invocation -> { throw new IllegalStateException("Flink REST unavailable"); })
+                .when(reconciler).fetchText(anyString(), anyString());
+        java.util.concurrent.atomic.AtomicInteger statusQueries = new java.util.concurrent.atomic.AtomicInteger();
+        doAnswer(invocation -> {
+            @SuppressWarnings("unchecked") List<String> command = invocation.getArgument(0);
+            if (command.contains("-status")) {
+                return statusQueries.getAndIncrement() == 0
+                        ? new RealtimeRuntimeService.CommandResult(0, "State : RUNNING")
+                        : new RealtimeRuntimeService.CommandResult(0,
+                                "State : FINISHED\nFinal-State : SUCCEEDED");
+            }
+            if (command.contains("list")) {
+                return new RealtimeRuntimeService.CommandResult(1, "Flink cluster is shutting down");
+            }
+            return new RealtimeRuntimeService.CommandResult(1, "unexpected command");
+        }).when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 32L);
+
+        verify(repository).updateInstanceRuntime(32L, "finished",
+                "State : RUNNING\nFlink REST unavailable\nFlink cluster is shutting down\n"
+                        + "State : FINISHED\nFinal-State : SUCCEEDED", null);
+        verify(repository).changeTaskStatus(8L, "not_running");
+    }
+
+    @Test
     void newlyStartedJobKeepsRunningDuringFlinkVisibilityGrace() {
         RealtimeRuntimeService reconciler = spy(service);
         Map<String, Object> newlyStarted = Map.of(
@@ -373,6 +409,56 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         verify(repository).changeTaskStatus(8L, "failed");
         verify(repository).addAlert(8L, "critical", "同步任务运行失败",
                 "State : FINISHED\nFinal-State : FAILED\nDiagnostics: container failed");
+    }
+
+    @Test
+    void pendingSavepointStopKeepsStoppingWhileExternalJobIsStillRunning() {
+        RealtimeRuntimeService reconciler = spy(service);
+        Map<String, Object> stopping = Map.of(
+                "id", 29L, "taskId", 8L, "managed", true,
+                "status", "stopping", "executionMode", "PRODUCTION",
+                "yarnApplicationId", "application_1_29");
+        when(repository.requiredInstance(8L, 29L)).thenReturn(stopping);
+        when(repository.activeStopOperation(8L, 29L)).thenReturn(Map.of(
+                "id", 41L, "operator", "tester"));
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0, "State : RUNNING"))
+                .when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 29L);
+
+        verify(repository, never()).updateInstanceRuntime(anyLong(), anyString(), any(), any());
+        verify(repository, never()).completeOperation(anyLong(), anyString(), any(), any());
+        verify(repository, never()).changeTaskStatus(anyLong(), anyString());
+    }
+
+    @Test
+    void pendingSavepointStopCompletesOnlyAfterExternalTerminalState() {
+        RealtimeRuntimeService reconciler = spy(service);
+        Map<String, Object> stopping = Map.of(
+                "id", 31L, "taskId", 8L, "managed", true,
+                "status", "stopping", "executionMode", "PRODUCTION",
+                "yarnApplicationId", "application_1_31");
+        Map<String, Object> finished = Map.of(
+                "id", 31L, "taskId", 8L, "managed", true,
+                "status", "finished", "executionMode", "PRODUCTION",
+                "savepointPath", "hdfs://savepoints/sp-31");
+        when(repository.requiredInstance(8L, 31L)).thenReturn(stopping, finished, finished);
+        when(repository.activeStopOperation(8L, 31L)).thenReturn(Map.of(
+                "id", 42L, "operator", "tester"));
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
+                "State : FINISHED\nFinal-State : SUCCEEDED"))
+                .when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 31L);
+
+        verify(repository).updateInstanceRuntime(31L, "finished",
+                "State : FINISHED\nFinal-State : SUCCEEDED", null);
+        verify(repository).changeTaskStatus(8L, "not_running");
+        verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(42L),
+                org.mockito.ArgumentMatchers.eq("SUCCESS"), anyString(),
+                org.mockito.ArgumentMatchers.isNull());
+        verify(repository).addChange(8L, 42L, null, 31L, "tester",
+                "STOP", "停止类型：savepoint，savepoint：hdfs://savepoints/sp-31");
     }
 
     @Test
@@ -572,6 +658,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         verify(repository).updateInstanceSubmission(19L, "canceled",
                 "0123456789abcdef0123456789abcdef", "application_1_2", "http://flink/",
                 "start\nflink cancel 异常\nKilled application application_1_2", null);
+        verify(repository).updateSavepointPath(19L, "");
         ArgumentCaptor<String> operationResult = ArgumentCaptor.forClass(String.class);
         verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(12L),
                 org.mockito.ArgumentMatchers.eq("SUCCESS"), operationResult.capture(),
