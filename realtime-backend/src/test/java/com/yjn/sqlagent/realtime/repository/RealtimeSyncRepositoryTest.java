@@ -1,6 +1,7 @@
 package com.yjn.sqlagent.realtime.repository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
@@ -13,9 +14,12 @@ import com.yjn.sqlagent.realtime.config.RealtimeProperties;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.stream.Collectors;
+import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
 class RealtimeSyncRepositoryTest {
 
@@ -123,5 +127,80 @@ class RealtimeSyncRepositoryTest {
         assertEquals("编辑", row.get("action"));
         assertEquals("edit", row.get("detailKind"));
         assertEquals("编辑任务配置", row.get("summary"));
+    }
+
+    @Test
+    void rebuildMappingsPersistsOneHundredTablesWithStableOrderAndReferences() {
+        JdbcTemplate jdbc = mappingJdbc("bulk");
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties());
+        List<String> tables = IntStream.range(0, 100)
+                .mapToObj(index -> "source_" + index).collect(Collectors.toList());
+
+        repository.rebuildMappings(11L, 3L, "ods_real", mappingConfig(tables), "tester");
+
+        assertEquals(100, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_realtime_table WHERE producer_task_id=11", Integer.class));
+        assertEquals(100, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_sync_task_table_mapping WHERE task_id=11", Integer.class));
+        assertEquals(100, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_task_table_reference WHERE task_id=11 AND reference_role='OUTPUT'", Integer.class));
+        List<String> persisted = jdbc.query("SELECT source_table FROM rt_sync_task_table_mapping"
+                        + " WHERE task_id=11 ORDER BY sort_order",
+                (rs, rowNum) -> rs.getString(1));
+        assertEquals(tables, persisted);
+    }
+
+    @Test
+    void producerConflictIsReportedBeforeAnyMappingOrReferenceIsWritten() {
+        JdbcTemplate jdbc = mappingJdbc("conflict");
+        jdbc.update("INSERT INTO rt_realtime_table(catalog_name,database_name,table_name,table_type,creation_source,"
+                        + "producer_task_id,physical_status,table_options_json,operator)"
+                        + " VALUES('paimon','ods_real','prefix_source_1','primary_key','sync',99,'declared','{}','other')");
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties());
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> repository.rebuildMappings(11L, 3L, "ods_real",
+                        mappingConfig(List.of("source_0", "source_1")), "tester"));
+
+        assertTrue(error.getMessage().contains("ods_real.prefix_source_1"));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_sync_task_table_mapping WHERE task_id=11", Integer.class));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_task_table_reference WHERE task_id=11", Integer.class));
+        assertEquals(0, jdbc.queryForObject(
+                "SELECT COUNT(*) FROM rt_realtime_table WHERE producer_task_id=11", Integer.class));
+    }
+
+    private JdbcTemplate mappingJdbc(String suffix) {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:h2:mem:sync_mapping_" + suffix + ";MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE rt_server(id BIGINT PRIMARY KEY,name VARCHAR(128),type VARCHAR(32),address VARCHAR(255),"
+                + "database_name VARCHAR(128),database_prefix VARCHAR(32),account VARCHAR(128),password VARCHAR(255),"
+                + "description VARCHAR(255),operator VARCHAR(64))");
+        jdbc.execute("CREATE TABLE rt_realtime_table(id BIGINT AUTO_INCREMENT PRIMARY KEY,catalog_name VARCHAR(64),"
+                + "database_name VARCHAR(128),table_name VARCHAR(128),table_type VARCHAR(32),creation_source VARCHAR(32),"
+                + "producer_task_id BIGINT,physical_status VARCHAR(32),table_options_json CLOB,operator VARCHAR(64),"
+                + "update_time TIMESTAMP DEFAULT CURRENT_TIMESTAMP,UNIQUE(catalog_name,database_name,table_name))");
+        jdbc.execute("CREATE TABLE rt_sync_task_table_mapping(id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,"
+                + "source_server_id BIGINT,source_database VARCHAR(128),source_table VARCHAR(128),target_database VARCHAR(128),"
+                + "target_table VARCHAR(128),realtime_table_id BIGINT,sort_order INT,UNIQUE(task_id,sort_order),"
+                + "UNIQUE(source_server_id,source_table))");
+        jdbc.execute("CREATE TABLE rt_task_table_reference(id BIGINT AUTO_INCREMENT PRIMARY KEY,task_id BIGINT,"
+                + "realtime_table_id BIGINT,reference_role VARCHAR(16),UNIQUE(task_id,realtime_table_id,reference_role))");
+        jdbc.update("INSERT INTO rt_server(id,name,type,address,database_name,database_prefix,account,password,description,operator)"
+                + " VALUES(3,'source','mysql','127.0.0.1:3306','source_db','','reader','secret','','tester')");
+        return jdbc;
+    }
+
+    private Map<String, Object> mappingConfig(List<String> tables) {
+        Map<String, Object> cdc = new LinkedHashMap<>();
+        cdc.put("databaseName", "source_db");
+        cdc.put("selectedTables", tables);
+        cdc.put("tablePrefix", "prefix_");
+        cdc.put("tableSuffix", "");
+        return Map.of("cdcConfig", cdc);
     }
 }

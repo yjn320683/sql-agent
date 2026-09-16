@@ -26,15 +26,19 @@ import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
 import org.springframework.jdbc.support.GeneratedKeyHolder;
 import org.springframework.jdbc.support.KeyHolder;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Repository;
 import org.springframework.transaction.annotation.Transactional;
 
 @Repository
 public class RealtimeSyncRepository {
 
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeSyncRepository.class);
     private static final Set<String> ACTIVE = Set.of("submitting", "running", "stopping", "restarting");
     private static final Pattern DATABASE_PREFIX = Pattern.compile("[a-z]{1,9}");
     private static final int PAIMON_IDENTIFIER_MAX_LENGTH = 128;
+    private static final int MAPPING_BATCH_SIZE = 500;
     private final JdbcTemplate jdbc;
     private final NamedParameterJdbcTemplate named;
     private final ObjectMapper mapper;
@@ -219,7 +223,11 @@ public class RealtimeSyncRepository {
 
     @Transactional
     public long createTask(SyncTaskRequest request, String actor) {
+        long totalStartedAt = System.nanoTime();
+        long stageStartedAt = totalStartedAt;
         Map<String, Object> config = normalizedConfig(request);
+        long normalizeMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(
@@ -237,20 +245,34 @@ public class RealtimeSyncRepository {
                         + " VALUES(?,?,?,?,?)", taskId, "mysql-cdc", request.getSourceServerId(),
                 request.getTargetDatabase(), json(config));
         long versionId = insertVersion(taskId, request, config, actor);
+        long taskAndVersionMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         validateMappingConflicts(taskId, request.getSourceServerId(), config);
+        long conflictCheckMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         rebuildMappings(taskId, request.getSourceServerId(), request.getTargetDatabase(), config, actor);
+        long mappingPersistenceMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         insertChange(taskId, null, null, versionId, null, actor, "CREATE", "创建同步任务");
+        long auditMs = elapsedMs(stageStartedAt);
+        LOG.info("sync_persistence operation=create taskId={} tableCount={} normalizeMs={} taskAndVersionMs={} conflictCheckMs={} mappingPersistenceMs={} auditMs={} transactionTotalMs={}",
+                taskId, selectedTables(config).size(), normalizeMs, taskAndVersionMs, conflictCheckMs,
+                mappingPersistenceMs, auditMs, elapsedMs(totalStartedAt));
         return taskId;
     }
 
     @Transactional
     public void updateTask(long taskId, SyncTaskRequest request, String actor) {
+        long totalStartedAt = System.nanoTime();
+        long stageStartedAt = totalStartedAt;
         Map<String, Object> currentTask = requiredTask(taskId);
         validateUpdatePolicy(taskId, currentTask, request);
         long operationId = startOperation(taskId, null, "EDIT", actor, json(Map.of("expectedUpdateTime",
                 text(request.getExpectedUpdateTime()))));
         Long beforeVersion = latestVersionId(taskId);
         Map<String, Object> config = normalizedConfig(request);
+        long normalizeAndPolicyMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         int updated;
         if (text(request.getExpectedUpdateTime()).isEmpty()) {
             updated = jdbc.update("UPDATE rt_task SET task_name=?,flink_version=?,owner=?,description=?,update_time=NOW() WHERE id=?",
@@ -266,14 +288,24 @@ public class RealtimeSyncRepository {
         if (updated == 0) throw new IllegalStateException("任务已被其他用户修改，请刷新后重试");
         jdbc.update("UPDATE rt_sync_task_config SET source_server_id=?,target_database=?,config_json=?,update_time=NOW()"
                         + " WHERE task_id=?", request.getSourceServerId(), request.getTargetDatabase(), json(config), taskId);
+        long taskConfigMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         validateMappingConflicts(taskId, request.getSourceServerId(), config);
+        long conflictCheckMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         jdbc.update("DELETE FROM rt_sync_task_table_mapping WHERE task_id=?", taskId);
         rebuildMappings(taskId, request.getSourceServerId(), request.getTargetDatabase(), config, actor);
         cleanupSyncRealtimeTables(taskId);
+        long mappingPersistenceMs = elapsedMs(stageStartedAt);
+        stageStartedAt = System.nanoTime();
         long afterVersion = insertVersion(taskId, request, config, actor);
         insertChange(taskId, operationId, beforeVersion, afterVersion, null, actor, "EDIT", "编辑同步任务配置");
         completeOperation(operationId, "SUCCESS", json(Map.of("beforeVersionId", beforeVersion,
                 "afterVersionId", afterVersion)), null);
+        long versionAndAuditMs = elapsedMs(stageStartedAt);
+        LOG.info("sync_persistence operation=update taskId={} tableCount={} normalizeAndPolicyMs={} taskConfigMs={} conflictCheckMs={} mappingPersistenceMs={} versionAndAuditMs={} transactionTotalMs={}",
+                taskId, selectedTables(config).size(), normalizeAndPolicyMs, taskConfigMs, conflictCheckMs,
+                mappingPersistenceMs, versionAndAuditMs, elapsedMs(totalStartedAt));
     }
 
     @Transactional
@@ -942,9 +974,9 @@ public class RealtimeSyncRepository {
 
     private void validateDynamicParams(String paramType, Map<String, Object> overrides) {
         if (overrides.isEmpty()) return;
-        List<Map<String, Object>> rows = jdbc.queryForList("SELECT param_key paramKey,key_desc keyDesc,param_value paramValue,"
-                + "input_type inputType,min_value minValue,max_value maxValue,step_value stepValue,"
-                + "precision_value precisionValue FROM rt_task_param WHERE task_type='sync' AND param_type=?"
+        List<Map<String, Object>> rows = jdbc.queryForList("SELECT param_key AS `paramKey`,key_desc AS `keyDesc`,param_value AS `paramValue`,"
+                + "input_type AS `inputType`,min_value AS `minValue`,max_value AS `maxValue`,step_value AS `stepValue`,"
+                + "precision_value AS `precisionValue` FROM rt_task_param WHERE task_type='sync' AND param_type=?"
                 + " AND enabled_flag=1", paramType);
         Map<String, Map<String, Object>> allowed = new LinkedHashMap<>();
         for (Map<String, Object> row : rows) allowed.put(text(row.get("paramKey")), row);
@@ -1070,45 +1102,155 @@ public class RealtimeSyncRepository {
         return requiredKey(holder);
     }
 
-    private void rebuildMappings(long taskId, long serverId, String targetDatabase, Map<String, Object> config, String actor) {
+    void rebuildMappings(long taskId, long serverId, String targetDatabase, Map<String, Object> config, String actor) {
+        long startedAt = System.nanoTime();
         Map<String, Object> server = requiredServer(serverId, false);
         Map<String, Object> cdc = objectMap(config.get("cdcConfig"));
         String sourceDatabase = text(cdc.get("databaseName"), text(server.get("databaseName")));
         String prefix = text(cdc.get("tablePrefix"));
         if (prefix.isEmpty()) throw new IllegalArgumentException("Paimon 目标表前缀不能为空");
         String tableSuffix = text(cdc.get("tableSuffix"));
-        jdbc.update("DELETE FROM rt_task_table_reference WHERE task_id=? AND reference_role='OUTPUT'", taskId);
+        List<MappingPlan> plans = new ArrayList<>();
+        Set<String> targets = new java.util.LinkedHashSet<>();
         int order = 0;
         for (String table : strings(cdc.get("selectedTables"))) {
             String targetTable = prefix + table + tableSuffix;
-            long realtimeTableId = registerSyncRealtimeTable(taskId, targetDatabase, targetTable, actor);
-            jdbc.update("INSERT INTO rt_sync_task_table_mapping(task_id,source_server_id,source_database,source_table,"
-                            + "target_database,target_table,realtime_table_id,sort_order) VALUES(?,?,?,?,?,?,?,?)", taskId, serverId,
-                    sourceDatabase, table, targetDatabase, targetTable, realtimeTableId, order++);
-            jdbc.update("INSERT IGNORE INTO rt_task_table_reference(task_id,realtime_table_id,reference_role) VALUES(?,?,'OUTPUT')", taskId, realtimeTableId);
+            if (!targets.add(targetTable)) {
+                throw new IllegalArgumentException("目标 Paimon 表重复：" + targetDatabase + "." + targetTable);
+            }
+            plans.add(new MappingPlan(table, targetTable, order++));
+        }
+
+        int selectBatches = batchCount(targets.size());
+        Map<String, Map<String, Object>> managedTables = loadRealtimeTables(targetDatabase, new ArrayList<>(targets));
+        validateRealtimeTableProducers(taskId, targetDatabase, plans, managedTables);
+
+        List<Object[]> missingRows = new ArrayList<>();
+        for (MappingPlan plan : plans) {
+            if (!managedTables.containsKey(plan.targetTable)) {
+                missingRows.add(new Object[] {targetDatabase, plan.targetTable, taskId, actor});
+            }
+        }
+        int insertBatches = 0;
+        for (List<Object[]> batch : chunks(missingRows, MAPPING_BATCH_SIZE)) {
+            multiRowUpdate("INSERT IGNORE INTO rt_realtime_table(catalog_name,database_name,table_name,"
+                    + "table_type,creation_source,producer_task_id,physical_status,table_options_json,operator) "
+                    + "VALUES ", "('paimon',?,?,'primary_key','sync',?,'declared','{}',?)", batch);
+            insertBatches++;
+        }
+        if (!missingRows.isEmpty()) {
+            managedTables = loadRealtimeTables(targetDatabase, new ArrayList<>(targets));
+            selectBatches += batchCount(targets.size());
+            validateRealtimeTableProducers(taskId, targetDatabase, plans, managedTables);
+        }
+
+        List<Object[]> tableUpdates = new ArrayList<>();
+        List<Object[]> mappingRows = new ArrayList<>();
+        List<Object[]> referenceRows = new ArrayList<>();
+        for (MappingPlan plan : plans) {
+            Map<String, Object> managed = managedTables.get(plan.targetTable);
+            if (managed == null) {
+                throw new IllegalStateException("登记目标实时表失败：" + targetDatabase + "." + plan.targetTable);
+            }
+            long realtimeTableId = ((Number) managed.get("id")).longValue();
+            tableUpdates.add(new Object[] {taskId, actor, realtimeTableId});
+            mappingRows.add(new Object[] {taskId, serverId, sourceDatabase, plan.sourceTable,
+                    targetDatabase, plan.targetTable, realtimeTableId, plan.sortOrder});
+            referenceRows.add(new Object[] {taskId, realtimeTableId});
+        }
+
+        jdbc.update("DELETE FROM rt_task_table_reference WHERE task_id=? AND reference_role='OUTPUT'", taskId);
+        for (List<Object[]> batch : chunks(tableUpdates, MAPPING_BATCH_SIZE)) {
+            List<Long> ids = new ArrayList<>();
+            for (Object[] row : batch) ids.add(((Number) row[2]).longValue());
+            int updated = named.update("UPDATE rt_realtime_table SET creation_source='sync',producer_task_id=:taskId,"
+                    + "operator=:actor,update_time=NOW() WHERE id IN (:ids)"
+                    + " AND (producer_task_id IS NULL OR producer_task_id=:taskId)",
+                    new MapSqlParameterSource().addValue("taskId", taskId).addValue("actor", actor).addValue("ids", ids));
+            if (updated != ids.size()) {
+                Map<String, Map<String, Object>> refreshed = loadRealtimeTables(
+                        targetDatabase, new ArrayList<>(targets));
+                validateRealtimeTableProducers(taskId, targetDatabase, plans, refreshed);
+                boolean allOwned = plans.stream().allMatch(plan -> {
+                    Map<String, Object> row = refreshed.get(plan.targetTable);
+                    return row != null && row.get("producerTaskId") instanceof Number
+                            && ((Number) row.get("producerTaskId")).longValue() == taskId;
+                });
+                if (!allOwned) throw new IllegalStateException("目标 Paimon 表生产者发生并发变更，请重试");
+            }
+        }
+        for (List<Object[]> batch : chunks(mappingRows, MAPPING_BATCH_SIZE)) {
+            multiRowUpdate("INSERT INTO rt_sync_task_table_mapping(task_id,source_server_id,source_database,source_table,"
+                    + "target_database,target_table,realtime_table_id,sort_order) VALUES ", "(?,?,?,?,?,?,?,?)", batch);
+        }
+        for (List<Object[]> batch : chunks(referenceRows, MAPPING_BATCH_SIZE)) {
+            multiRowUpdate("INSERT IGNORE INTO rt_task_table_reference(task_id,realtime_table_id,reference_role) VALUES ",
+                    "(?,?,'OUTPUT')", batch);
+        }
+        LOG.info("sync_mapping_persistence taskId={} tableCount={} batchSize={} realtimeTableSelectBatches={} realtimeTableInsertBatches={} realtimeTableUpdateBatches={} mappingInsertBatches={} referenceInsertBatches={} costMs={}",
+                taskId, plans.size(), MAPPING_BATCH_SIZE, selectBatches, insertBatches,
+                batchCount(tableUpdates.size()), batchCount(mappingRows.size()), batchCount(referenceRows.size()),
+                elapsedMs(startedAt));
+    }
+
+    private Map<String, Map<String, Object>> loadRealtimeTables(String database, List<String> tableNames) {
+        Map<String, Map<String, Object>> result = new LinkedHashMap<>();
+        for (List<String> batch : chunks(tableNames, MAPPING_BATCH_SIZE)) {
+            if (batch.isEmpty()) continue;
+            MapSqlParameterSource parameters = new MapSqlParameterSource()
+                    .addValue("database", database).addValue("tables", batch);
+            List<Map<String, Object>> rows = named.queryForList(
+                    "SELECT id,table_name tableName,producer_task_id producerTaskId FROM rt_realtime_table"
+                            + " WHERE catalog_name='paimon' AND database_name=:database AND table_name IN (:tables)",
+                    parameters);
+            for (Map<String, Object> row : rows) result.put(text(row.get("tableName")), row);
+        }
+        return result;
+    }
+
+    private void validateRealtimeTableProducers(long taskId, String database, List<MappingPlan> plans,
+            Map<String, Map<String, Object>> managedTables) {
+        for (MappingPlan plan : plans) {
+            Map<String, Object> row = managedTables.get(plan.targetTable);
+            if (row == null || row.get("producerTaskId") == null) continue;
+            long producerTaskId = ((Number) row.get("producerTaskId")).longValue();
+            if (producerTaskId != taskId) {
+                throw new IllegalStateException("目标 Paimon 表已绑定其他生产任务："
+                        + database + "." + plan.targetTable);
+            }
         }
     }
 
-    private long registerSyncRealtimeTable(long taskId, String database, String table, String actor) {
-        List<Map<String, Object>> rows = jdbc.queryForList("SELECT id,producer_task_id producerTaskId FROM rt_realtime_table "
-                + "WHERE catalog_name='paimon' AND database_name=? AND table_name=?", database, table);
-        if (!rows.isEmpty()) {
-            Object producer = rows.get(0).get("producerTaskId");
-            if (producer != null && ((Number) producer).longValue() != taskId) {
-                throw new IllegalStateException("目标 Paimon 表已绑定其他生产任务：" + database + "." + table);
-            }
-            long id = ((Number) rows.get(0).get("id")).longValue();
-            jdbc.update("UPDATE rt_realtime_table SET creation_source='sync',producer_task_id=?,operator=?,update_time=NOW() WHERE id=?", taskId, actor, id);
-            return id;
+    private int batchCount(int size) {
+        return size == 0 ? 0 : (size + MAPPING_BATCH_SIZE - 1) / MAPPING_BATCH_SIZE;
+    }
+
+    private void multiRowUpdate(String prefix, String rowPlaceholders, List<Object[]> rows) {
+        if (rows.isEmpty()) return;
+        String sql = prefix + String.join(",", Collections.nCopies(rows.size(), rowPlaceholders));
+        List<Object> arguments = new ArrayList<>();
+        for (Object[] row : rows) Collections.addAll(arguments, row);
+        jdbc.update(sql, arguments.toArray());
+    }
+
+    private <T> List<List<T>> chunks(List<T> values, int size) {
+        List<List<T>> result = new ArrayList<>();
+        for (int offset = 0; offset < values.size(); offset += size) {
+            result.add(values.subList(offset, Math.min(values.size(), offset + size)));
         }
-        KeyHolder holder = new GeneratedKeyHolder();
-        jdbc.update(connection -> {
-            PreparedStatement ps = connection.prepareStatement("INSERT INTO rt_realtime_table(catalog_name,database_name,table_name,"
-                    + "table_type,creation_source,producer_task_id,physical_status,table_options_json,operator) "
-                    + "VALUES('paimon',?,?,'primary_key','sync',?,'declared','{}',?)", Statement.RETURN_GENERATED_KEYS);
-            ps.setString(1, database); ps.setString(2, table); ps.setLong(3, taskId); ps.setString(4, actor); return ps;
-        }, holder);
-        return requiredKey(holder);
+        return result;
+    }
+
+    private static final class MappingPlan {
+        private final String sourceTable;
+        private final String targetTable;
+        private final int sortOrder;
+
+        private MappingPlan(String sourceTable, String targetTable, int sortOrder) {
+            this.sourceTable = sourceTable;
+            this.targetTable = targetTable;
+            this.sortOrder = sortOrder;
+        }
     }
 
     private void cleanupSyncRealtimeTables(long taskId) {
@@ -1379,6 +1521,7 @@ public class RealtimeSyncRepository {
         return value.substring(0, maxLength);
     }
     private static String textValue(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
+    private long elapsedMs(long startedAt) { return (System.nanoTime() - startedAt) / 1_000_000L; }
     private String normalizeDate(String value) { return value.replace('T', ' ').substring(0, Math.min(19, value.length())); }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
     private String text(Object value, String fallback) { return text(value).isEmpty() ? fallback : text(value); }

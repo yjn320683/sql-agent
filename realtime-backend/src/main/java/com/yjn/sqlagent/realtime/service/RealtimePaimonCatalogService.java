@@ -20,11 +20,14 @@ import org.apache.paimon.table.Table;
 import org.apache.paimon.types.DataField;
 import org.apache.paimon.types.DataType;
 import org.apache.paimon.types.DataTypes;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /** 受管实时表对 Paimon Catalog 的唯一写入口。 */
 @Service
 public class RealtimePaimonCatalogService {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimePaimonCatalogService.class);
     private static final Pattern PARAMETERIZED = Pattern.compile("^(DECIMAL|CHAR|VARCHAR|BINARY|VARBINARY|TIME|TIMESTAMP)\\s*\\((\\d+)(?:\\s*,\\s*(\\d+))?\\)$");
     private static final Set<String> SAFE_OPTIONS = Set.of("bucket", "changelog-producer", "snapshot.time-retained",
             "snapshot.num-retained.min", "snapshot.num-retained.max", "compaction.min.file-num",
@@ -85,6 +88,7 @@ public class RealtimePaimonCatalogService {
     public Set<String> existingTables(String database, List<String> tableNames) {
         Set<String> result = new java.util.LinkedHashSet<>();
         if (tableNames == null || tableNames.isEmpty()) return result;
+        long startedAt = System.nanoTime();
         try (Catalog catalog = catalog()) {
             for (String tableName : tableNames) {
                 try {
@@ -94,8 +98,12 @@ public class RealtimePaimonCatalogService {
                     // 目标表不存在正是新增同步表的正常情况。
                 }
             }
+            LOG.info("sync_validation_stage stage=paimon_target_check database={} tableCount={} conflictCount={} catalogOpenCount=1 remoteQueryCount={} costMs={}",
+                    database, tableNames.size(), result.size(), tableNames.size(), elapsedMs(startedAt));
             return result;
         } catch (Exception ex) {
+            LOG.warn("sync_validation_stage stage=paimon_target_check database={} tableCount={} catalogOpenCount=1 result=failed costMs={} errorType={}",
+                    database, tableNames.size(), elapsedMs(startedAt), ex.getClass().getSimpleName());
             throw failure("Paimon物理表检查失败", ex);
         }
     }
@@ -217,4 +225,5 @@ public class RealtimePaimonCatalogService {
     private boolean bool(Object value) { return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(text(value)) || "1".equals(text(value)); }
     private boolean boolDefault(Object value, boolean fallback) { return value == null ? fallback : bool(value); }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
+    private long elapsedMs(long startedAt) { return (System.nanoTime() - startedAt) / 1_000_000L; }
 }

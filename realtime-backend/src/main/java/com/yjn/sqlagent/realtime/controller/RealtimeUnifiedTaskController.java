@@ -23,11 +23,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 实时同步、计算和出仓任务的统一入口。 */
 @RestController
 @RequestMapping("/v1/api/tasks")
 public class RealtimeUnifiedTaskController {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeUnifiedTaskController.class);
     private static final int MAX_FILTER_KEYWORD_LENGTH = 200;
     private final RealtimeSyncRepository repository;
     private final RealtimeRuntimeService runtime;
@@ -85,8 +88,14 @@ public class RealtimeUnifiedTaskController {
         String actor = actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) return RealtimeResponse.success(definitions.create(input, actor));
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, null);
-        return RealtimeResponse.success(repository.createTask(request, actor));
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
+        long taskId = repository.createTask(request, actor);
+        LOG.info("sync_save_total operation=create taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                taskId, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
+        return RealtimeResponse.success(taskId);
     }
 
     @PostMapping("/{id}/update")
@@ -94,8 +103,14 @@ public class RealtimeUnifiedTaskController {
         String actor = actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.update(id,input,actor); return RealtimeResponse.success(id); }
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, id);
-        repository.updateTask(id, request, actor); return RealtimeResponse.success(id);
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
+        repository.updateTask(id, request, actor);
+        LOG.info("sync_save_total operation=update taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                id, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
+        return RealtimeResponse.success(id);
     }
 
     @PostMapping("/{id}/delete")
@@ -133,8 +148,14 @@ public class RealtimeUnifiedTaskController {
         actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.validate(input, excludeTaskId); return RealtimeResponse.success(runtime.previewUnifiedRequest(input,excludeTaskId)); }
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, excludeTaskId);
-        return RealtimeResponse.success(runtime.previewRequest(request, excludeTaskId));
+        long validationMs = elapsedMs(started);
+        long previewStarted = System.nanoTime();
+        Map<String, Object> preview = runtime.previewRequest(request, excludeTaskId);
+        LOG.info("sync_save_total operation=preview taskId={} tableCount={} validationMs={} previewBuildMs={} totalMs={}",
+                excludeTaskId, selectedTableCount(request), validationMs, elapsedMs(previewStarted), elapsedMs(started));
+        return RealtimeResponse.success(preview);
     }
 
     @GetMapping("/{id}/command-preview")
@@ -237,8 +258,14 @@ public class RealtimeUnifiedTaskController {
     /** 外部 MySQL/Paimon 校验在写事务开始前完成。 */
     private void validateSyncSubmission(com.yjn.sqlagent.realtime.model.SyncTaskRequest request,
             Long taskId) {
+        long started = System.nanoTime();
+        long stageStarted = System.nanoTime();
         validator.validate(request);
+        long schemaValidationMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> normalized = repository.validatePreview(request, taskId);
+        long normalizationAndConflictMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> persisted = Map.of();
         if (taskId != null) {
             Object value = repository.requiredTask(taskId).get("taskConfig");
@@ -247,7 +274,12 @@ public class RealtimeUnifiedTaskController {
                 persisted = config;
             }
         }
+        long persistedConfigMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         targetValidator.validateAddedTargets(persisted, normalized);
+        LOG.info("sync_validation_total taskId={} tableCount={} schemaValidationMs={} normalizationAndConflictMs={} persistedConfigMs={} targetCheckMs={} totalMs={}",
+                taskId, selectedTableCount(request), schemaValidationMs, normalizationAndConflictMs,
+                persistedConfigMs, elapsedMs(stageStarted), elapsedMs(started));
     }
 
     private Map<String, Object> unifiedDetail(Map<String, Object> source) {
@@ -376,5 +408,16 @@ public class RealtimeUnifiedTaskController {
     }
     private void put(Map<String, String> target, String key, Object value) { if (value != null && !text(value).isEmpty()) target.put(key, text(value)); }
     private Double memoryGb(Object value) { String text = text(value).toLowerCase().replace("gb", "").replace("g", ""); try { return text.isEmpty() ? null : Double.valueOf(text); } catch (NumberFormatException ex) { return null; } }
+    private int selectedTableCount(com.yjn.sqlagent.realtime.model.SyncTaskRequest request) {
+        if (request == null || request.getTaskConfig() == null) return 0;
+        Object cdcValue = request.getTaskConfig().get("cdcConfig");
+        if (!(cdcValue instanceof Map<?, ?>)) return 0;
+        Object tables = ((Map<?, ?>) cdcValue).get("selectedTables");
+        if (!(tables instanceof Iterable<?>)) return text(tables).isEmpty() ? 0 : text(tables).split(",").length;
+        int count = 0;
+        for (Object ignored : (Iterable<?>) tables) count++;
+        return count;
+    }
+    private long elapsedMs(long started) { return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 }

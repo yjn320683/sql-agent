@@ -11,11 +11,14 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /** 校验 MySQL CDC 同步任务固定配置、源表 Schema 以及每表键配置。 */
 @Service
 public class RealtimeSyncConfigValidator {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeSyncConfigValidator.class);
     private static final long MIN_PROCESS_MEMORY_BYTES = 1024L * 1024L * 1024L;
     private static final Pattern MEMORY = Pattern.compile("^([0-9]+(?:\\.[0-9]+)?)\\s*([A-Za-z]+)$");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
@@ -57,13 +60,18 @@ public class RealtimeSyncConfigValidator {
         if (sourceServerId == null) throw new IllegalArgumentException("请选择 MySQL Server");
 
         Set<String> commonFields = null;
+        long schemaStarted = System.nanoTime();
+        Map<String, Map<String, Object>> schemas;
+        try {
+            schemas = servers.schemas(sourceServerId, selectedTables);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败：" + safe(ex), ex);
+        }
+        LOG.info("sync_validation_stage stage=mysql_schema_read serverId={} tableCount={} costMs={}",
+                sourceServerId, selectedTables.size(), elapsedMs(schemaStarted));
         for (String table : selectedTables) {
-            Map<String, Object> schema;
-            try {
-                schema = servers.schema(sourceServerId, table);
-            } catch (RuntimeException ex) {
-                throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败（" + table + "）：" + safe(ex), ex);
-            }
+            Map<String, Object> schema = schemas.get(table);
+            if (schema == null) throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败（" + table + "）：未返回表结构");
             validateTable(table, schema, tableConfigs.get(table), cdc.get("tableConfOverrides"));
             Set<String> fields = fields(schema);
             if (commonFields == null) commonFields = new LinkedHashSet<>(fields);
@@ -414,6 +422,10 @@ public class RealtimeSyncConfigValidator {
 
     private String safe(RuntimeException ex) {
         return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+    }
+
+    private long elapsedMs(long started) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
     private String text(Object value) {
