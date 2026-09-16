@@ -105,7 +105,10 @@ public class RealtimeUnifiedTaskController {
 
     @GetMapping("/{id}/detail")
     public RealtimeResponse<Map<String, Object>> detail(@PathVariable long id) {
-        actors.requireActor(); return RealtimeResponse.success("sync".equals(taskType(id))?unifiedDetail(repository.requiredTask(id)):definitionRepository.required(id));
+        actors.requireActor();
+        String type = taskType(id);
+        return RealtimeResponse.success("sync".equals(type)
+                ? unifiedDetail(repository.requiredSyncTask(id)) : definitionRepository.required(id));
     }
 
     @GetMapping("/{id}/versions")
@@ -156,6 +159,18 @@ public class RealtimeUnifiedTaskController {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("canEnable", reason.isEmpty());
         result.put("reason", reason.isEmpty() ? null : reason);
+        result.put("message", reason.isEmpty() ? null : reason);
+        if (reason.isEmpty() && "sync".equals(taskType(id))) {
+            Map<String, Object> policy = repository.editPolicy(id);
+            Map<String, Object> startPolicy = new LinkedHashMap<>();
+            startPolicy.put("productionLocked", Boolean.TRUE.equals(policy.get("productionLocked")));
+            startPolicy.put("syncTableSetChanged", Boolean.TRUE.equals(policy.get("syncTableSetChanged")));
+            startPolicy.put("requiredStartType", policy.get("requiredStartType"));
+            startPolicy.put("requiredStatePath", policy.get("requiredStatePath"));
+            startPolicy.put("canResetConsumptionPoint", Boolean.TRUE.equals(policy.get("productionLocked"))
+                    && text(policy.get("requiredStartType")).isEmpty());
+            result.put("startPolicy", startPolicy);
+        }
         return RealtimeResponse.success(result);
     }
 
@@ -257,7 +272,7 @@ public class RealtimeUnifiedTaskController {
         @SuppressWarnings("unchecked") Map<String, Object> source = new LinkedHashMap<>((Map<String, Object>) value);
         if (source.containsKey("alarmConfig") && source.containsKey("flinkConf")) {
             if (text(source.get("sourceServerName")).isEmpty()) {
-                source.put("sourceServerName", repository.requiredTask(taskId).get("sourceServerName"));
+                source.put("sourceServerName", repository.sourceServerName(taskId));
             }
             return source;
         }
@@ -269,8 +284,7 @@ public class RealtimeUnifiedTaskController {
         if (!source.containsKey("taskConfig")) return value;
         Map<String, Object> result = unifiedDetail(source);
         if (text(result.get("sourceServerName")).isEmpty()) {
-            Map<String, Object> current = repository.requiredTask(taskId);
-            result.put("sourceServerName", current.get("sourceServerName"));
+            result.put("sourceServerName", repository.sourceServerName(taskId));
         }
         return result;
     }
@@ -299,24 +313,48 @@ public class RealtimeUnifiedTaskController {
         boolean successful = "killed_success".equals(status)
                 || (!"sync".equals(type) && "finished".equals(status));
         if (!successful) return "最新调试实例未成功，请重新调试";
-        if (!"sync".equals(type)) return "";
-        Map<String, Object> policy = repository.editPolicy(taskId);
-        if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))
-                && text(policy.get("requiredStatePath")).isEmpty()) {
-            return "同步表集合已变化，但没有可用的正式 Savepoint，请先恢复原配置运行并通过 Savepoint 停止";
-        }
+        // 同步表集合变化但没有 Savepoint 时仍允许打开启动弹窗，
+        // 用户可显式选择异常实例 Checkpoint 或按时间戳重置消费点。
         return "";
     }
     private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
         Map<String, Object> policy = repository.editPolicy(taskId);
-        if (!Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) return;
+        if (action.getSourceStartupTimestampMillis() != null) {
+            if (!Boolean.TRUE.equals(policy.get("productionLocked"))) {
+                throw new IllegalArgumentException("首次正式启动必须执行 initial 全量快照，不能按时间戳重置消费点");
+            }
+            return;
+        }
+        if ("checkpoint".equalsIgnoreCase(text(action.getStartType()))) {
+            if (!isLatestFailedProductionCheckpoint(taskId, text(action.getStatePath()))) {
+                throw new IllegalArgumentException("Checkpoint 仅支持恢复最近一次异常失败的正式实例，请刷新恢复状态后重新选择");
+            }
+            return;
+        }
         String requiredPath = text(policy.get("requiredStatePath"));
+        if (requiredPath.isEmpty()) {
+            if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
+                throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
+            }
+            return;
+        }
         if (!"savepoint".equalsIgnoreCase(text(action.getStartType()))) {
-            throw new IllegalArgumentException("增删同步表后必须从最近一次正式停止产生的 Savepoint 启动");
+            throw new IllegalArgumentException("存在可恢复的正式 Savepoint，必须从该 Savepoint 启动或显式重置消费点");
         }
         if (!requiredPath.equals(text(action.getStatePath()))) {
-            throw new IllegalArgumentException("增删同步表后只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
+            throw new IllegalArgumentException("只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
         }
+    }
+    private boolean isLatestFailedProductionCheckpoint(long taskId, String path) {
+        for (Map<String, Object> instance : repository.instances(taskId)) {
+            if (!"PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode")))) continue;
+            if (!"failed".equalsIgnoreCase(text(instance.get("status")))) return false;
+            String jobId = text(instance.get("jobId"));
+            if (jobId.isEmpty()) return false;
+            for (String part : path.replace('\\', '/').split("/")) if (jobId.equals(part)) return true;
+            return false;
+        }
+        return false;
     }
     private Map<String, Object> capabilities() {
         Map<String, Object> result = new LinkedHashMap<>();
@@ -326,8 +364,7 @@ public class RealtimeUnifiedTaskController {
         return result;
     }
     private String taskType(long id) {
-        try { String type=text(repository.requiredTask(id).get("taskType")).toLowerCase(); return type.isEmpty()?"sync":type; }
-        catch (IllegalArgumentException ignored) { return text(definitionRepository.required(id).get("taskType")).toLowerCase(); }
+        return repository.taskType(id);
     }
     private void requireTaskType(String taskType) { if (!List.of("sync","compute","export").contains(text(taskType).toLowerCase())) throw new IllegalArgumentException("任务类型必须是 sync、compute 或 export"); }
     private String filterKeyword(Object value, String label) {

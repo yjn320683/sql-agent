@@ -24,9 +24,12 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
+import java.nio.file.Files;
+import java.nio.file.Path;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.io.TempDir;
 
 class RealtimeRuntimeServiceManagedInstanceTest {
 
@@ -68,6 +71,29 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     void debugLifecycleDoesNotEnterTaskChangeLog() {
         assertFalse(RealtimeRuntimeService.isProductionLifecycleChange(true));
         assertTrue(RealtimeRuntimeService.isProductionLifecycleChange(false));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void listsExistingCheckpointsFromAnyProductionInstance(@TempDir Path tempDir) throws Exception {
+        Path valid = tempDir.resolve("task-8/old-job/chk-559");
+        Path debug = tempDir.resolve("task-8/debug-job/chk-1");
+        Files.createDirectories(valid); Files.writeString(valid.resolve("_metadata"), "valid");
+        Files.createDirectories(debug); Files.writeString(debug.resolve("_metadata"), "debug");
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setCheckpointDir(tempDir.toString());
+        RealtimeRuntimeService historyService = new RealtimeRuntimeService(repository, properties, new ObjectMapper());
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L));
+        when(repository.instances(8L)).thenReturn(List.of(
+                Map.of("id", 602L, "executionMode", "PRODUCTION", "jobId", "old-job", "status", "canceled"),
+                Map.of("id", 612L, "executionMode", "PRODUCTION", "jobId", "latest-job", "status", "failed"),
+                Map.of("id", 701L, "executionMode", "DEBUG", "jobId", "debug-job", "status", "failed")));
+
+        List<Map<String, Object>> rows = (List<Map<String, Object>>) historyService.stateHistory(8L, "checkpoint");
+
+        assertEquals(1, rows.size());
+        assertEquals(valid.toString(), rows.get(0).get("path"));
+        assertTrue(String.valueOf(rows.get(0).get("label")).contains("实例 602"));
     }
 
     @Test
@@ -444,7 +470,9 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                 "savepointPath", "hdfs://savepoints/sp-31");
         when(repository.requiredInstance(8L, 31L)).thenReturn(stopping, finished, finished);
         when(repository.activeStopOperation(8L, 31L)).thenReturn(Map.of(
-                "id", 42L, "operator", "tester"));
+                "id", 42L, "operator", "tester", "result", Map.of(
+                        "command", "flink stop job-31", "exitCode", 0,
+                        "output", "Savepoint completed")));
         doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
                 "State : FINISHED\nFinal-State : SUCCEEDED"))
                 .when(reconciler).execute(any(), anyLong());
@@ -454,9 +482,12 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         verify(repository).updateInstanceRuntime(31L, "finished",
                 "State : FINISHED\nFinal-State : SUCCEEDED", null);
         verify(repository).changeTaskStatus(8L, "not_running");
+        ArgumentCaptor<String> operationResult = ArgumentCaptor.forClass(String.class);
         verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(42L),
-                org.mockito.ArgumentMatchers.eq("SUCCESS"), anyString(),
+                org.mockito.ArgumentMatchers.eq("SUCCESS"), operationResult.capture(),
                 org.mockito.ArgumentMatchers.isNull());
+        assertTrue(operationResult.getValue().contains("flink stop job-31"));
+        assertTrue(operationResult.getValue().contains("hdfs://savepoints/sp-31"));
         verify(repository).addChange(8L, 42L, null, 31L, "tester",
                 "STOP", "停止类型：savepoint，savepoint：hdfs://savepoints/sp-31");
     }
@@ -514,19 +545,26 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                 "id", 3L, "name", "mysql", "address", "mysql:3306", "databaseName", "sales",
                 "databasePrefix", "sale", "account", "cdc", "password", "secret"));
         TaskActionRequest action = new TaskActionRequest();
-        action.setParallelism(6); action.setCheckpointInterval(90);
+        action.setParallelism(4); action.setCheckpointInterval(90);
+        action.setSourceStartupTimestampMillis(1_700_000_000_000L);
+        action.setMysqlConfOverrides(Map.of("scan.snapshot.fetch.size", "2048"));
         action.setTaskManagerMemory("4GB"); action.setJobManagerMemory("3GB");
 
         Map<String, Object> preview = previewService.previewSaved(8L, action, true);
         String command = String.valueOf(preview.get("command"));
         String arguments = String.valueOf(preview.get("arguments"));
 
-        assertTrue(command.contains("-Dparallelism.default=6"));
+        assertTrue(command.contains("-Dparallelism.default=4"));
         assertTrue(command.contains("-Dexecution.checkpointing.interval=90s"));
         assertTrue(command.contains("-Dtaskmanager.memory.process.size=4GB"));
         assertTrue(command.contains("-Djobmanager.memory.process.size=3GB"));
         assertTrue(arguments.contains("paimon_debug"));
         assertTrue(arguments.contains("paimon_debug_sale_sales_trade_"));
+        assertTrue(arguments.contains("scan.startup.mode"));
+        assertTrue(arguments.contains("timestamp"));
+        assertTrue(arguments.contains("1700000000000"));
+        assertTrue(arguments.contains("scan.snapshot.fetch.size=2048"));
+        assertTrue(arguments.contains("server-id=<启动时自动分配>"));
         assertFalse(arguments.contains("--table_suffix, _debug"));
     }
 

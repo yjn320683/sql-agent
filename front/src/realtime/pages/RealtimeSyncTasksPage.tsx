@@ -2,6 +2,8 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
   Alert,
   Button,
+  Checkbox,
+  DatePicker,
   Form,
   Input,
   Modal,
@@ -31,17 +33,23 @@ import {
   getStateHistory,
   getSyncTask,
   listMappings,
+  listServers,
   listSyncTasks,
+  listTaskParams,
   startSyncTask,
   stopSyncTask,
 } from '../api';
 import type {
   SyncTask,
   SyncTaskListItem,
+  RealtimeServer,
   TaskMapping,
+  TaskParam,
+  SyncTaskStartPolicy,
 } from '../types';
 import SyncDebugDrawer from '../components/SyncDebugDrawer';
 import SyncTaskDetailDrawer from '../components/SyncTaskDetailDrawer';
+import { showStateRecoveryFallback, syncStartMethodOptions } from '../components/syncStartMethod';
 
 const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
 const statusColor: Record<string, string> = {
@@ -86,17 +94,39 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [detailLoading, setDetailLoading] = useState(false);
   const [mappingTask, setMappingTask] = useState<SyncTaskListItem>();
   const [mappingRows, setMappingRows] = useState<TaskMapping[]>([]);
-  const [actionTask, setActionTask] = useState<{ row: SyncTaskListItem; task?: SyncTask }>();
+  const [actionTask, setActionTask] = useState<{ row: SyncTaskListItem; startPolicy?: SyncTaskStartPolicy }>();
   const [actionLoading, setActionLoading] = useState(false);
   const [debugTask, setDebugTask] = useState<SyncTask>();
+  const [debugServers, setDebugServers] = useState<RealtimeServer[]>([]);
+  const [debugParams, setDebugParams] = useState<TaskParam[]>([]);
+  const [debugSupportLoading, setDebugSupportLoading] = useState(true);
   const [taskStopTarget, setTaskStopTarget] = useState<SyncTaskListItem>();
   const [taskStopType] = useState('savepoint');
   const [actionForm] = Form.useForm();
+  const actionStartType = Form.useWatch('startType', actionForm);
+  const actionConsumePointMode = Form.useWatch('consumePointMode', actionForm);
+  const actionStatePath = Form.useWatch('statePath', actionForm);
+  const actionRecoveryFallbackMode = Form.useWatch('recoveryFallbackMode', actionForm);
+  const actionSourceStartupTime = Form.useWatch('sourceStartupTime', actionForm);
+  const [resetFailedStateRecovery, setResetFailedStateRecovery] = useState(false);
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
   const submitActionRef = useRef(false);
   const detailRequestRef = useRef(0);
   const actionRequestRef = useRef(0);
+  const actionSelectionVersionRef = useRef(0);
   const debugRequestRef = useRef(0);
+  const actionRequiredStatePath = actionTask?.startPolicy?.requiredStatePath;
+  const actionShowStateRecoveryReset = showStateRecoveryFallback(actionTask?.startPolicy);
+  const actionRecoveryFallbackIncomplete = Boolean(
+    (actionTask?.startPolicy?.syncTableSetChanged || actionShowStateRecoveryReset)
+    && resetFailedStateRecovery
+    && (!actionRecoveryFallbackMode
+      || (actionRecoveryFallbackMode === 'checkpoint' && !actionStatePath)
+      || (actionRecoveryFallbackMode === 'timestamp' && !actionSourceStartupTime)),
+  );
+  const actionConfirmationDisabled = actionRecoveryFallbackIncomplete
+    || (actionStartType !== 'direct' && !actionStatePath)
+    || (actionConsumePointMode === 'timestamp' && !actionSourceStartupTime);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -113,6 +143,15 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   }, [page, pageSize, sortField, sortOrder, submittedQuery]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    let active = true;
+    setDebugSupportLoading(true);
+    void Promise.all([listServers(), listTaskParams()])
+      .then(([servers, params]) => { if (active) { setDebugServers(servers); setDebugParams(params); } })
+      .catch(() => { if (active) { setDebugServers([]); setDebugParams([]); } })
+      .finally(() => { if (active) setDebugSupportLoading(false); });
+    return () => { active = false; };
+  }, []);
   useEffect(() => {
     const next = new URLSearchParams();
     next.set('page', String(page)); next.set('pageSize', String(pageSize)); next.set('sort', sortField); next.set('order', sortOrder);
@@ -162,16 +201,29 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       const qualification = await canEnableSyncTask(row.id);
       if (sequence !== actionRequestRef.current) return;
       if (!qualification.canEnable) {
-        message.warning(qualification.reason || '当前任务不满足启动条件');
+        message.warning(qualification.message || qualification.reason || '当前任务不满足启动条件');
         return;
       }
-      const task = await getSyncTask(row.id);
-      if (sequence !== actionRequestRef.current) return;
-      const requiredType = task.editPolicy?.requiredStartType ?? 'direct';
-      const requiredPath = task.editPolicy?.requiredStatePath;
-      actionForm.setFieldsValue({ startType: requiredType, statePath: requiredPath });
+      let policy = qualification.startPolicy;
+      if (!policy) {
+        // 兼容前后端滚动更新；新接口返回策略时不会再请求完整任务详情。
+        const task = await getSyncTask(row.id);
+        if (sequence !== actionRequestRef.current) return;
+        const editPolicy = task.editPolicy;
+        policy = editPolicy ? {
+          productionLocked: Boolean(editPolicy.productionLocked),
+          syncTableSetChanged: Boolean(editPolicy.syncTableSetChanged),
+          requiredStartType: editPolicy.requiredStartType,
+          requiredStatePath: editPolicy.requiredStatePath,
+          canResetConsumptionPoint: Boolean(editPolicy.productionLocked && !editPolicy.requiredStartType),
+        } : undefined;
+      }
+      const requiredType = policy?.requiredStartType ?? 'direct';
+      const requiredPath = policy?.requiredStatePath;
+      setResetFailedStateRecovery(Boolean(policy?.syncTableSetChanged && !requiredPath));
+      actionForm.setFieldsValue({ startType: requiredType, statePath: requiredPath, consumePointMode: 'default', recoveryFallbackMode: undefined, sourceStartupTime: undefined });
       if (requiredPath) setStateHistory([{ label: requiredPath, path: requiredPath }]);
-      setActionTask({ row, task });
+      setActionTask({ row, startPolicy: policy });
     } catch (error) {
       if (sequence === actionRequestRef.current) message.error((error as Error).message);
     } finally {
@@ -191,11 +243,69 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     try {
       const values = await actionForm.validateFields();
       setActionLoading(true);
-      await startSyncTask(actionTask.row.id, values, false);
+      await startSyncTask(actionTask.row.id, {
+        startType: values.startType,
+        ...(values.startType !== 'direct' && values.statePath ? { statePath: values.statePath } : {}),
+        ...(values.consumePointMode === 'timestamp' && values.sourceStartupTime
+          ? { sourceStartupTimestampMillis: values.sourceStartupTime.valueOf() } : {}),
+      }, false);
       message.success('同步任务已提交');
       setActionTask(undefined); await load();
     } catch (error) { message.error((error as Error).message); }
     finally { submitActionRef.current = false; setActionLoading(false); }
+  };
+
+  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint' | 'timestamp') => {
+    if (!actionTask) return;
+    const selectionVersion = ++actionSelectionVersionRef.current;
+    const startType = method === 'timestamp' ? 'direct' : method;
+    const requiredStartType = actionTask.startPolicy?.requiredStartType;
+    const requiredStatePath = actionTask.startPolicy?.requiredStatePath;
+    const showStateRecoveryReset = Boolean(actionTask.startPolicy?.productionLocked
+      && requiredStartType === 'savepoint' && requiredStatePath);
+    const fallback = Boolean((actionTask.startPolicy?.syncTableSetChanged || showStateRecoveryReset)
+      && (method === 'checkpoint' || method === 'timestamp'));
+    setResetFailedStateRecovery(fallback);
+    setStateHistory([]);
+    actionForm.setFieldsValue({
+      startType,
+      consumePointMode: method === 'timestamp' ? 'timestamp' : 'default',
+      recoveryFallbackMode: fallback ? method : undefined,
+      statePath: method === 'savepoint' ? actionTask.startPolicy?.requiredStatePath : undefined,
+      sourceStartupTime: undefined,
+    });
+    if (startType === 'direct' || (startType === 'savepoint' && actionTask.startPolicy?.requiredStatePath)) return;
+    try {
+      setActionLoading(true);
+      const rows = await getStateHistory(actionTask.row.id, startType);
+      if (selectionVersion !== actionSelectionVersionRef.current) return;
+      setStateHistory(rows);
+      actionForm.setFieldValue('statePath', rows[0]?.path);
+    } catch (error) {
+      if (selectionVersion === actionSelectionVersionRef.current) message.error((error as Error).message);
+    } finally {
+      if (selectionVersion === actionSelectionVersionRef.current) setActionLoading(false);
+    }
+  };
+
+  const toggleStateRecoveryFallback = (checked: boolean) => {
+    ++actionSelectionVersionRef.current;
+    const requiredPath = actionTask?.startPolicy?.requiredStatePath;
+    if (!checked) {
+      setResetFailedStateRecovery(false);
+      actionForm.setFieldsValue({
+        startType: 'savepoint', statePath: requiredPath, consumePointMode: 'default',
+        recoveryFallbackMode: undefined, sourceStartupTime: undefined,
+      });
+      if (requiredPath) setStateHistory([{ label: requiredPath, path: requiredPath }]);
+      return;
+    }
+    setResetFailedStateRecovery(true);
+    setStateHistory([]);
+    actionForm.setFieldsValue({
+      startType: 'direct', statePath: undefined, consumePointMode: 'default',
+      recoveryFallbackMode: undefined, sourceStartupTime: undefined,
+    });
   };
 
   const formatRuntime = (seconds?: number) => {
@@ -318,36 +428,58 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         </div>
       </section>
 
-      <SyncDebugDrawer task={debugTask} open={Boolean(debugTask)} onClose={() => setDebugTask(undefined)} />
+      <SyncDebugDrawer task={debugTask} open={Boolean(debugTask)} params={debugParams} servers={debugServers}
+        supportLoading={debugSupportLoading} onClose={() => setDebugTask(undefined)} />
 
       <Modal className="sync-mapping-modal" title={`同步表映射 - ${mappingTask?.name ?? ''}`} open={Boolean(mappingTask)} onCancel={() => setMappingTask(undefined)} footer={null} width={900} destroyOnHidden>
         <Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={mappingRows} columns={[
           { title: '序号', width: 72, render: (_: unknown, __: TaskMapping, index: number) => index + 1 },
-          { title: 'Server', width: 180, render: (_: unknown, row: TaskMapping) => [row.serverName, row.sourceDatabase].filter(Boolean).join('/') || '-' },
           { title: '源表', width: 360, render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{[row.sourceDatabase, row.sourceTable].filter(Boolean).join('.')}</span> },
           { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{[row.targetDatabase, row.targetTable].filter(Boolean).join('.')}</span> },
         ]} />
       </Modal>
 
-      <Modal title={`启动任务（任务：${actionTask?.row.name ?? ''}）`} open={Boolean(actionTask)} onCancel={() => setActionTask(undefined)} onOk={() => void submitAction()} okText="确认启动" cancelText="取消" confirmLoading={actionLoading} destroyOnHidden>
-        <Form form={actionForm} layout="vertical" onValuesChange={async (changed) => {
-          if (!actionTask || !changed.startType || changed.startType === 'direct') { setStateHistory([]); return; }
-          actionForm.setFieldValue('statePath', undefined);
-          try {
-            setActionLoading(true);
-            const rows = await getStateHistory(actionTask.row.id, changed.startType);
-            setStateHistory(rows);
-            actionForm.setFieldValue('statePath', rows[0]?.path);
-          } catch { setStateHistory([]); }
-          finally { setActionLoading(false); }
-        }}>
-          <Form.Item name="startType" label="启动类型" rules={[{ required: true }]}><Select disabled={Boolean(actionTask?.task?.editPolicy?.requiredStartType)} options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }].filter((item) => !actionTask?.task?.editPolicy?.requiredStartType || item.value === actionTask.task.editPolicy.requiredStartType)} /></Form.Item>
+      <Modal title={`启动任务（任务：${actionTask?.row.name ?? ''}）`} open={Boolean(actionTask)} onCancel={() => { ++actionSelectionVersionRef.current; setActionTask(undefined); setResetFailedStateRecovery(false); }} onOk={() => void submitAction()} okText="确认启动" cancelText="取消" confirmLoading={actionLoading} okButtonProps={{ disabled: actionConfirmationDisabled }} destroyOnHidden>
+        <Form form={actionForm} layout="vertical">
+          <Form.Item name="startType" hidden><Input /></Form.Item>
+          <Form.Item name="consumePointMode" hidden><Input /></Form.Item>
+          <Form.Item name="recoveryFallbackMode" hidden><Input /></Form.Item>
+          <Form.Item label="启动方式" required>
+            <Select
+              aria-label="启动方式"
+              value={resetFailedStateRecovery && !actionRecoveryFallbackMode
+                ? undefined : actionConsumePointMode === 'timestamp' ? 'timestamp' : actionStartType}
+              placeholder="请选择启动方式"
+              loading={actionLoading}
+              disabled={actionLoading || (actionShowStateRecoveryReset && !resetFailedStateRecovery)}
+              onChange={(value) => void selectStartMethod(value)}
+              options={syncStartMethodOptions(actionTask?.startPolicy)}
+            />
+          </Form.Item>
+          {actionConsumePointMode === 'timestamp' && (
+            <>
+              <Form.Item name="sourceStartupTime" label="消费起始时间" rules={[{ required: true, message: '请选择消费起始时间' }, { validator: (_, value) => !value || value.valueOf() <= Date.now() ? Promise.resolve() : Promise.reject(new Error('消费起始时间不能晚于当前时间')) }]}>
+                <DatePicker showTime style={{ width: '100%' }} placeholder="请选择过去的时间" />
+              </Form.Item>
+              <Alert showIcon type="warning" message="本次从指定时间戳开始消费，目标 Paimon 表数据不会清空" description="选择较早时间可能重复消费，选择较晚时间可能跳过事件；时间早于 MySQL Binlog 保留范围时任务会失败。" />
+            </>
+          )}
+          {actionShowStateRecoveryReset && (
+            <Form.Item label="恢复失败处理">
+              <Checkbox checked={resetFailedStateRecovery} onChange={(event) => toggleStateRecoveryFallback(event.target.checked)}>
+                指定 Savepoint 无法恢复，使用其他方式启动
+              </Checkbox>
+            </Form.Item>
+          )}
           <Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' && (
             <>
-              <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select disabled={Boolean(actionTask?.task?.editPolicy?.requiredStatePath)} loading={actionLoading} placeholder="请选择历史状态" options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item>
-              {actionTask?.task?.editPolicy?.syncTableSetChanged && <Alert showIcon type="info" message="同步表集合已发生变化" description="本次只能从最近一次正式停止产生的 Savepoint 恢复；恢复失败时保留新配置，不会自动回滚。" />}
+              <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select aria-label="历史状态" disabled={actionStartType === 'savepoint' && Boolean(actionRequiredStatePath) && !resetFailedStateRecovery} loading={actionLoading} placeholder="请选择历史状态" notFoundContent={actionStartType === 'checkpoint' ? '暂无可用 Checkpoint' : '暂无可用历史状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item>
+              {actionTask?.startPolicy?.requiredStatePath && !resetFailedStateRecovery && <Alert showIcon type="info" message="将从最近一次正式 Savepoint 恢复" description={actionTask.startPolicy.syncTableSetChanged ? '同步表集合已发生变化，本次只能使用该 Savepoint；恢复失败时可改用 Checkpoint 或按时间戳重置。' : '正式任务后续启动默认延续最近一次成功停止的状态。'} />}
             </>
           )}</Form.Item>
+          {actionTask?.startPolicy?.syncTableSetChanged && actionConsumePointMode === 'default' && (
+            <Alert showIcon type={actionTask.startPolicy.requiredStatePath ? 'info' : 'warning'} message="同步表集合已发生变化" description={resetFailedStateRecovery ? '请选择从 Checkpoint 恢复，或从指定时间戳开始消费。' : '默认从最近一次正式停止产生的 Savepoint 恢复；无法恢复时可选择从 Checkpoint 恢复或从指定时间戳开始消费。'} style={{ marginBottom: 16 }} />
+          )}
         </Form>
       </Modal>
 

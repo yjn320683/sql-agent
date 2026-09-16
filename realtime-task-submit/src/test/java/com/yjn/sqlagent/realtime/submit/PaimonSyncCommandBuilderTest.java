@@ -28,8 +28,29 @@ class PaimonSyncCommandBuilderTest {
         assertOption(command.getArguments(), "--multiple_table_computed_column", "orders=dt=date_format(created_at,yyyy-MM-dd)");
         assertTrue(command.getArguments().contains("metastore.partitioned-table=true"));
         assertTrue(command.getArguments().contains("password=中文密码"));
+        assertTrue(command.getArguments().contains("server-id=1000544-1000559"));
         assertFalse(command.maskedArguments().contains("password=中文密码"));
         assertTrue(command.maskedArguments().contains("password=******"));
+    }
+
+    @Test
+    void allocatesServerIdPerInstanceAndIgnoresConfiguredValue() {
+        SubmissionSpec spec = validSpec();
+        Map<String, Object> taskConfig = new LinkedHashMap<>(spec.getTask().getTaskConfig());
+        Map<String, Object> cdc = map(taskConfig.get("cdcConfig"));
+        cdc.put("mysqlConfOverrides", Map.of("server-id", "123"));
+        taskConfig.put("cdcConfig", cdc);
+        spec.getTask().setTaskConfig(taskConfig);
+
+        assertTrue(new PaimonSyncCommandBuilder().build(spec).getArguments()
+                .contains("server-id=1000544-1000559"));
+        spec.setTaskInstanceId(35L);
+        assertTrue(new PaimonSyncCommandBuilder().build(spec).getArguments()
+                .contains("server-id=1000560-1000575"));
+        spec.setTaskInstanceId(null);
+        assertThrows(IllegalArgumentException.class, () -> new PaimonSyncCommandBuilder().build(spec));
+        assertTrue(new PaimonSyncCommandBuilder().buildPreview(spec).getArguments()
+                .contains("server-id=<启动时自动分配>"));
     }
 
     @Test

@@ -121,6 +121,14 @@ export interface SyncTaskListItem {
   updateTime: string;
 }
 
+export interface SyncTaskStartPolicy {
+  productionLocked: boolean;
+  syncTableSetChanged: boolean;
+  requiredStartType?: 'savepoint';
+  requiredStatePath?: string;
+  canResetConsumptionPoint?: boolean;
+}
+
 export interface SyncTaskPage {
   items: SyncTaskListItem[];
   page: number;
@@ -152,6 +160,9 @@ export interface TaskRuntimeSnapshot {
   jobId?: string;
   status?: string;
   uptimeMs?: number;
+  runningSinceMs?: number;
+  runningDurationMs?: number;
+  debugSuccessMinRunningSeconds?: number;
   restartCount?: number;
   restartCountUnavailableReason?: string;
   sync?: TaskSyncRuntimeMetrics;

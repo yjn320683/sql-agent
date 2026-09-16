@@ -319,9 +319,10 @@ INSERT IGNORE INTO rt_task_param
 VALUES
   ('sync','mysql_conf','scan.snapshot.fetch.size','快照单次拉取行数','[{"label":"128","value":"128"},{"label":"256","value":"256"},{"label":"512","value":"512"},{"label":"1024（官网默认）","value":"1024","default":true}]','list','select',1,1,10),
   ('sync','mysql_conf','scan.incremental.snapshot.chunk.size','快照分片行数','[{"label":"1024","value":"1024"},{"label":"2048","value":"2048"},{"label":"4096","value":"4096"},{"label":"8096（官网默认）","value":"8096","default":true}]','list','select',1,1,20),
-  ('sync','table_conf','bucket','目标 Paimon 表 Bucket','2','number','input_number',1,1,10),
-  ('sync','table_conf','sink.parallelism','目标 Paimon 表 Sink 并行度','2','number','input_number',1,1,20),
+  ('sync','table_conf','bucket','目标 Paimon 表 Bucket','3','number','input_number',1,1,10),
+  ('sync','table_conf','sink.parallelism','目标 Paimon 表 Sink 并行度','3','number','input_number',1,1,20),
   ('sync','table_conf','changelog-producer','目标 Paimon 表 Changelog Producer','[{"label":"none","value":"none"},{"label":"input（平台默认）","value":"input","default":true},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]','list','select',1,1,30),
+  ('sync','table_conf','precommit-compact','Changelog 提交前压缩','[{"label":"false（官网默认）","value":"false","default":false},{"label":"true（推荐）","value":"true","default":true}]','list','select',0,1,65),
   ('sync','table_conf','dynamic-bucket.target-row-num','动态 Bucket 目标行数','2000000','number','input_number',0,1,42),
   ('sync','table_conf','consumer.expiration-time','Consumer 过期时间','1 d','string','input',1,1,104),
   ('sync','flink_conf','taskmanager.memory.managed.fraction','TaskManager Managed Memory 比例','0.4','number','input_number',1,1,10),
@@ -333,6 +334,7 @@ VALUES
   ('sync','flink_conf','taskmanager.memory.jvm-overhead.max','TaskManager JVM Overhead 最大值','1gb','string','input',0,1,70),
   ('sync','flink_conf','taskmanager.memory.task.off-heap.size','TaskManager Task Off-Heap Memory','0b','string','input',0,1,80),
   ('sync','flink_conf','taskmanager.memory.managed.size','TaskManager Managed Memory 固定大小',NULL,'string','input',0,1,90),
+  ('sync','flink_conf','taskmanager.numberOfTaskSlots','TaskManager Slot 数','3','number','input_number',0,1,100),
   ('sync','flink_conf','table.exec.state.ttl','Table 状态 TTL',NULL,'string','input',0,1,180),
   ('sync','flink_conf','table.exec.mini-batch.enabled','MiniBatch 开关','[{"label":"false（官网默认）","value":"false","default":true},{"label":"true","value":"true"}]','list','select',0,1,181),
   ('sync','flink_conf','table.exec.mini-batch.allow-latency','MiniBatch 允许延迟',NULL,'string','input',0,1,182),
@@ -350,18 +352,20 @@ UPDATE rt_task_param SET min_value=0,max_value=1,step_value=0.01,precision_value
    AND param_key IN ('taskmanager.memory.managed.fraction','taskmanager.memory.network.fraction','taskmanager.memory.jvm-overhead.fraction');
 UPDATE rt_task_param SET min_value=1,step_value=1,precision_value=0
  WHERE task_type='sync' AND param_type='flink_conf'
-   AND param_key IN ('table.exec.mini-batch.size','yarn.application-attempts');
-UPDATE rt_task_param SET min_value=-2,max_value=2147483647,step_value=1,precision_value=0
+   AND param_key IN ('taskmanager.numberOfTaskSlots','table.exec.mini-batch.size','yarn.application-attempts');
+UPDATE rt_task_param SET min_value=1,max_value=4,step_value=1,precision_value=0
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='bucket';
-UPDATE rt_task_param SET min_value=1,max_value=128,step_value=1,precision_value=0
+UPDATE rt_task_param SET min_value=1,max_value=4,step_value=1,precision_value=0
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='sink.parallelism';
+UPDATE rt_task_param SET min_value=1,max_value=4,step_value=1,precision_value=0
+ WHERE task_type='sync' AND param_type='flink_conf' AND param_key='taskmanager.numberOfTaskSlots';
 UPDATE rt_task_param SET min_value=100000,step_value=100000,precision_value=0
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='dynamic-bucket.target-row-num';
 
 -- 对已初始化环境同步平台推荐默认值和展示文案，避免新建任务出现空必填项。
-UPDATE rt_task_param SET key_desc='目标 Paimon 表 Bucket',param_value='2'
+UPDATE rt_task_param SET key_desc='目标 Paimon 表 Bucket',param_value='3'
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='bucket';
-UPDATE rt_task_param SET key_desc='目标 Paimon 表 Sink 并行度',param_value='2'
+UPDATE rt_task_param SET key_desc='目标 Paimon 表 Sink 并行度',param_value='3'
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='sink.parallelism';
 UPDATE rt_task_param
  SET key_desc='目标 Paimon 表 Changelog Producer',

@@ -1,4 +1,4 @@
-import { Descriptions, Empty, Modal, Table, Tag, Typography } from 'antd';
+import { Descriptions, Empty, Modal, Spin, Table, Tag, Typography } from 'antd';
 import type { ReactNode } from 'react';
 
 export type InstanceInspectorKind = 'config' | 'startup-log' | 'runtime-log' | 'runtime' | 'resources' | 'checkpoints' | 'log-components';
@@ -8,6 +8,8 @@ interface Props {
   title?: string;
   kind?: InstanceInspectorKind;
   value?: unknown;
+  loading?: boolean;
+  renderConfig?: (value: unknown) => ReactNode;
   onClose: () => void;
 }
 
@@ -190,9 +192,11 @@ const logText = (kind: InstanceInspectorKind | undefined, value: unknown) => {
   return text.replace(/\\r\\n/g, '\n').replace(/\\n/g, '\n').replace(/\\t/g, '  ');
 };
 
-export default function InstanceInspectorModal({ open, title, kind, value, onClose }: Props) {
+export default function InstanceInspectorModal({ open, title, kind, value, loading = false, renderConfig, onClose }: Props) {
   const isLog = kind === 'startup-log' || kind === 'runtime-log';
   return <Modal className="realtime-instance-inspector-modal" title={title} open={open} footer={null} width={kind === 'config' ? 1120 : 1050} onCancel={onClose} destroyOnHidden>
-    {kind === 'config' ? <InstanceConfigView value={value} /> : isLog ? <pre className="realtime-log-console">{logText(kind, value) || '暂无日志'}</pre> : <StructuredKeyValueTable value={value} />}
+    {loading ? <div className="realtime-instance-inspector-loading"><Spin size="large" /></div> : kind === 'config'
+      ? renderConfig?.(value) ?? <InstanceConfigView value={value} />
+      : isLog ? <pre className="realtime-log-console">{logText(kind, value) || '暂无日志'}</pre> : <StructuredKeyValueTable value={value} />}
   </Modal>;
 }

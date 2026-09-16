@@ -33,8 +33,9 @@ public class RealtimeSupportController {
         return RealtimeResponse.success(Map.of(
                 "targetDatabase", properties.getTargetDatabase(), "tablePrefixes", tablePrefixes));
     }
-    @GetMapping("/alerts") public RealtimeResponse<List<Map<String,Object>>> alerts() {
-        actors.requireActor(); return RealtimeResponse.success(repository.alerts());
+    @GetMapping("/alerts") public RealtimeResponse<List<Map<String,Object>>> alerts(
+            @RequestParam(required=false) Long taskId) {
+        actors.requireActor(); return RealtimeResponse.success(repository.alerts(taskId));
     }
     @PostMapping("/alerts/{id}/acknowledge") public RealtimeResponse<Boolean> acknowledge(@PathVariable long id) {
         actors.requireActor(); repository.acknowledgeAlert(id); return RealtimeResponse.success(true);

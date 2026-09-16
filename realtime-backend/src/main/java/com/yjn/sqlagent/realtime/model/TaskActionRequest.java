@@ -5,6 +5,7 @@ import java.util.Map;
 public class TaskActionRequest {
     private String startType = "direct";
     private String statePath;
+    private Long sourceStartupTimestampMillis;
     private String stopType = "direct";
     private boolean dryRun;
     private Integer parallelism;
@@ -19,6 +20,8 @@ public class TaskActionRequest {
     public void setStartType(String value) { startType = value; }
     public String getStatePath() { return statePath; }
     public void setStatePath(String value) { statePath = value; }
+    public Long getSourceStartupTimestampMillis() { return sourceStartupTimestampMillis; }
+    public void setSourceStartupTimestampMillis(Long value) { sourceStartupTimestampMillis = value; }
     public String getStopType() { return stopType; }
     public void setStopType(String value) { stopType = value; }
     public boolean isDryRun() { return dryRun; }

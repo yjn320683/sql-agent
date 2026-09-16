@@ -16,6 +16,14 @@ export const sortOptions = [
   { label: '实例 ID（大→小）', value: 'idDesc' }, { label: '实例 ID（小→大）', value: 'idAsc' },
 ];
 
+const searchPlaceholders: Record<InstanceSearchField, string> = {
+  all: '输入实例 ID、JobID、Application ID 或失败原因',
+  id: '输入实例 ID',
+  jobId: '输入 JobID',
+  yarnApplicationId: '输入 Application ID',
+  failureMessage: '输入失败原因',
+};
+
 interface Props {
   keyword: string;
   searchField: InstanceSearchField;
@@ -29,22 +37,24 @@ interface Props {
   onSearchFieldChange: (value: InstanceSearchField) => void;
   onStatusChange: (value: string) => void;
   onSortOrderChange: (value: InstanceSortOrder) => void;
-  onReset: () => void;
+  onReset?: () => void;
   onRefresh: () => void;
 }
 
 export default function InstanceListToolbar(props: Props) {
   const changed = Boolean(props.keyword.trim()) || props.searchField !== 'all' || props.status !== 'all' || props.sortOrder !== 'startedAtDesc';
   return <div className="instance-list-toolbar">
-    <Space.Compact className="instance-list-search-group">
-      <Select aria-label="搜索字段" className="instance-list-search-field" value={props.searchField} options={searchFieldOptions} onChange={props.onSearchFieldChange} />
-      <Input allowClear aria-label="实例搜索关键词" prefix={<SearchOutlined />} placeholder="输入搜索关键词" value={props.keyword} onChange={(event) => props.onKeywordChange(event.target.value)} />
-    </Space.Compact>
-    <Select aria-label="实例状态" className="instance-list-status-filter" value={props.status} options={props.statusOptions} onChange={props.onStatusChange} />
-    <Select aria-label="实例排序" className="instance-list-sort" value={props.sortOrder} options={sortOptions} onChange={props.onSortOrderChange} />
+    <div className="instance-list-toolbar-query">
+      <Space.Compact className="instance-list-search-group">
+        <Select aria-label="搜索字段" className="instance-list-search-field" value={props.searchField} options={searchFieldOptions} onChange={props.onSearchFieldChange} />
+        <Input allowClear aria-label="实例搜索关键词" prefix={<SearchOutlined />} placeholder={searchPlaceholders[props.searchField]} value={props.keyword} onChange={(event) => props.onKeywordChange(event.target.value)} />
+      </Space.Compact>
+      <Select aria-label="实例状态" className="instance-list-status-filter" value={props.status} options={props.statusOptions} onChange={props.onStatusChange} />
+      <Select aria-label="实例排序" className="instance-list-sort" value={props.sortOrder} options={sortOptions} onChange={props.onSortOrderChange} />
+    </div>
     <div className="instance-list-toolbar-actions">
       {props.primaryAction}
-      <Button type="link" disabled={!changed} onClick={props.onReset}>重置</Button>
+      {props.onReset && <Button type="link" disabled={!changed} onClick={props.onReset}>重置</Button>}
       <Tooltip title={props.refreshLabel}><Button aria-label={props.refreshLabel} icon={<ReloadOutlined />} loading={props.loading} onClick={props.onRefresh} /></Tooltip>
     </div>
   </div>;

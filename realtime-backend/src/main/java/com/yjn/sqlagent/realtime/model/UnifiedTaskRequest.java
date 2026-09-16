@@ -22,6 +22,7 @@ public class UnifiedTaskRequest {
     private String expectedUpdateTime;
     private String startType = "direct";
     private String statePath;
+    private Long sourceStartupTimestampMillis;
     @NotNull(message = "告警配置不能为空")
     private Map<String, Object> alarmConfig = new LinkedHashMap<>();
     @NotNull(message = "Flink 配置不能为空")
@@ -62,6 +63,7 @@ public class UnifiedTaskRequest {
     public TaskActionRequest toActionRequest() {
         TaskActionRequest request = new TaskActionRequest();
         request.setStartType(startType); request.setStatePath(statePath);
+        request.setSourceStartupTimestampMillis(sourceStartupTimestampMillis);
         request.setParallelism(integer(flinkConf.get("parallelism")));
         request.setCheckpointInterval(integer(flinkConf.get("checkpointIntervalSeconds")));
         request.setTaskManagerMemory(memoryOrNull(flinkConf.get("taskManagerMemoryGb")));
@@ -109,6 +111,8 @@ public class UnifiedTaskRequest {
     public String getExpectedUpdateTime() { return expectedUpdateTime; } public void setExpectedUpdateTime(String value) { expectedUpdateTime = value; }
     public String getStartType() { return startType; } public void setStartType(String value) { startType = value; }
     public String getStatePath() { return statePath; } public void setStatePath(String value) { statePath = value; }
+    public Long getSourceStartupTimestampMillis() { return sourceStartupTimestampMillis; }
+    public void setSourceStartupTimestampMillis(Long value) { sourceStartupTimestampMillis = value; }
     public Map<String, Object> getAlarmConfig() { return alarmConfig; } public void setAlarmConfig(Map<String, Object> value) { alarmConfig = copy(value); }
     public Map<String, Object> getFlinkConf() { return flinkConf; } public void setFlinkConf(Map<String, Object> value) { flinkConf = copy(value); }
     public Map<String, Object> getTaskConfig() { return taskConfig; } public void setTaskConfig(Map<String, Object> value) { taskConfig = copy(value); }

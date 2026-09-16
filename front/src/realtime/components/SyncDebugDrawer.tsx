@@ -1,7 +1,9 @@
 import { EyeOutlined, LinkOutlined, PlayCircleOutlined, QuestionCircleOutlined } from '@ant-design/icons';
 import {
+  Alert,
   Button,
   Descriptions,
+  DatePicker,
   Drawer,
   Form,
   Input,
@@ -14,6 +16,7 @@ import {
   Tag,
   Tooltip,
   Typography,
+  Progress,
   message,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -21,25 +24,30 @@ import {
   getInstanceInfo,
   getStateHistory,
   listInstances,
-  listServers,
-  listTaskParams,
   previewSavedSyncTask,
   startSyncTask,
   stopInstance,
 } from '../api';
-import type { RealtimeServer, SyncTask, TaskInstance, TaskParam } from '../types';
+import type { RealtimeServer, SyncTask, TaskInstance, TaskParam, TaskRuntimeCheckpoints, TaskRuntimeSnapshot } from '../types';
 import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import InstanceLogPanel from './InstanceLogPanel';
 import InstanceListToolbar, { type InstanceSearchField, type InstanceSortOrder } from './InstanceListToolbar';
 import SyncMoreConfigRows from './SyncMoreConfigRows';
+import SyncTaskConfigDetail from './SyncTaskConfigDetail';
+import SyncSectionNav from './SyncSectionNav';
+import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
 
 interface Props {
   task?: SyncTask;
   open: boolean;
+  params: TaskParam[];
+  servers: RealtimeServer[];
+  supportLoading?: boolean;
   onClose: () => void;
 }
 
 const ACTIVE = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
+const SYNC_TOPOLOGY_KEYS = new Set(['bucket', 'sink.parallelism']);
 const DEBUG_TARGET_DATABASE = 'paimon_debug';
 const statusLabel: Record<string, string> = {
   submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
@@ -83,33 +91,38 @@ const debugTarget = (task: SyncTask, servers: RealtimeServer[]) => {
   return { server, prefix, targets };
 };
 
-export default function SyncDebugDrawer({ task, open, onClose }: Props) {
+export default function SyncDebugDrawer({ task, open, params, servers, supportLoading = false, onClose }: Props) {
   const [instances, setInstances] = useState<TaskInstance[]>([]);
-  const [params, setParams] = useState<TaskParam[]>([]);
-  const [servers, setServers] = useState<RealtimeServer[]>([]);
   const [loading, setLoading] = useState(false);
-  const [supportLoading, setSupportLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState('all');
   const [searchField, setSearchField] = useState<InstanceSearchField>('all');
   const [sortOrder, setSortOrder] = useState<InstanceSortOrder>('startedAtDesc');
   const [configOpen, setConfigOpen] = useState(false);
   const [form] = Form.useForm();
+  const consumePointMode = Form.useWatch('consumePointMode', form);
+  const startType = Form.useWatch('startType', form);
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
   const [stateHistoryLoading, setStateHistoryLoading] = useState(false);
   const [command, setCommand] = useState('');
   const [commandLoading, setCommandLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [inspector, setInspector] = useState<{ title: string; kind: InstanceInspectorKind; value: unknown }>();
+  const [inspectorLoading, setInspectorLoading] = useState(false);
   const [mappingInstance, setMappingInstance] = useState<TaskInstance>();
   const [logInstance, setLogInstance] = useState<TaskInstance>();
   const [selectedInstanceId, setSelectedInstanceId] = useState<number>();
   const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
+  const [qualificationRuntime, setQualificationRuntime] = useState<TaskRuntimeSnapshot>();
+  const [qualificationCheckpoints, setQualificationCheckpoints] = useState<TaskRuntimeCheckpoints>();
+  const [qualificationError, setQualificationError] = useState('');
   const initializedConfigKeyRef = useRef('');
   const submittingRef = useRef(false);
   const acceptedInstancesRef = useRef(new Map<number, TaskInstance>());
   const instanceRequestSequenceRef = useRef(0);
-  const supportRequestSequenceRef = useRef(0);
+  const inspectorRequestSequenceRef = useRef(0);
+  const startSelectionVersionRef = useRef(0);
+  const qualifyingInstance = instances.find((item) => item.status === 'running' || item.status === 'debug_success_running');
 
   const reload = useCallback(async (silent = false) => {
     if (!task) return;
@@ -136,12 +149,6 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
     setLogInstance(undefined); setMappingInstance(undefined); setSelectedInstanceId(undefined);
     acceptedInstancesRef.current.clear();
     void reload();
-    const supportSequence = ++supportRequestSequenceRef.current;
-    setSupportLoading(true);
-    void Promise.all([listTaskParams(), listServers()]).then(([taskParams, allServers]) => {
-      if (supportSequence === supportRequestSequenceRef.current) { setParams(taskParams); setServers(allServers); }
-    }).catch((error) => { if (supportSequence === supportRequestSequenceRef.current) message.error((error as Error).message); })
-      .finally(() => { if (supportSequence === supportRequestSequenceRef.current) setSupportLoading(false); });
   }, [open, reload, task]);
 
   useEffect(() => {
@@ -163,15 +170,42 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
     initializedConfigKeyRef.current = key;
     form.resetFields();
     form.setFieldsValue({
-      startType: 'direct', parallelism: task.taskConfig.parallelism ?? 1,
+      startType: 'direct', consumePointMode: 'default', sourceStartupTime: undefined,
+      parallelism: task.taskConfig.parallelism ?? 3,
       checkpointInterval: task.taskConfig.checkpointInterval ?? 60,
       taskManagerMemory: task.taskConfig.taskManagerMemory || '3GB',
       jobManagerMemory: task.taskConfig.jobManagerMemory || '1GB',
       flinkConfOverrides: mergeParamDefaults(params, 'flink_conf', task.taskConfig.flinkConfOverrides),
       mysqlConfOverrides: mergeParamDefaults(params, 'mysql_conf', task.taskConfig.cdcConfig.mysqlConfOverrides),
-      tableConfOverrides: mergeParamDefaults(params, 'table_conf', task.taskConfig.cdcConfig.tableConfOverrides),
+      tableConfOverrides: mergeSyncTopologyOverrides(
+        mergeParamDefaults(params, 'table_conf', task.taskConfig.cdcConfig.tableConfOverrides),
+        task.taskConfig.cdcConfig.tableConfOverrides,
+        task.taskConfig.parallelism,
+      ),
     });
   }, [configOpen, form, params, supportLoading, task]);
+
+  useEffect(() => {
+    if (!open || !task || !qualifyingInstance?.jobId) {
+      setQualificationRuntime(undefined); setQualificationCheckpoints(undefined); setQualificationError('');
+      return undefined;
+    }
+    let disposed = false;
+    const loadQualification = async () => {
+      try {
+        const [runtime, checkpoints] = await Promise.all([
+          getInstanceInfo(task.id, qualifyingInstance.id, 'runtime') as Promise<TaskRuntimeSnapshot>,
+          getInstanceInfo(task.id, qualifyingInstance.id, 'checkpoints') as Promise<TaskRuntimeCheckpoints>,
+        ]);
+        if (!disposed) { setQualificationRuntime(runtime); setQualificationCheckpoints(checkpoints); setQualificationError(''); }
+      } catch (error) {
+        if (!disposed) setQualificationError(error instanceof Error ? error.message : '调试资格读取失败');
+      }
+    };
+    void loadQualification();
+    const timer = window.setInterval(() => void loadQualification(), 5000);
+    return () => { disposed = true; window.clearInterval(timer); };
+  }, [open, qualifyingInstance?.id, qualifyingInstance?.jobId, task]);
 
   const filtered = useMemo(() => instances.filter((item) => {
     if (status !== 'all' && item.status !== status) return false;
@@ -207,21 +241,59 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
 
   const buildAction = (values: Record<string, unknown>) => ({
     ...values,
+    statePath: values.startType === 'direct' ? undefined : values.statePath,
+    sourceStartupTimestampMillis: values.consumePointMode === 'timestamp'
+      && values.sourceStartupTime && typeof (values.sourceStartupTime as { valueOf?: unknown }).valueOf === 'function'
+      ? (values.sourceStartupTime as { valueOf: () => number }).valueOf() : undefined,
     mysqlConfOverrides: normalizeOverrides(values.mysqlConfOverrides as Record<string, unknown>),
-    tableConfOverrides: normalizeOverrides(values.tableConfOverrides as Record<string, unknown>),
+    tableConfOverrides: mergeSyncTopologyOverrides(
+      normalizeOverrides(values.tableConfOverrides as Record<string, unknown>),
+      values.tableConfOverrides as Record<string, unknown>,
+      values.parallelism,
+    ),
     flinkConfOverrides: normalizeOverrides(values.flinkConfOverrides as Record<string, unknown>),
-  }) as Parameters<typeof startSyncTask>[1];
+  }) as unknown as Parameters<typeof startSyncTask>[1];
 
   const openConfig = () => {
     initializedConfigKeyRef.current = '';
     setCommand(''); setStateHistory([]); setConfigOpen(true);
   };
 
+  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint' | 'timestamp') => {
+    if (!task) return;
+    const selectionVersion = ++startSelectionVersionRef.current;
+    const nextStartType = method === 'timestamp' ? 'direct' : method;
+    setStateHistory([]);
+    form.setFieldsValue({
+      startType: nextStartType,
+      consumePointMode: method === 'timestamp' ? 'timestamp' : 'default',
+      statePath: undefined,
+      sourceStartupTime: undefined,
+    });
+    if (nextStartType === 'direct') return;
+    try {
+      setStateHistoryLoading(true);
+      const rows = await getStateHistory(task.id, nextStartType);
+      if (selectionVersion !== startSelectionVersionRef.current) return;
+      setStateHistory(rows);
+      form.setFieldValue('statePath', rows[0]?.path);
+    } catch (error) {
+      if (selectionVersion === startSelectionVersionRef.current) message.error((error as Error).message);
+    } finally {
+      if (selectionVersion === startSelectionVersionRef.current) setStateHistoryLoading(false);
+    }
+  };
+
   const inspect = async (instance: TaskInstance, kind: 'config' | 'startup-log' | 'runtime-log') => {
     if (!task) return;
+    const sequence = ++inspectorRequestSequenceRef.current;
+    setInspector({ title: kind === 'config' ? `调试配置 - 调试实例 ${instance.id}` : `调试实例 ${instance.id} - ${kind === 'startup-log' ? '启动日志' : '运行日志'}`, kind, value: undefined });
+    setInspectorLoading(true);
     try {
-      setInspector({ title: kind === 'config' ? `调试配置 - 调试实例 ${instance.id}` : `调试实例 ${instance.id} - ${kind === 'startup-log' ? '启动日志' : '运行日志'}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
-    } catch (error) { message.error((error as Error).message); }
+      const value = await getInstanceInfo(task.id, instance.id, kind);
+      if (sequence === inspectorRequestSequenceRef.current) setInspector((current) => current ? { ...current, value } : current);
+    } catch (error) { if (sequence === inspectorRequestSequenceRef.current) message.error((error as Error).message); }
+    finally { if (sequence === inspectorRequestSequenceRef.current) setInspectorLoading(false); }
   };
 
   const submit = async () => {
@@ -246,13 +318,23 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
   const records = logInstance ? (
     <InstanceLogPanel taskId={task!.id} instance={logInstance} backLabel="返回调试记录" onBack={() => setLogInstance(undefined)} />
   ) : (
-    <div className="realtime-debug-records">
+    <div className="debug-records-panel realtime-debug-records">
+      <Alert showIcon type={qualifyingInstance?.status === 'debug_success_running' ? 'success' : 'info'}
+        message={qualifyingInstance?.status === 'debug_success_running' ? '已具备正式启动资格' : '调试成功资格进度'}
+        description={qualifyingInstance ? <Space direction="vertical" size={4} style={{ width: '100%' }}>
+          <span>持续运行：{Math.floor((qualificationRuntime?.runningDurationMs ?? 0) / 1000)} / {qualificationRuntime?.debugSuccessMinRunningSeconds ?? 120} 秒</span>
+          <Progress size="small" percent={qualifyingInstance.status === 'debug_success_running' ? 100 : Math.min(100, Math.floor((qualificationRuntime?.runningDurationMs ?? 0) / 10 / (qualificationRuntime?.debugSuccessMinRunningSeconds ?? 120)))} />
+          <span>成功 Checkpoint：{(qualificationCheckpoints?.counts?.completed ?? 0) > 0 || qualifyingInstance.status === 'debug_success_running' ? '已满足' : '等待中'}</span>
+          {qualificationError && <Typography.Text type="warning">资格数据暂不可用：{qualificationError}</Typography.Text>}
+        </Space> : '实例需达到配置的持续运行时长（默认 2 分钟）且至少产生一次成功 Checkpoint。'}
+        style={{ marginBottom: 12 }} />
+      <Alert showIcon type="info" message="调试成功条件" description="实例需达到配置的持续运行时长（默认 2 分钟）且至少产生一次成功 Checkpoint；提前停止会记为已取消，不能用于正式启动。" style={{ marginBottom: 12 }} />
       <InstanceListToolbar keyword={keyword} searchField={searchField} status={status} sortOrder={sortOrder}
         statusOptions={[{ label: '全部状态', value: 'all' }, ...Object.entries(statusLabel).map(([value, label]) => ({ value, label }))]}
         loading={loading} refreshLabel="刷新调试记录"
         primaryAction={<Button type="primary" icon={<PlayCircleOutlined />} onClick={openConfig}>调试</Button>}
         onKeywordChange={setKeyword} onSearchFieldChange={setSearchField} onStatusChange={setStatus} onSortOrderChange={setSortOrder}
-        onReset={() => { setKeyword(''); setSearchField('all'); setStatus('all'); setSortOrder('startedAtDesc'); }} onRefresh={() => void reload()} />
+        onRefresh={() => void reload()} />
       <Table
         rowKey="id"
         size="small"
@@ -298,7 +380,7 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
   })) : [];
 
   return <>
-    <Drawer className="realtime-debug-drawer" title={`${task?.name ?? ''} 调试`} open={open} onClose={onClose} placement="bottom" height="72vh">
+    <Drawer className="sync-task-detail-drawer sync-debug-drawer realtime-debug-drawer" title={`${task?.name ?? ''} 调试`} open={open} onClose={onClose} placement="bottom" height="72vh">
       <Tabs className="ui-flat-tabs" items={[
         { key: 'records', label: '调试记录', children: records },
         { key: 'verify', label: '验数记录', children: <Table rowKey="id" size="small" dataSource={[]} pagination={false} locale={{ emptyText: '暂无验数记录' }} scroll={{ x: 1820 }} columns={[
@@ -320,48 +402,50 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
       ]} />
     </Drawer>
     <Modal className="realtime-debug-config-modal" title="调试配置" open={configOpen} width={1280} okText="开始调试" cancelText="取消" confirmLoading={submitting} okButtonProps={{ disabled: supportLoading || commandLoading }} closable={!submitting} maskClosable={!submitting} keyboard={!submitting} destroyOnHidden onOk={() => void submit()} onCancel={() => !submitting && setConfigOpen(false)}>
-      {task && <Form form={form} layout="vertical" onValuesChange={async (changed) => {
-        if (!changed.startType || changed.startType === 'direct') { setStateHistory([]); return; }
-        form.setFieldValue('statePath', undefined);
-        try {
-          setStateHistoryLoading(true);
-          const history = await getStateHistory(task.id, changed.startType);
-          setStateHistory(history);
-          if (history[0]?.path) form.setFieldValue('statePath', String(history[0].path));
-        } catch { setStateHistory([]); }
-        finally { setStateHistoryLoading(false); }
-      }}>
-        <Typography.Title level={5} className="realtime-detail-title">基础信息</Typography.Title>
+      {task && <div className="sync-advanced-layout sync-debug-config-layout"><Form className="sync-debug-config-form sync-config-scroll-content" form={form} layout="vertical">
+        <Typography.Title id="sync-debug-config-basic" level={5} className="realtime-detail-title sync-config-anchor-section">基础信息</Typography.Title>
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="任务名称">{task.name}</Descriptions.Item>
           <Descriptions.Item label="负责人">{task.owner || '-'}</Descriptions.Item>
           <Descriptions.Item label="描述" span={2}>{task.description || '-'}</Descriptions.Item>
           <Descriptions.Item label="flink版本" span={2}>{task.flinkVersion || '2.2.1'}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">告警配置</Typography.Title>
+        <Typography.Title id="sync-debug-config-alarm" level={5} className="realtime-detail-title sync-config-anchor-section">告警配置</Typography.Title>
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="报警设置类型">{!task.taskConfig.alarmType || task.taskConfig.alarmType === 'task-failed' ? '任务失败' : task.taskConfig.alarmType}</Descriptions.Item>
           <Descriptions.Item label="告警组">{task.taskConfig.alarmGroup || '-'}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">源端&调试目标Paimon配置</Typography.Title>
-        <Typography.Title level={5} className="realtime-detail-title">公共配置</Typography.Title>
+        <div id="sync-debug-config-source" className="sync-config-section-heading sync-config-anchor-section">
+          <Typography.Title level={5}>源端配置</Typography.Title>
+          <Typography.Text type="secondary">选择 MySQL Server，源库由 Server 配置自动带出。</Typography.Text>
+        </div>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="源端类型">Mysql CDC</Descriptions.Item>
-          <Descriptions.Item label="Server">{debug.server?.name || task.sourceServerName || task.sourceServerId}</Descriptions.Item>
+          <Descriptions.Item label="源端类型"><Select disabled value="mysql-cdc" options={[{ label: 'MySQL CDC', value: 'mysql-cdc' }]} /></Descriptions.Item>
+          <Descriptions.Item label="Server"><Select disabled value={debug.server?.name || task.sourceServerName || String(task.sourceServerId)} options={[{ label: debug.server?.name || task.sourceServerName || String(task.sourceServerId), value: debug.server?.name || task.sourceServerName || String(task.sourceServerId) }]} /></Descriptions.Item>
         </Descriptions>
+        <div id="sync-debug-config-public" className="sync-config-section-heading sync-config-anchor-section">
+          <Typography.Title level={5}>公共配置</Typography.Title>
+          <Typography.Text type="secondary">配置同步源表、MySQL CDC 参数、目标 Paimon 表结构及同步参数。</Typography.Text>
+        </div>
         <Descriptions bordered size="small" column={1}>
-          <Descriptions.Item label="源库">{task.taskConfig.cdcConfig.databaseName || debug.server?.databaseName || '-'}</Descriptions.Item>
-          <Descriptions.Item label="源表列表">{task.taskConfig.cdcConfig.selectedTables.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="源库"><Select disabled value={task.taskConfig.cdcConfig.databaseName || debug.server?.databaseName || '-'} options={[{ label: task.taskConfig.cdcConfig.databaseName || debug.server?.databaseName || '-', value: task.taskConfig.cdcConfig.databaseName || debug.server?.databaseName || '-' }]} /></Descriptions.Item>
+          <Descriptions.Item label="源表列表"><Select mode="multiple" disabled value={task.taskConfig.cdcConfig.selectedTables} options={task.taskConfig.cdcConfig.selectedTables.map((table) => ({ label: table, value: table }))} /></Descriptions.Item>
           <Descriptions.Item label="Mysql配置"><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="mysql_conf" formNamePath={['mysqlConfOverrides']} taskParams={params} /></Descriptions.Item>
           <Descriptions.Item label="目标Paimon库">{DEBUG_TARGET_DATABASE}</Descriptions.Item>
           <Descriptions.Item label="目标Paimon表前缀">{debug.prefix || '-'}</Descriptions.Item>
           <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={debug.targets.join('\n')} rows={Math.max(2, Math.min(debug.targets.length, 6))} /></Descriptions.Item>
           <Descriptions.Item label="目标Paimon表同步元数据列">{task.taskConfig.cdcConfig.metadataColumns?.join('、') || '-'}</Descriptions.Item>
           <Descriptions.Item label="目标Paimon表类型映射">{task.taskConfig.cdcConfig.typeMappings?.join('、') || '-'}</Descriptions.Item>
-          <Descriptions.Item label="目标Paimon表配置"><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="table_conf" formNamePath={['tableConfOverrides']} taskParams={params} /></Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表配置"><div className="realtime-dynamic-param-grid">
+            <SyncTopologyConfigRows tableConfPath={['tableConfOverrides']} parallelismPath={['parallelism']}
+              flinkConfPath={['flinkConfOverrides']} readOnly={Boolean(task.editPolicy?.productionLocked)}
+              frozenParallelism={task.editPolicy?.productionLocked ? task.taskConfig.parallelism : undefined} />
+            {params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)
+              && !SYNC_TOPOLOGY_KEYS.has(item.paramKey)).map(dynamicParam)}
+          </div><SyncMoreConfigRows paramType="table_conf" formNamePath={['tableConfOverrides']} taskParams={params} /></Descriptions.Item>
           <Descriptions.Item label="整库模式">{task.taskConfig.cdcConfig.mode || '-'}</Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">私有配置</Typography.Title>
+        <Typography.Title id="sync-debug-config-private" level={5} className="realtime-detail-title sync-config-anchor-section">私有配置</Typography.Title>
         <Table size="small" pagination={false} rowKey="table" dataSource={task.taskConfig.cdcConfig.selectedTables.map((table, index) => ({ table, index: index + 1, config: task.taskConfig.cdcConfig.tableConfigs?.[table] }))} scroll={{ x: 980, y: 320 }} columns={[
           { title: '序号', dataIndex: 'index', width: 64 }, { title: '源表', dataIndex: 'table', width: 220, ellipsis: true },
           { title: '计算列', width: 300, ellipsis: true, render: (_: unknown, row: { config?: { computedColumns?: string[] } }) => row.config?.computedColumns?.join('；') || '未配置' },
@@ -369,25 +453,45 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
           { title: '分区键', width: 220, render: (_: unknown, row: { config?: { partitionKeys?: string[] } }) => row.config?.partitionKeys?.join('、') || '不分区' },
           { title: '状态', width: 110, render: (_: unknown, row: { config?: { computedColumns?: string[]; primaryKeys?: string[]; partitionKeys?: string[] } }) => row.config?.computedColumns?.length || row.config?.primaryKeys?.length || row.config?.partitionKeys?.length ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
         ]} />
-        <Typography.Title level={5} className="realtime-detail-title">启动设置</Typography.Title>
+        <Typography.Title id="sync-debug-config-startup" level={5} className="realtime-detail-title sync-config-anchor-section">启动设置</Typography.Title>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="启动类型"><Form.Item name="startType" noStyle rules={[{ required: true, message: '请选择启动类型' }]}><Select options={[{ label: '直接启动', value: 'direct' }, { label: 'checkpoint', value: 'checkpoint' }, { label: 'savepoint', value: 'savepoint' }]} /></Form.Item></Descriptions.Item>
-          <Descriptions.Item label="历史状态"><Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" noStyle rules={[{ required: true, message: '请选择历史状态' }]}><Select loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Typography.Text type="secondary">直接启动不需要历史状态</Typography.Text>}</Form.Item></Descriptions.Item>
+          <Descriptions.Item label="启动方式" span={2}>
+            <Form.Item name="startType" hidden><Input /></Form.Item>
+            <Form.Item name="consumePointMode" hidden><Input /></Form.Item>
+            <Select aria-label="启动方式" style={{ width: '100%' }}
+              value={consumePointMode === 'timestamp' ? 'timestamp' : startType}
+              disabled={stateHistoryLoading}
+              onChange={(value) => void selectStartMethod(value)}
+              options={[
+                { label: '首次全量同步', value: 'direct' },
+                { label: '从 Savepoint 恢复', value: 'savepoint' },
+                { label: '从 Checkpoint 恢复', value: 'checkpoint' },
+                { label: '从指定时间戳开始消费', value: 'timestamp' },
+              ]} />
+          </Descriptions.Item>
+          {consumePointMode === 'timestamp' && <Descriptions.Item label="消费起始时间" span={2}><Form.Item name="sourceStartupTime" noStyle rules={[{ required: true, message: '请选择消费起始时间' }, { validator: (_, value) => !value || value.valueOf() <= Date.now() ? Promise.resolve() : Promise.reject(new Error('消费起始时间不能晚于当前时间')) }]}><DatePicker showTime style={{ width: '100%' }} placeholder="请选择过去的时间" /></Form.Item></Descriptions.Item>}
+          <Descriptions.Item label="历史状态"><Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" noStyle rules={[{ required: true, message: '请选择历史状态' }]}><Select aria-label="历史状态" loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Typography.Text type="secondary">全量同步不需要恢复点</Typography.Text>}</Form.Item></Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">资源与运行</Typography.Title>
+        {consumePointMode === 'timestamp' && <Alert showIcon type="warning" message="本次调试从指定时间戳开始消费，调试目标表不会预先清空" description="选择较早时间可能重复消费，选择较晚时间可能跳过事件；时间早于 MySQL Binlog 保留范围时调试会失败。" style={{ marginTop: 12 }} />}
+        <Typography.Title id="sync-debug-config-runtime" level={5} className="realtime-detail-title sync-config-anchor-section">资源与运行</Typography.Title>
         <Descriptions bordered size="small" column={2}>
-          <Descriptions.Item label="并行度"><Form.Item name="parallelism" noStyle rules={[{ required: true }, { type: 'number', min: 1, max: 128 }]}><InputNumber min={1} max={128} style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
+          <Descriptions.Item label="并行度"><Form.Item name="parallelism" noStyle rules={[{ required: true }, { type: 'number', min: 1, max: 4 }]}><Tooltip title="由目标 Paimon 表 Sink 并行度统一决定"><InputNumber min={1} max={4} disabled style={{ width: '100%' }} /></Tooltip></Form.Item></Descriptions.Item>
           <Descriptions.Item label="Checkpoint 间隔"><Form.Item name="checkpointInterval" noStyle rules={[{ required: true }, { type: 'number', min: 10, max: 600 }]}><InputNumber min={10} max={600} addonAfter="秒" style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="TaskManager 内存"><Form.Item name="taskManagerMemory" noStyle rules={[{ required: true }]}><Input placeholder="3GB" /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="JobManager 内存"><Form.Item name="jobManagerMemory" noStyle rules={[{ required: true }]}><Input placeholder="1GB" /></Form.Item></Descriptions.Item>
           <Descriptions.Item label="Flink配置" span={2}><div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'flink_conf' && Boolean(item.required)).map(dynamicParam)}</div><SyncMoreConfigRows paramType="flink_conf" formNamePath={['flinkConfOverrides']} taskParams={params} /></Descriptions.Item>
         </Descriptions>
-        <Typography.Title level={5} className="realtime-detail-title">命令预览</Typography.Title>
+        <Typography.Title id="sync-debug-config-command" level={5} className="realtime-detail-title sync-config-anchor-section">命令预览</Typography.Title>
         <Form.Item>
           <Button type="link" icon={<EyeOutlined />} loading={commandLoading} onClick={async () => { if (!task) return; try { setCommandLoading(true); const values = buildAction(await form.validateFields()); const value = await previewSavedSyncTask(task.id, true, values); setCommand(value.command); } catch (error) { if (error instanceof Error) message.error(error.message); } finally { setCommandLoading(false); } }}>预览</Button>
           <Input.TextArea className="task-command-preview-textarea" value={command} readOnly rows={10} wrap="off" placeholder="点击预览生成 Paimon Action 调试命令" />
         </Form.Item>
-      </Form>}
+      </Form><SyncSectionNav prefix="sync-debug-config" items={[
+        { key: 'basic', label: '基础信息' }, { key: 'alarm', label: '告警配置' },
+        { key: 'source', label: '源端配置' }, { key: 'public', label: '公共配置' },
+        { key: 'private', label: '私有配置' }, { key: 'startup', label: '启动设置' },
+        { key: 'runtime', label: '运行与资源' }, { key: 'command', label: '命令预览' },
+      ]} /></div>}
     </Modal>
     <Modal className="sync-mapping-modal" title={`同步表映射${mappingInstance ? ` - 调试实例 ${mappingInstance.id}` : ''}`} open={Boolean(mappingInstance)} footer={null} width={900} destroyOnHidden onCancel={() => setMappingInstance(undefined)}>
       <Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={debugMappings} columns={[
@@ -396,6 +500,6 @@ export default function SyncDebugDrawer({ task, open, onClose }: Props) {
         { title: '目标 Paimon 表', dataIndex: 'target', render: (value: string) => <span className="sync-mapping-full-name">{value}</span> },
       ]} />
     </Modal>
-    <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} onClose={() => setInspector(undefined)} />
+    <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} loading={inspectorLoading} renderConfig={(value) => <SyncTaskConfigDetail value={value} sourceServerName={task?.sourceServerName} showNavigation navigationPrefix="sync-debug-instance" />} onClose={() => { inspectorRequestSequenceRef.current += 1; setInspector(undefined); setInspectorLoading(false); }} />
   </>;
 }

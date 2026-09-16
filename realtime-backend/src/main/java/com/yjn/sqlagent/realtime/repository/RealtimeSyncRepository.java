@@ -149,10 +149,20 @@ public class RealtimeSyncRepository {
         catch (ArithmeticException | NumberFormatException ignored) { return null; }
     }
 
-    public Map<String, Object> requiredTask(long taskId) {
+    public String taskType(long taskId) {
         List<String> taskTypes = jdbc.query("SELECT task_type FROM rt_task WHERE id=? AND status<>'deleted'",
                 (rs, row) -> rs.getString(1), taskId);
-        if (!taskTypes.isEmpty() && !"sync".equalsIgnoreCase(taskTypes.get(0))) return requiredManagedTask(taskId, taskTypes.get(0));
+        if (taskTypes.isEmpty()) throw new IllegalArgumentException("实时任务不存在：" + taskId);
+        return text(taskTypes.get(0)).toLowerCase(Locale.ROOT);
+    }
+
+    public Map<String, Object> requiredTask(long taskId) {
+        String taskType = taskType(taskId);
+        if (!"sync".equalsIgnoreCase(taskType)) return requiredManagedTask(taskId, taskType);
+        return requiredSyncTask(taskId);
+    }
+
+    public Map<String, Object> requiredSyncTask(long taskId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT t.id,t.project_id projectId,t.task_name name,t.task_type taskType,t.flink_version flinkVersion,"
                         + "t.owner,t.description,t.status,t.create_time createTime,t.update_time updateTime,"
@@ -167,6 +177,12 @@ public class RealtimeSyncRepository {
                 longValue(task.get("sourceServerId")), text(task.get("targetDatabase"))));
         task.put("editPolicy", editPolicy(taskId));
         return task;
+    }
+
+    public String sourceServerName(long taskId) {
+        List<String> names = jdbc.query("SELECT s.name FROM rt_sync_task_config c LEFT JOIN rt_server s ON s.id=c.source_server_id WHERE c.task_id=?",
+                (rs, row) -> rs.getString(1), taskId);
+        return names.isEmpty() ? "" : text(names.get(0));
     }
 
     private Map<String, Object> requiredManagedTask(long taskId, String taskType) {
@@ -400,11 +416,19 @@ public class RealtimeSyncRepository {
 
     public Map<String, Object> activeStopOperation(long taskId, long instanceId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT id,operator,request_json requestJson FROM rt_task_operation"
+                "SELECT id,operator,request_json requestJson,result_json resultJson FROM rt_task_operation"
                         + " WHERE task_id=? AND task_instance_id=? AND operation_type='STOP'"
                         + " AND operation_status='EXECUTING' AND active_flag=1 ORDER BY id DESC LIMIT 1",
                 taskId, instanceId);
-        return rows.isEmpty() ? null : rows.get(0);
+        if (rows.isEmpty()) return null;
+        Map<String, Object> result = rows.get(0);
+        result.put("result", jsonValue(result.remove("resultJson")));
+        return result;
+    }
+
+    public void updateOperationResult(long operationId, String result) {
+        jdbc.update("UPDATE rt_task_operation SET result_json=?,update_time=NOW()"
+                + " WHERE id=? AND operation_status='EXECUTING'", result, operationId);
     }
 
     public List<Map<String, Object>> activeManagedInstances() {
@@ -536,10 +560,13 @@ public class RealtimeSyncRepository {
                 taskId, severity, title, detail, taskId, title);
     }
 
-    public List<Map<String, Object>> alerts() {
-        return jdbc.queryForList("SELECT a.id,a.task_id taskId,t.task_name taskName,a.severity,a.status,a.title,a.detail,"
-                + "a.create_time createTime,a.update_time updateTime FROM rt_alert a JOIN rt_task t ON t.id=a.task_id"
-                + " ORDER BY (a.status='open') DESC,a.update_time DESC,a.id DESC");
+    public List<Map<String, Object>> alerts() { return alerts(null); }
+
+    public List<Map<String, Object>> alerts(Long taskId) {
+        String sql = "SELECT a.id,a.task_id taskId,t.task_name taskName,a.severity,a.status,a.title,a.detail,"
+                + "a.create_time createTime,a.update_time updateTime FROM rt_alert a JOIN rt_task t ON t.id=a.task_id";
+        if (taskId == null) return jdbc.queryForList(sql + " ORDER BY (a.status='open') DESC,a.update_time DESC,a.id DESC");
+        return jdbc.queryForList(sql + " WHERE a.task_id=? ORDER BY (a.status='open') DESC,a.update_time DESC,a.id DESC", taskId);
     }
 
     public void acknowledgeAlert(long id) {
@@ -806,6 +833,30 @@ public class RealtimeSyncRepository {
 
     private Map<String, Object> normalizedConfig(SyncTaskRequest request) {
         Map<String, Object> config = new LinkedHashMap<>(request.getTaskConfig());
+        Object parallelism = config.get("parallelism");
+        if (parallelism != null && (integer(parallelism) < 1 || integer(parallelism) > 4)) {
+            throw new IllegalArgumentException("同步任务并行度必须在 1 到 4 之间");
+        }
+        if (integer(parallelism) <= 0) {
+            parallelism = 3;
+        }
+        Map<String, Object> cdc = objectMap(config.get("cdcConfig"));
+        Map<String, Object> tableOverrides = objectMap(cdc.get("tableConfOverrides"));
+        if (tableOverrides.containsKey("sink.parallelism")) {
+            int sinkParallelism = integer(tableOverrides.get("sink.parallelism"));
+            if (sinkParallelism < 1 || sinkParallelism > 4) {
+                throw new IllegalArgumentException("目标 Paimon 表 Sink 并行度必须在 1 到 4 之间");
+            }
+            parallelism = sinkParallelism;
+        }
+        config.put("parallelism", parallelism);
+        tableOverrides.put("sink.parallelism", String.valueOf(parallelism));
+        tableOverrides.put("bucket", String.valueOf(parallelism));
+        cdc.put("tableConfOverrides", tableOverrides);
+        config.put("cdcConfig", cdc);
+        Map<String, Object> flinkOverrides = objectMap(config.get("flinkConfOverrides"));
+        flinkOverrides.put("taskmanager.numberOfTaskSlots", String.valueOf(parallelism));
+        config.put("flinkConfOverrides", flinkOverrides);
         config.put("sourceServerId", request.getSourceServerId());
         config = normalizePaimonTableNames(config, request.getSourceServerId(), request.getTargetDatabase());
         validateConfig(config);
@@ -1172,7 +1223,9 @@ public class RealtimeSyncRepository {
                 .equals(new java.util.LinkedHashSet<>(selectedTables(latest)));
         result.put("topologyChanged", tableSetChanged);
         result.put("syncTableSetChanged", tableSetChanged);
-        if (tableSetChanged && !restorable.isEmpty()) {
+        // 最近一次可恢复的正式 Savepoint 是后续启动的默认状态来源；
+        // 表集合变化只决定是否施加更严格的拓扑恢复约束，不能决定是否恢复状态。
+        if (!restorable.isEmpty()) {
             result.put("requiredStartType", "savepoint");
             result.put("requiredStatePath", text(restorable.get("savepointPath")));
         }

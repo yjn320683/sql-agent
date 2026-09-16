@@ -10,10 +10,10 @@ import {
   Select,
   Space,
   Spin,
-  Steps,
   Table,
   Tag,
   Tabs,
+  Tooltip,
   Typography,
   message,
 } from 'antd';
@@ -39,9 +39,12 @@ import type {
   SyncSourceTableOption,
 } from '../types';
 import SyncMoreConfigRows from './SyncMoreConfigRows';
+import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
 import ComputedColumnEditorModal from './ComputedColumnEditorModal';
+import SyncSectionNav from './SyncSectionNav';
 import { computedColumnName } from './computedColumns';
 import type { AiProposal } from '../../types';
+import TaskDevelopmentSteps, { taskStepsCollapsedKey } from '../../components/tasks/TaskDevelopmentSteps';
 
 interface Props {
   open: boolean;
@@ -55,6 +58,7 @@ const sameOrderedValues = (left: string[] = [], right: string[] = []) => left.le
 const metadataColumnOptions = ['database_name', 'table_name', 'op_ts'].map((value) => ({ label: value, value }));
 const booleanValue = (value: unknown) => value === true || String(value).toLowerCase() === 'true';
 const MYSQL_SCHEMA_REQUEST_CONCURRENCY = 6;
+const SYNC_TOPOLOGY_KEYS = new Set(['bucket', 'sink.parallelism']);
 
 export const createAsyncLimiter = (limit: number) => {
   let active = 0;
@@ -80,8 +84,8 @@ export const createAsyncLimiter = (limit: number) => {
 };
 
 const platformParamDefaults: Record<string, string> = {
-  'table_conf.bucket': '2',
-  'table_conf.sink.parallelism': '2',
+  'table_conf.bucket': '3',
+  'table_conf.sink.parallelism': '3',
   'table_conf.changelog-producer': 'input',
   'table_conf.consumer.expiration-time': '1 d',
 };
@@ -144,6 +148,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   const [schemaReloadRevision, setSchemaReloadRevision] = useState(0);
   const [tableConfigs, setTableConfigs] = useState<Record<string, TablePrivateConfig>>({});
   const [step, setStep] = useState(0);
+  const [stepsCollapsed, setStepsCollapsed] = useState(() => window.localStorage.getItem(taskStepsCollapsedKey) === 'true');
   const [mode, setMode] = useState<'wizard' | 'advanced'>('wizard');
   const [loading, setLoading] = useState(false);
   const [supportLoading, setSupportLoading] = useState(false);
@@ -215,6 +220,11 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         ...config.cdcConfig,
         ignoreIncompatible: booleanValue(config.cdcConfig.ignoreIncompatible),
         metadataColumns: ['database_name', 'table_name', 'op_ts'],
+        tableConfOverrides: mergeSyncTopologyOverrides(
+          config.cdcConfig.tableConfOverrides ?? {},
+          config.cdcConfig.tableConfOverrides,
+          config.parallelism,
+        ),
       },
     } : undefined;
     form.setFieldsValue(task ? {
@@ -228,14 +238,15 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
     } : {
       flinkVersion: '2.2.1',
       taskConfig: {
-        parallelism: 1,
+        parallelism: 3,
         taskManagerMemory: '3GB',
         jobManagerMemory: '1GB',
         checkpointInterval: 60,
         alarmType: 'task-failed',
         cdcConfig: {
           selectedTables: [], metadataColumns: ['database_name', 'table_name', 'op_ts'], typeMappings: [],
-          mode: 'combined', ignoreIncompatible: false, mysqlConfOverrides: {}, tableConfOverrides: {},
+          mode: 'combined', ignoreIncompatible: false, mysqlConfOverrides: {},
+          tableConfOverrides: mergeSyncTopologyOverrides({}),
         },
         flinkConfOverrides: {},
       },
@@ -420,6 +431,11 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       ...(taskConfig.cdcConfig ?? {}),
       targetDatabase: values.targetDatabase,
       tableConfigs: normalizedTableConfigs,
+      tableConfOverrides: mergeSyncTopologyOverrides(
+        taskConfig.cdcConfig?.tableConfOverrides ?? {},
+        taskConfig.cdcConfig?.tableConfOverrides,
+        taskConfig.parallelism,
+      ),
     };
     return {
       name: values.name,
@@ -608,7 +624,17 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         <Descriptions.Item label="目标Paimon表同步元数据列" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'metadataColumns']} noStyle><Select disabled mode="multiple" options={metadataColumnOptions} placeholder="固定同步元数据列" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表类型映射" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'typeMappings']} noStyle><Select disabled={structureLocked} mode="multiple" options={['to-nullable', 'to-string', 'char-to-string', 'tinyint1-not-bool', 'longtext-to-bytes', 'bigint-unsigned-to-bigint'].map((value) => ({ label: value, value }))} /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表配置" span={2}>
-          <div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div>
+          <div className="realtime-dynamic-param-grid">
+            <SyncTopologyConfigRows
+              tableConfPath={['taskConfig', 'cdcConfig', 'tableConfOverrides']}
+              parallelismPath={['taskConfig', 'parallelism']}
+              flinkConfPath={['taskConfig', 'flinkConfOverrides']}
+              readOnly={structureLocked}
+              frozenParallelism={structureLocked ? task?.taskConfig.parallelism : undefined}
+            />
+            {params.filter((item) => item.paramType === 'table_conf' && Boolean(item.required)
+              && !SYNC_TOPOLOGY_KEYS.has(item.paramKey)).map((item) => dynamicParam(item, structureLocked))}
+          </div>
           <SyncMoreConfigRows paramType="table_conf" formNamePath={['taskConfig', 'cdcConfig', 'tableConfOverrides']} taskParams={params} readOnly={structureLocked} />
         </Descriptions.Item>
         <Descriptions.Item label="整库模式" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'mode']} noStyle><Select disabled options={[{ label: 'combined（固定）', value: 'combined' }]} /></Form.Item></Descriptions.Item>
@@ -642,7 +668,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         <Typography.Text type="secondary">配置作业并行度、内存与 Checkpoint 周期</Typography.Text>
       </div>
       <Descriptions bordered size="small" column={2} colon={false} className="realtime-config-table">
-        <Descriptions.Item label={fieldLabel('并行度', true)}><Form.Item name={['taskConfig', 'parallelism']} rules={[{ required: true, message: '请输入并行度' }, { type: 'number', min: 1, max: 128, message: '并行度必须在 1-128 之间' }]} noStyle><InputNumber min={1} max={128} style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('并行度', true)}><Form.Item name={['taskConfig', 'parallelism']} rules={[{ required: true, message: '请输入并行度' }, { type: 'number', min: 1, max: 4, message: '同步任务并行度必须在 1-4 之间' }]} noStyle><Tooltip title="由目标 Paimon 表 Sink 并行度统一决定"><InputNumber min={1} max={4} disabled style={{ width: '100%' }} /></Tooltip></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('Checkpoint 间隔', true)}><Form.Item name={['taskConfig', 'checkpointInterval']} rules={[{ required: true, message: '请输入 Checkpoint 间隔' }, { type: 'number', min: 10, max: 600, message: 'Checkpoint 间隔必须在 10-600 秒之间' }]} noStyle><InputNumber min={10} max={600} addonAfter="秒" style={{ width: '100%' }} /></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('TaskManager 内存', true)}><Form.Item name={['taskConfig', 'taskManagerMemory']} rules={[{ required: true }]} noStyle><Input placeholder="3GB" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('JobManager 内存', true)}><Form.Item name={['taskConfig', 'jobManagerMemory']} rules={[{ required: true }]} noStyle><Input placeholder="1GB" /></Form.Item></Descriptions.Item>
@@ -685,8 +711,8 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         />
         <Form className={`realtime-editor-form mode-${mode}`} form={form} layout="vertical" preserve disabled={updateBlocked || Boolean(supportError)} onValuesChange={() => { if (preview) setPreview(''); }}>
           {mode === 'wizard' ? (
-            <div className="realtime-wizard">
-              <Steps direction="vertical" current={step} items={sections.map((item) => ({ title: item.title }))} onChange={setStep} />
+            <div className={stepsCollapsed ? 'realtime-wizard steps-collapsed' : 'realtime-wizard'}>
+              <TaskDevelopmentSteps className="realtime-wizard-steps" collapsed={stepsCollapsed} onCollapsedChange={setStepsCollapsed} current={step} items={sections.map((item) => ({ title: item.title }))} onChange={setStep} />
               <div className="realtime-wizard-content">
                 {sectionContent(sections[step])}
                 <div className="realtime-wizard-actions">
@@ -697,15 +723,18 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
               </div>
             </div>
           ) : (
-            <div className="realtime-advanced-content">
-              {sections.map((item) => (
-                <section className="realtime-advanced-section" key={item.title}>
-                  {sectionContent(item)}
-                </section>
-              ))}
-              <div className="realtime-advanced-actions">
-                <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>
+            <div className="sync-advanced-layout">
+              <div className="realtime-advanced-content">
+                {sections.map((item, index) => (
+                  <section id={`sync-advanced-section-${index}`} className="realtime-advanced-section sync-config-anchor-section" key={item.title}>
+                    {sectionContent(item)}
+                  </section>
+                ))}
+                <div className="realtime-advanced-actions">
+                  <Button type="primary" disabled={updateBlocked} loading={loading} onClick={() => void save()}>{task ? '保存修改' : '保存'}</Button>
+                </div>
               </div>
+              <SyncSectionNav prefix="sync-advanced-section" items={sections.map((item, index) => ({ key: String(index), label: item.title }))} />
             </div>
           )}
         </Form>

@@ -17,7 +17,7 @@ import type {
   SyncProgressSnapshot,
   SyncSchemaChange,
   SyncSourceTableOption,
-  ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable, RealtimeTableCreateRequest,
+  ManagedTask, ManagedTaskSave, ManagedTaskType, RealtimeTable, RealtimeTableCreateRequest, SyncTaskStartPolicy,
 } from './types';
 
 const json = (method: string, body?: unknown): RequestInit => ({
@@ -29,7 +29,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 type UnifiedTaskWire = {
   id?: number; taskId?: number; taskType: 'sync'; name: string; owner?: string; description?: string;
   flinkVersion: string; status?: SyncTask['status']; updateTime?: string; createTime?: string;
-  expectedUpdateTime?: string; startType?: string; statePath?: string;
+  expectedUpdateTime?: string; startType?: string; statePath?: string; sourceStartupTimestampMillis?: number;
   alarmConfig: { alarmType?: string; alarmGroup?: string };
   flinkConf: { parallelism?: number; checkpointIntervalSeconds?: number; taskManagerMemoryGb?: number; jobManagerMemoryGb?: number; flinkConfOverrides?: Record<string, string> };
   taskConfig: SyncTaskSave['taskConfig'] & { sourceServerId: number; sourceType: 'mysql-cdc' };
@@ -96,10 +96,11 @@ export const updateSyncTask = (id: number, value: SyncTaskSave) => requestJson<n
 export const deleteSyncTask = (id: number) => requestJson<void>(`/v1/api/tasks/${id}/delete`, json('POST'));
 export const previewSyncTask = (value: SyncTaskSave, excludeTaskId?: number) => requestJson<{ command: string; arguments: string[] }>(`/v1/api/tasks/command-preview${excludeTaskId ? `?excludeTaskId=${excludeTaskId}` : ''}`, json('POST', toUnifiedTask(value)));
 export const previewSavedSyncTask = (id: number, debug = false, value?: Record<string, unknown>) => requestJson<{ command: string; arguments: string[] }>(debug ? `/api/tasks/${id}/debug-command-preview` : `/v1/api/tasks/${id}/command-preview`, debug ? json('POST', value ?? {}) : undefined);
-export const startSyncTask = async (id: number, value: { startType: string; statePath?: string; dryRun?: boolean; parallelism?: number; checkpointInterval?: number; taskManagerMemory?: string; jobManagerMemory?: string; flinkConfOverrides?: Record<string, string>; mysqlConfOverrides?: Record<string, string>; tableConfOverrides?: Record<string, string> }, debug = false) => {
+export const startSyncTask = async (id: number, value: { startType: string; statePath?: string; sourceStartupTimestampMillis?: number; dryRun?: boolean; parallelism?: number; checkpointInterval?: number; taskManagerMemory?: string; jobManagerMemory?: string; flinkConfOverrides?: Record<string, string>; mysqlConfOverrides?: Record<string, string>; tableConfOverrides?: Record<string, string> }, debug = false) => {
   if (!debug) return requestJson<TaskInstance>(`/v1/api/tasks/${id}/enable`, json('POST', value));
   const task = await getSyncTask(id); const request = toUnifiedTask(task);
   request.taskId = id; request.startType = value.startType; request.statePath = value.statePath;
+  request.sourceStartupTimestampMillis = value.sourceStartupTimestampMillis;
   request.flinkConf = { ...request.flinkConf, parallelism: value.parallelism, checkpointIntervalSeconds: value.checkpointInterval,
     taskManagerMemoryGb: memoryGb(value.taskManagerMemory), jobManagerMemoryGb: memoryGb(value.jobManagerMemory), flinkConfOverrides: value.flinkConfOverrides };
   request.taskConfig = { ...request.taskConfig, cdcConfig: { ...request.taskConfig.cdcConfig,
@@ -107,7 +108,7 @@ export const startSyncTask = async (id: number, value: { startType: string; stat
   return requestJson<TaskInstance>('/v1/api/tasks/debug', json('POST', request));
 };
 export const stopSyncTask = (id: number, value: { stopType: string }) => requestJson<TaskInstance>(`/v1/api/tasks/${id}/stop`, json('POST', value));
-export const canEnableSyncTask = (id: number) => requestJson<{ canEnable: boolean; reason?: string }>(`/v1/api/tasks/${id}/can-enable`, json('POST', {}));
+export const canEnableSyncTask = (id: number) => requestJson<{ canEnable: boolean; reason?: string; message?: string; startPolicy?: SyncTaskStartPolicy }>(`/v1/api/tasks/${id}/can-enable`, json('POST', {}));
 export const refreshSyncTask = (id: number) => requestJson<TaskInstance>(`/api/realtime/sync-tasks/${id}/refresh-status`, { method: 'POST' });
 export const listMappings = (id: number) => requestJson<TaskMapping[]>(`/api/realtime/sync-tasks/${id}/table-mappings`);
 export const listInstances = (id: number, executionMode: 'PRODUCTION' | 'DEBUG' = 'PRODUCTION') => requestJson<TaskInstance[]>(`/v1/api/tasks/${id}/instances?executionMode=${executionMode}`);
@@ -155,7 +156,7 @@ export const getCommonColumns = (id: number, database: string, tables: string[])
 
 export const listTaskParams = () => requestJson<TaskParam[]>('/v1/api/tasks/params?taskType=sync');
 export const getCdcOptions = () => requestJson<{ targetDatabase: string; tablePrefixes: PaimonTablePrefixOption[] }>('/api/paimon/cdc-options');
-export const listAlerts = () => requestJson<RealtimeAlert[]>('/api/alerts');
+export const listAlerts = (taskId?: number) => requestJson<RealtimeAlert[]>(`/api/alerts${taskId ? `?taskId=${taskId}` : ''}`);
 export const acknowledgeAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
 export const listChangeLogs = (taskId?: number) => requestJson<TaskChangeLog[]>(`/api/task-change-logs${taskId ? `?taskId=${taskId}` : ''}`);
 export const getChangeLogDetail = (id: number) => requestJson<Record<string, unknown>>(`/api/task-change-logs/${id}/detail`);

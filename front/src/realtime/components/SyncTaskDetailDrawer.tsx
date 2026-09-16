@@ -1,14 +1,16 @@
 import { CheckOutlined, EyeOutlined, LinkOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, listAlerts, listChangeLogs, listInstances, listMappings, listSyncDirtyRecords, listSyncSchemaChanges, previewSavedSyncTask, resolveSyncDirtyRecord, stopInstance } from '../api';
+import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, listAlerts, listChangeLogs, listInstances, listSyncDirtyRecords, listSyncSchemaChanges, previewSavedSyncTask, resolveSyncDirtyRecord, stopInstance } from '../api';
 import type { RealtimeAlert, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
-import InstanceInspectorModal, { InstanceConfigView, StructuredKeyValueTable, type InstanceInspectorKind } from './InstanceInspectorModal';
+import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import InstanceLogPanel from './InstanceLogPanel';
 import InstanceListToolbar, { type InstanceSearchField, type InstanceSortOrder } from './InstanceListToolbar';
 import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
 import { availableChangeActions, changeDetailButtonText, normalizeChangeAction } from './changeActions';
 import { selectRuntimeInstance } from './runtimeSelection';
+import SyncTaskConfigDetail from './SyncTaskConfigDetail';
+import { syncStartMethodLabel } from './syncStartMethod';
 
 interface Props {
   task?: SyncTask;
@@ -40,7 +42,7 @@ const stopMethodLabels: Record<string, string> = {
   yarn_kill: 'YARN application kill', none: '无活动实例',
 };
 
-const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown> }) => {
+export const ChangeDetailContent = ({ detail, sourceServerName }: { detail: Record<string, unknown>; sourceServerName?: string }) => {
   const kind = String(detail.detailKind ?? '').toLowerCase();
   const operation = objectValue(detail.operation);
   const request = objectValue(operation.request);
@@ -48,28 +50,32 @@ const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown> }) =>
   const instance = objectValue(detail.instance);
   if (kind === 'edit') {
     const diffs = Array.isArray(detail.diffs) ? detail.diffs as Record<string, unknown>[] : [];
-    return <Space direction="vertical" size={16} style={{ width: '100%' }}>
-      <section><Typography.Title level={5}>本次变更字段</Typography.Title><Table rowKey={(row) => String(row.path)} size="small" pagination={false} dataSource={diffs} locale={{ emptyText: '配置内容无差异' }} columns={[
-        { title: '配置项', dataIndex: 'label', width: 230 },
-        { title: '变更前', dataIndex: 'beforeValue', render: displayValue },
-        { title: '变更后', dataIndex: 'afterValue', render: displayValue },
-      ]} /></section>
-      <div className="realtime-change-compare"><section><Typography.Title level={5}>变更前完整配置</Typography.Title>{detail.beforeTask ?? detail.beforeConfig ? <InstanceConfigView value={detail.beforeTask ?? detail.beforeConfig} /> : <Empty description="缺少变更前版本" />}</section><section><Typography.Title level={5}>变更后完整配置</Typography.Title>{detail.afterTask ?? detail.afterConfig ? <InstanceConfigView value={detail.afterTask ?? detail.afterConfig} /> : <Empty description="缺少变更后版本" />}</section></div>
-    </Space>;
+    const changedPaths = diffs.map((diff) => String(diff.path ?? '')).filter(Boolean);
+    return <div className="task-change-detail-split">
+      <section className="task-change-detail-pane"><Typography.Title level={5}>变更前</Typography.Title>
+        {detail.beforeConfig ? <SyncTaskConfigDetail value={detail.beforeConfig} highlightPaths={changedPaths} compareMode sourceServerName={sourceServerName} /> : <Empty description="缺少变更前版本" />}
+      </section>
+      <section className="task-change-detail-pane"><Typography.Title level={5}>变更后</Typography.Title>
+        {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} highlightPaths={changedPaths} compareMode sourceServerName={sourceServerName} /> : <Empty description="缺少变更后版本" />}
+      </section>
+    </div>;
   }
   if (kind === 'start') return <Space direction="vertical" size={16} style={{ width: '100%' }}>
-    <Descriptions bordered size="small" column={2}>
-      <Descriptions.Item label="启动类型">{displayValue(request.startType ?? result.startType)}</Descriptions.Item>
+    <Descriptions bordered size="small" column={2} className="task-change-operation-descriptions">
+      <Descriptions.Item label="启动方式">{syncStartMethodLabel(
+        request.startType ?? result.startType,
+        request.sourceStartupTimestampMillis ?? result.sourceStartupTimestampMillis,
+      )}</Descriptions.Item>
       <Descriptions.Item label="实例 ID">{displayValue(detail.taskInstanceId ?? instance.id)}</Descriptions.Item>
-      <Descriptions.Item label="实例状态">{displayValue(instance.status)}</Descriptions.Item>
+      <Descriptions.Item label="实例状态"><Tag color={statusColor[String(instance.status ?? '')]}>{statusLabel[String(instance.status ?? '')] ?? displayValue(instance.status)}</Tag></Descriptions.Item>
       <Descriptions.Item label="JobID">{displayValue(result.jobId ?? instance.jobId)}</Descriptions.Item>
       <Descriptions.Item label="历史状态" span={2}>{displayValue(request.statePath)}</Descriptions.Item>
       <Descriptions.Item label="YARN Application ID" span={2}>{displayValue(result.yarnApplicationId ?? instance.yarnApplicationId)}</Descriptions.Item>
     </Descriptions>
-    {detail.afterTask ? <InstanceConfigView value={detail.afterTask} /> : <Empty description="缺少启动使用参数" />}
+    {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} sourceServerName={sourceServerName} /> : <Empty description="缺少启动使用参数" />}
   </Space>;
   if (kind === 'stop') return <Space direction="vertical" size={16} style={{ width: '100%' }}>
-    <Descriptions bordered size="small" column={2}>
+    <Descriptions bordered size="small" column={2} className="task-change-operation-descriptions">
       <Descriptions.Item label="停止类型">{displayValue(result.stopType ?? request.stopType)}</Descriptions.Item>
       <Descriptions.Item label="实际方式">{stopMethodLabels[String(result.actualMethod ?? '')] ?? displayValue(result.actualMethod)}</Descriptions.Item>
       <Descriptions.Item label="Fallback 到 YARN kill">{result.fallbackToYarnKill ? '是' : '否'}</Descriptions.Item>
@@ -79,19 +85,24 @@ const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown> }) =>
       <Descriptions.Item label="JobID" span={2}>{displayValue(result.jobId ?? instance.jobId)}</Descriptions.Item>
       <Descriptions.Item label="YARN Application ID" span={2}>{displayValue(result.yarnApplicationId ?? instance.yarnApplicationId)}</Descriptions.Item>
       <Descriptions.Item label="Savepoint" span={2}>{displayValue(result.savepointPath ?? instance.savepointPath)}</Descriptions.Item>
+      <Descriptions.Item label="退出码">{displayValue(result.exitCode)}</Descriptions.Item>
+      <Descriptions.Item label="执行命令" span={2}><Typography.Text code copyable>{displayValue(result.command)}</Typography.Text></Descriptions.Item>
+      {Boolean(result.fallbackCommand) && <Descriptions.Item label="Fallback 命令" span={2}><Typography.Text code copyable>{displayValue(result.fallbackCommand)}</Typography.Text></Descriptions.Item>}
     </Descriptions>
     {Boolean(operation.errorMessage) && <Alert type="error" showIcon message={displayValue(operation.errorMessage)} />}
+    {Boolean(result.output) && <Input.TextArea value={displayValue(result.output)} readOnly rows={12} wrap="off" />}
   </Space>;
-  if (kind === 'create') return detail.afterTask ? <InstanceConfigView value={detail.afterTask} /> : <Empty description="缺少创建版本" />;
-  return <StructuredKeyValueTable value={detail} />;
+  if (kind === 'create') return detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} sourceServerName={sourceServerName} /> : <Empty description="缺少创建版本" />;
+  return <Typography.Paragraph>{displayValue(detail.detail ?? detail.summary)}</Typography.Paragraph>;
 };
 
 export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) {
   const [instances, setInstances] = useState<TaskInstance[]>([]);
-  const [mappings, setMappings] = useState<TaskMapping[]>([]);
   const [changes, setChanges] = useState<TaskChangeLog[]>([]);
   const [alerts, setAlerts] = useState<RealtimeAlert[]>([]);
   const [dataLoading, setDataLoading] = useState(false);
+  const [alertsLoading, setAlertsLoading] = useState(false);
+  const [changesLoading, setChangesLoading] = useState(false);
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState('all');
   const [searchField, setSearchField] = useState<InstanceSearchField>('all');
@@ -104,8 +115,11 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
   const [instanceMappings, setInstanceMappings] = useState<TaskMapping[]>([]);
   const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
   const [inspector, setInspector] = useState<{ title: string; kind?: InstanceInspectorKind; value: unknown }>();
+  const [inspectorLoading, setInspectorLoading] = useState(false);
   const [changeDetail, setChangeDetail] = useState<Record<string, unknown>>();
   const [changeDetailLoadingId, setChangeDetailLoadingId] = useState<number>();
+  const [activeChangeLog, setActiveChangeLog] = useState<TaskChangeLog>();
+  const [changeDetailError, setChangeDetailError] = useState('');
   const [activeDrawerTab, setActiveDrawerTab] = useState('instances');
   const [detailCommand, setDetailCommand] = useState('');
   const [detailCommandLoading, setDetailCommandLoading] = useState(false);
@@ -117,50 +131,77 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
   const [schemaChanges, setSchemaChanges] = useState<SyncSchemaChange[]>([]);
   const [dataLinkLoading, setDataLinkLoading] = useState(false);
   const [handlingId, setHandlingId] = useState<number>();
-  const requestSequenceRef = useRef(0);
+  const instanceRequestSequenceRef = useRef(0);
+  const tabRequestSequenceRef = useRef(0);
+  const inspectorRequestSequenceRef = useRef(0);
+  const changeDetailRequestRef = useRef(0);
+  const runtimeInstance = useMemo(() => selectRuntimeInstance(instances), [instances]);
 
-  const reload = useCallback(async (silent = false) => {
+  const reloadInstances = useCallback(async (silent = false) => {
     if (!task) return;
-    const sequence = ++requestSequenceRef.current;
+    const sequence = ++instanceRequestSequenceRef.current;
     if (!silent) setDataLoading(true);
     try {
-      const [allInstances, taskMappings, taskChanges, allAlerts] = await Promise.all([
-        listInstances(task.id), listMappings(task.id), listChangeLogs(task.id), listAlerts(),
-      ]);
-      const [dirtyPage, schemaEvents] = await Promise.all([
-        listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20).catch(() => undefined),
-        listSyncSchemaChanges(task.id).catch(() => undefined),
-      ]);
-      if (sequence !== requestSequenceRef.current) return;
+      const allInstances = await listInstances(task.id);
+      if (sequence !== instanceRequestSequenceRef.current) return;
       const production = allInstances.filter((item) => item.executionMode !== 'DEBUG');
       setInstances(production);
-      setMappings(taskMappings);
-      setChanges(taskChanges);
-      setAlerts(allAlerts.filter((item) => item.taskId === task.id));
-      if (dirtyPage) { setDirtyRecords(dirtyPage.items); setDirtyTotal(dirtyPage.total); }
-      if (schemaEvents) setSchemaChanges(schemaEvents);
-      const selected = selectRuntimeInstance(production);
-      if (selected) {
-        try { setSyncProgress(await getSyncProgress(task.id, selected.id, ACTIVE.includes(selected.status))); }
-        catch { setSyncProgress(undefined); }
-      } else setSyncProgress(undefined);
-    } catch (error) { if (sequence === requestSequenceRef.current) message.error((error as Error).message); }
-    finally { if (!silent && sequence === requestSequenceRef.current) setDataLoading(false); }
-  }, [dirtyPageNo, task, unresolvedOnly]);
+    } catch (error) { if (sequence === instanceRequestSequenceRef.current) message.error((error as Error).message); }
+    finally { if (!silent && sequence === instanceRequestSequenceRef.current) setDataLoading(false); }
+  }, [task?.id]);
+
+  const loadActiveTab = useCallback(async () => {
+    if (!task || activeDrawerTab === 'instances' || activeDrawerTab === 'detail' || activeDrawerTab === 'runtime') return;
+    const sequence = ++tabRequestSequenceRef.current;
+    if (activeDrawerTab === 'alerts') {
+      setAlertsLoading(true);
+      try {
+        const rows = await listAlerts(task.id);
+        if (sequence === tabRequestSequenceRef.current) setAlerts(rows);
+      } catch (error) { if (sequence === tabRequestSequenceRef.current) message.error((error as Error).message); }
+      finally { if (sequence === tabRequestSequenceRef.current) setAlertsLoading(false); }
+      return;
+    }
+    if (activeDrawerTab === 'changes') {
+      setChangesLoading(true);
+      try {
+        const rows = await listChangeLogs(task.id);
+        if (sequence === tabRequestSequenceRef.current) setChanges(rows);
+      } catch (error) { if (sequence === tabRequestSequenceRef.current) message.error((error as Error).message); }
+      finally { if (sequence === tabRequestSequenceRef.current) setChangesLoading(false); }
+      return;
+    }
+    if (activeDrawerTab === 'data-link') {
+      setDataLinkLoading(true);
+      try {
+        const [dirtyPage, schemaEvents, progress] = await Promise.all([
+          listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20),
+          listSyncSchemaChanges(task.id),
+          runtimeInstance ? getSyncProgress(task.id, runtimeInstance.id, false).catch(() => undefined) : Promise.resolve(undefined),
+        ]);
+        if (sequence !== tabRequestSequenceRef.current) return;
+        setDirtyRecords(dirtyPage.items); setDirtyTotal(dirtyPage.total);
+        setSchemaChanges(schemaEvents); setSyncProgress(progress);
+      } catch (error) { if (sequence === tabRequestSequenceRef.current) message.error((error as Error).message); }
+      finally { if (sequence === tabRequestSequenceRef.current) setDataLinkLoading(false); }
+    }
+  }, [activeDrawerTab, dirtyPageNo, runtimeInstance?.id, task?.id, unresolvedOnly]);
 
   useEffect(() => {
     if (!task) return;
-    if (activeDrawerTab === 'runtime' && selectRuntimeInstance(instances)) return;
-    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setDetailCommand(''); setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab('instances');
+    instanceRequestSequenceRef.current += 1; tabRequestSequenceRef.current += 1; inspectorRequestSequenceRef.current += 1;
+    setInstances([]); setAlerts([]); setChanges([]); setDirtyRecords([]); setDirtyTotal(0); setSchemaChanges([]);
+    setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setChangeAction('all'); setChangeKeyword(''); setLogInstance(undefined); setDetailCommand(''); setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab('instances'); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
   }, [task?.id]);
 
-  useEffect(() => { void reload(); }, [reload]);
+  useEffect(() => { void reloadInstances(); }, [reloadInstances]);
+  useEffect(() => { void loadActiveTab(); }, [loadActiveTab]);
 
   useEffect(() => {
     if (!task || !instances.some((item) => ACTIVE.includes(item.status))) return undefined;
-    const timer = window.setInterval(() => { void reload(true); }, 3000);
+    const timer = window.setInterval(() => { void reloadInstances(true); }, 3000);
     return () => window.clearInterval(timer);
-  }, [instances, reload, task]);
+  }, [instances, reloadInstances, task]);
 
   useEffect(() => {
     if (!logInstance) return;
@@ -211,21 +252,39 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
 
   const inspect = async (instance: TaskInstance, kind: InstanceInspectorKind) => {
     if (!task) return;
+    const sequence = ++inspectorRequestSequenceRef.current;
+    const names: Record<InstanceInspectorKind, string> = { config: '实例配置', 'startup-log': '启动日志', 'runtime-log': '运行日志', runtime: '运行指标', resources: '资源', checkpoints: 'Checkpoint', 'log-components': '日志组件' };
+    setInspector({ title: kind === 'config' ? `实例配置 - 实例 ${instance.id}` : `实例 ${instance.id} - ${names[kind]}`, kind, value: undefined });
+    setInspectorLoading(true);
     try {
-      const names: Record<InstanceInspectorKind, string> = { config: '实例配置', 'startup-log': '启动日志', 'runtime-log': '运行日志', runtime: '运行指标', resources: '资源', checkpoints: 'Checkpoint', 'log-components': '日志组件' };
-      setInspector({ title: kind === 'config' ? `实例配置 - 实例 ${instance.id}` : `实例 ${instance.id} - ${names[kind]}`, kind, value: await getInstanceInfo(task.id, instance.id, kind) });
-    } catch (error) { message.error((error as Error).message); }
+      const value = await getInstanceInfo(task.id, instance.id, kind);
+      if (sequence === inspectorRequestSequenceRef.current) setInspector((current) => current ? { ...current, value } : current);
+    } catch (error) { if (sequence === inspectorRequestSequenceRef.current) message.error((error as Error).message); }
+    finally { if (sequence === inspectorRequestSequenceRef.current) setInspectorLoading(false); }
   };
 
   const showChangeDetail = async (row: TaskChangeLog) => {
+    const requestId = ++changeDetailRequestRef.current;
     try {
+      setActiveChangeLog(row);
+      setChangeDetail(undefined);
+      setChangeDetailError('');
       setChangeDetailLoadingId(row.id);
-      setChangeDetail(await getChangeLogDetail(row.id));
+      const detail = await getChangeLogDetail(row.id);
+      if (changeDetailRequestRef.current === requestId) setChangeDetail(detail);
     } catch (error) {
-      message.error((error as Error).message);
+      if (changeDetailRequestRef.current === requestId) setChangeDetailError((error as Error).message);
     } finally {
-      setChangeDetailLoadingId(undefined);
+      if (changeDetailRequestRef.current === requestId) setChangeDetailLoadingId(undefined);
     }
+  };
+
+  const closeChangeDetail = () => {
+    changeDetailRequestRef.current += 1;
+    setActiveChangeLog(undefined);
+    setChangeDetail(undefined);
+    setChangeDetailLoadingId(undefined);
+    setChangeDetailError('');
   };
 
   const showInstanceMappings = async (instance: TaskInstance) => {
@@ -255,7 +314,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
       content: '将执行 Stop-with-Savepoint，成功保存状态后停止正式实例。',
       okText: '停止', cancelText: '取消', okButtonProps: { danger: true },
       onOk: async () => {
-        try { setStoppingInstanceId(instance.id); await stopInstance(task.id, instance.id, 'savepoint'); message.success('停止请求已提交'); await reload(); }
+        try { setStoppingInstanceId(instance.id); await stopInstance(task.id, instance.id, 'savepoint'); message.success('停止请求已提交'); await reloadInstances(); }
         catch (error) { message.error((error as Error).message); }
         finally { setStoppingInstanceId(undefined); }
       },
@@ -298,7 +357,6 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
   };
 
   if (!task) return null;
-  const runtimeInstance = selectRuntimeInstance(instances);
   const snapshotFinished = syncProgress?.snapshotFinished;
   const snapshotRemaining = syncProgress?.snapshotRemaining;
   const snapshotTotal = snapshotFinished != null && snapshotRemaining != null ? snapshotFinished + snapshotRemaining : undefined;
@@ -310,7 +368,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
       statusOptions={[{ label: '全部状态', value: 'all' }, ...Object.entries(statusLabel).map(([value, label]) => ({ value, label }))]}
       loading={dataLoading} refreshLabel="刷新实例" onKeywordChange={setKeyword} onSearchFieldChange={setSearchField}
       onStatusChange={setStatus} onSortOrderChange={setSortOrder}
-      onReset={() => { setKeyword(''); setSearchField('all'); setStatus('all'); setSortOrder('startedAtDesc'); }} onRefresh={() => void reload()} />
+      onRefresh={() => void reloadInstances()} />
     <Table rowKey="id" size="small" loading={dataLoading} dataSource={filteredInstances} pagination={{ pageSize: 6, showSizeChanger: true, pageSizeOptions: [6, 10, 20], showTotal: (value) => `共 ${value} 条` }} locale={{ emptyText: '暂无运行实例' }} scroll={{ x: 1700 }} columns={[
       { title: '实例 ID', dataIndex: 'id', width: 100, fixed: 'left' },
       { title: '状态', dataIndex: 'status', width: 120, fixed: 'left', render: (value: string) => <Tag color={statusColor[value]}>{statusLabel[value] ?? value}</Tag> },
@@ -329,7 +387,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
     <Drawer className="sync-task-detail-drawer" title={task.name} open onClose={onClose} placement="bottom" height="72vh" loading={loading}>
       <Tabs className="ui-flat-tabs" activeKey={activeDrawerTab} onChange={setActiveDrawerTab} items={[
         { key: 'instances', label: '实例列表', children: instanceContent },
-        { key: 'detail', label: '任务详情', children: <div className="task-detail-sections"><InstanceConfigView value={task} /><section className="realtime-instance-config-section"><Typography.Title level={5}>命令预览</Typography.Title><div className="task-command-preview"><Button type="link" icon={<EyeOutlined />} loading={detailCommandLoading} onClick={async () => { try { setDetailCommandLoading(true); setDetailCommand((await previewSavedSyncTask(task.id)).command); } catch (error) { message.error((error as Error).message); } finally { setDetailCommandLoading(false); } }}>预览</Button><Input.TextArea className="task-command-preview-textarea" value={detailCommand} placeholder="点击预览生成 Paimon Action 等价命令" readOnly rows={10} wrap="off" /></div></section></div> },
+        { key: 'detail', label: '任务详情', children: <div className="task-detail-sections"><SyncTaskConfigDetail value={task} sourceServerName={task.sourceServerName} /><section className="realtime-instance-config-section"><Typography.Title level={5}>命令预览</Typography.Title><div className="task-command-preview"><Button type="link" icon={<EyeOutlined />} loading={detailCommandLoading} onClick={async () => { try { setDetailCommandLoading(true); setDetailCommand((await previewSavedSyncTask(task.id)).command); } catch (error) { message.error((error as Error).message); } finally { setDetailCommandLoading(false); } }}>预览</Button><Input.TextArea className="task-command-preview-textarea" value={detailCommand} placeholder="点击预览生成 Paimon Action 等价命令" readOnly rows={10} wrap="off" /></div></section></div> },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} instance={runtimeInstance} active={activeDrawerTab === 'runtime'} checkpointIntervalSeconds={task.taskConfig.checkpointInterval} /> },
         { key: 'data-link', label: '数据链路', children: <div className="sync-data-link-panel">
           <div className="sync-link-summary">
@@ -339,7 +397,7 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
             <div><span>未处理脏数据</span><strong>{dirtyTotal}</strong></div>
           </div>
           <Tabs className="ui-flat-tabs" items={[
-            { key: 'dirty', label: `脏数据（${dirtyTotal}）`, children: <><div className="realtime-detail-toolbar"><Space><Select value={unresolvedOnly ? 'unresolved' : 'all'} onChange={(value) => { setUnresolvedOnly(value === 'unresolved'); setDirtyPageNo(1); }} options={[{ label: '仅未处理', value: 'unresolved' }, { label: '全部记录', value: 'all' }]} /><Button icon={<ReloadOutlined />} loading={dataLoading} onClick={() => void reload()}>刷新</Button></Space></div><Table<SyncDirtyRecord> rowKey="id" size="small" loading={dataLoading} dataSource={dirtyRecords} pagination={false} scroll={{ x: 1280 }} locale={{ emptyText: '暂无脏数据记录' }} columns={[
+            { key: 'dirty', label: `脏数据（${dirtyTotal}）`, children: <><div className="realtime-detail-toolbar"><Space><Select value={unresolvedOnly ? 'unresolved' : 'all'} onChange={(value) => { setUnresolvedOnly(value === 'unresolved'); setDirtyPageNo(1); }} options={[{ label: '仅未处理', value: 'unresolved' }, { label: '全部记录', value: 'all' }]} /><Button icon={<ReloadOutlined />} loading={dataLinkLoading} onClick={() => void loadActiveTab()}>刷新</Button></Space></div><Table<SyncDirtyRecord> rowKey="id" size="small" loading={dataLinkLoading} dataSource={dirtyRecords} pagination={false} scroll={{ x: 1280 }} locale={{ emptyText: '暂无脏数据记录' }} columns={[
               { title: '时间', dataIndex: 'createTime', width: 180 }, { title: '实例', dataIndex: 'taskInstanceId', width: 90, render: displayValue },
               { title: '源表', width: 260, render: (_, row) => [row.sourceDatabase, row.sourceTable].filter(Boolean).join('.') || '-' },
               { title: '操作', dataIndex: 'operationType', width: 100, render: displayValue }, { title: '主键', dataIndex: 'primaryKeyValue', width: 160, ellipsis: true, render: displayValue },
@@ -354,14 +412,21 @@ export default function SyncTaskDetailDrawer({ task, loading, onClose }: Props) 
             ]} /></> },
           ]} />
         </div> },
-        { key: 'alerts', label: '告警记录', children: <Table rowKey="id" size="small" dataSource={alerts} locale={{ emptyText: '暂无告警记录' }} columns={[{ title: '级别', dataIndex: 'severity', width: 100, render: (value: string) => <Tag color={value === 'critical' ? 'red' : 'orange'}>{value}</Tag> }, { title: '标题', dataIndex: 'title', width: 240 }, { title: '详情', dataIndex: 'detail' }, { title: '时间', dataIndex: 'createTime', width: 180 }]} /> },
-        { key: 'changes', label: '变更记录', children: <><div className="realtime-detail-toolbar"><Space><Select showSearch optionFilterProp="label" value={changeAction} onChange={setChangeAction} options={[{ label: '全部操作', value: 'all' }, ...changeActionOptions]} /><Input allowClear prefix={<SearchOutlined />} value={changeKeyword} onChange={(event) => setChangeKeyword(event.target.value)} placeholder="搜索操作人 / 操作类型 / 变更说明" /></Space></div><Table rowKey="id" size="small" dataSource={filteredChanges} pagination={false} locale={{ emptyText: changeKeyword.trim() || changeAction !== 'all' ? '没有匹配的变更记录' : '暂无变更记录' }} columns={[{ title: '操作时间', dataIndex: 'createTime', width: 180 }, { title: '操作人', dataIndex: 'operator', width: 120 }, { title: '操作类型', dataIndex: 'action', width: 150, render: (value: string) => normalizeChangeAction(value) }, { title: '变更明细', dataIndex: 'detail', render: renderChangeSummary }]} /></> },
+        { key: 'alerts', label: '告警记录', children: <Table rowKey="id" size="small" loading={alertsLoading} dataSource={alerts} locale={{ emptyText: '暂无告警记录' }} columns={[{ title: '级别', dataIndex: 'severity', width: 100, render: (value: string) => <Tag color={value === 'critical' ? 'red' : 'orange'}>{value}</Tag> }, { title: '标题', dataIndex: 'title', width: 240 }, { title: '详情', dataIndex: 'detail' }, { title: '时间', dataIndex: 'createTime', width: 180 }]} /> },
+        { key: 'changes', label: '变更记录', children: <><div className="realtime-detail-toolbar"><Space><Select showSearch optionFilterProp="label" value={changeAction} onChange={setChangeAction} options={[{ label: '全部操作', value: 'all' }, ...changeActionOptions]} /><Input allowClear prefix={<SearchOutlined />} value={changeKeyword} onChange={(event) => setChangeKeyword(event.target.value)} placeholder="搜索操作人 / 操作类型 / 变更说明" /></Space></div><Table rowKey="id" size="small" loading={changesLoading} dataSource={filteredChanges} pagination={false} locale={{ emptyText: changeKeyword.trim() || changeAction !== 'all' ? '没有匹配的变更记录' : '暂无变更记录' }} columns={[{ title: '操作时间', dataIndex: 'createTime', width: 180 }, { title: '操作人', dataIndex: 'operator', width: 120 }, { title: '操作类型', dataIndex: 'action', width: 150, render: (value: string) => normalizeChangeAction(value) }, { title: '变更明细', dataIndex: 'detail', render: renderChangeSummary }]} /></> },
       ]} />
     </Drawer>
-    <Modal className="sync-mapping-modal" title={`同步表映射${mappingInstance ? ` - 实例 ${mappingInstance.id}` : ''}`} open={mappingOpen} footer={null} width={900} destroyOnHidden onCancel={() => { setMappingOpen(false); setMappingInstance(undefined); }}><Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={mappingInstance ? instanceMappings : mappings} columns={[{ title: '序号', width: 72, render: (_: unknown, __: TaskMapping, index: number) => index + 1 }, { title: '源表', width: 360, render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.sourceDatabase}.${row.sourceTable}`}</span> }, { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.targetDatabase}.${row.targetTable}`}</span> }]} /></Modal>
-    <Modal className="realtime-change-detail-modal" title={String(changeDetail?.detailKind ?? '').toLowerCase() === 'edit' ? '任务配置变更' : '变更记录详情'} open={Boolean(changeDetail)} footer={null} width={String(changeDetail?.detailKind ?? '').toLowerCase() === 'edit' ? 1500 : 1050} onCancel={() => setChangeDetail(undefined)}>
-      {changeDetail && <ChangeDetailContent detail={changeDetail} />}
-    </Modal>
-    <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} onClose={() => setInspector(undefined)} />
+    <Modal className="sync-mapping-modal" title={`同步表映射${mappingInstance ? ` - 实例 ${mappingInstance.id}` : ''}`} open={mappingOpen} footer={null} width={900} destroyOnHidden onCancel={() => { setMappingOpen(false); setMappingInstance(undefined); }}><Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={instanceMappings} columns={[{ title: '序号', width: 72, render: (_: unknown, __: TaskMapping, index: number) => index + 1 }, { title: '源表', width: 360, render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.sourceDatabase}.${row.sourceTable}`}</span> }, { title: '目标 Paimon 表', render: (_: unknown, row: TaskMapping) => <span className="sync-mapping-full-name">{`${row.targetDatabase}.${row.targetTable}`}</span> }]} /></Modal>
+    <Drawer className="task-change-detail-drawer"
+      title={activeChangeLog ? `${normalizeChangeAction(activeChangeLog.action)}明细 - ${activeChangeLog.createTime}` : '变更明细'}
+      open={Boolean(activeChangeLog)} extra={<Button onClick={closeChangeDetail}>关闭</Button>} placement="right"
+      width={activeChangeLog?.detailKind === 'edit' ? 1420 : 1100} onClose={closeChangeDetail} destroyOnClose>
+      {changeDetailLoadingId !== undefined
+        ? <div className="task-change-detail-loading"><Spin size="large" /><Typography.Text type="secondary">变更明细加载中</Typography.Text></div>
+        : changeDetailError
+          ? <Alert type="error" showIcon message="变更明细加载失败" description={changeDetailError} />
+          : changeDetail ? <ChangeDetailContent detail={changeDetail} sourceServerName={task.sourceServerName} /> : null}
+    </Drawer>
+    <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} loading={inspectorLoading} renderConfig={(value) => <SyncTaskConfigDetail value={value} sourceServerName={task.sourceServerName} showNavigation navigationPrefix="sync-production-instance" />} onClose={() => { inspectorRequestSequenceRef.current += 1; setInspector(undefined); setInspectorLoading(false); }} />
   </>;
 }

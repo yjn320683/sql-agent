@@ -14,6 +14,15 @@ public class PaimonSyncCommandBuilder {
 
     private static final Pattern DOMAIN = Pattern.compile("[a-z0-9]+");
     public Command build(SubmissionSpec spec) {
+        return build(spec, false);
+    }
+
+    /** 预览阶段尚未创建实例，仅展示实际启动时会自动分配 Server ID。 */
+    public Command buildPreview(SubmissionSpec spec) {
+        return build(spec, true);
+    }
+
+    private Command build(SubmissionSpec spec, boolean preview) {
         required(spec, "提交配置不存在");
         SubmissionSpec.TaskSpec task = required(spec.getTask(), "任务配置不存在");
         if (!"sync".equals(task.getTaskType()) || !"mysql-cdc".equals(task.getSourceType())) {
@@ -53,6 +62,7 @@ public class PaimonSyncCommandBuilder {
         appendTableConfigs(args, tables, objectMap(cdc.get("tableConfigs")));
         Map<String, String> mysql = new LinkedHashMap<>(runtime.getMysqlDefaultConf());
         mysql.putAll(stringMap(cdc.get("mysqlConfOverrides")));
+        mysql.put("server-id", serverIdRange(spec, preview));
         mysql.put("hostname", endpoint.host);
         mysql.put("port", String.valueOf(endpoint.port));
         mysql.put("username", required(server.getAccount(), "Server 账号未配置"));
@@ -70,6 +80,20 @@ public class PaimonSyncCommandBuilder {
         }
         appendMap(args, "--table_conf", tableConf);
         return new Command(required(runtime.getPaimonActionJarPath(), "Paimon Action Jar 未配置"), args);
+    }
+
+    private String serverIdRange(SubmissionSpec spec, boolean preview) {
+        Integer parallelism = spec.getTask().getParallelism();
+        if (parallelism != null && parallelism > 16) {
+            throw new IllegalArgumentException("Source 并行度不能超过 Server ID 范围容量 16");
+        }
+        Long instanceId = spec.getTaskInstanceId();
+        if (instanceId == null && preview) return "<启动时自动分配>";
+        if (instanceId == null || instanceId <= 0 || instanceId > (999999999L - 1000000L - 15) / 16) {
+            throw new IllegalArgumentException("实例 ID 缺失或 Server ID 分配范围越界");
+        }
+        long start = 1000000L + instanceId * 16;
+        return start + "-" + (start + 15);
     }
 
     private void appendTableConfigs(List<String> args, List<String> tables, Map<String, Object> configs) {

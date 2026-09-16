@@ -256,6 +256,10 @@ public class RealtimeRuntimeService {
     private void completeStop(long taskId, long instanceId, Map<String, Object> instance,
             String stopType, String jobId, String applicationId, long operationId,
             String actor, boolean debug) {
+        Map<String, Object> operationResult = new LinkedHashMap<>();
+        operationResult.put("stopType", stopType);
+        operationResult.put("jobId", jobId);
+        operationResult.put("yarnApplicationId", applicationId);
         try {
             String actualMethod = !jobId.isEmpty()
                     ? ("savepoint".equals(stopType) ? "flink_savepoint" : "flink_cancel")
@@ -266,7 +270,9 @@ public class RealtimeRuntimeService {
             CommandResult result;
             String combinedOutput;
             try {
-                result = execute(stopCommand(taskId, jobId, applicationId, stopType), 180);
+                List<String> command = stopCommand(taskId, jobId, applicationId, stopType);
+                operationResult.put("command", shell(command));
+                result = execute(command, 180);
                 combinedOutput = result.output;
             } catch (RuntimeException ex) {
                 if (!canFallbackToYarn) throw ex;
@@ -275,6 +281,8 @@ public class RealtimeRuntimeService {
                 combinedOutput = safe(ex);
                 result = execute(
                         List.of(properties.getYarnBin(), "application", "-kill", applicationId), 60);
+                operationResult.put("fallbackCommand", shell(List.of(
+                        properties.getYarnBin(), "application", "-kill", applicationId)));
                 combinedOutput = append(combinedOutput, result.output);
             }
             if (result.exitCode != 0 && canFallbackToYarn && !fallbackToYarnKill) {
@@ -282,18 +290,26 @@ public class RealtimeRuntimeService {
                 actualMethod = "yarn_kill";
                 CommandResult fallback = execute(
                         List.of(properties.getYarnBin(), "application", "-kill", applicationId), 60);
+                operationResult.put("fallbackCommand", shell(List.of(
+                        properties.getYarnBin(), "application", "-kill", applicationId)));
                 combinedOutput = append(combinedOutput, fallback.output);
                 result = fallback;
             }
+            operationResult.put("actualMethod", actualMethod);
+            operationResult.put("fallbackToYarnKill", fallbackToYarnKill);
+            operationResult.put("exitCode", result.exitCode);
+            operationResult.put("output", tail(mask(combinedOutput), 1024 * 1024));
             if (result.exitCode != 0) {
                 throw new IllegalStateException("Flink 停止失败：" + tail(combinedOutput, 4000));
             }
             String savepoint = parseSavepoint(combinedOutput);
+            operationResult.put("savepointPath", savepoint);
             repository.updateSavepointPath(instanceId, savepoint);
             if (!debug && "savepoint".equals(stopType)) {
                 String waitingLog = append(text(instance.get("startupLog")), mask(combinedOutput));
                 repository.updateInstanceSubmission(instanceId, "stopping", empty(jobId), empty(applicationId),
                         text(instance.get("trackingUrl")), waitingLog, null);
+                repository.updateOperationResult(operationId, json(operationResult));
                 // 停止命令返回不等于外部作业已终止，操作锁由状态同步确认终态后释放。
                 return;
             }
@@ -305,12 +321,7 @@ public class RealtimeRuntimeService {
                     text(instance.get("trackingUrl")),
                     append(text(instance.get("startupLog")), mask(combinedOutput)), null);
             if (!debug) repository.changeTaskStatus(taskId, "not_running");
-            Map<String, Object> operationResult = new LinkedHashMap<>();
-            operationResult.put("stopType", stopType); operationResult.put("actualMethod", actualMethod);
-            operationResult.put("fallbackToYarnKill", fallbackToYarnKill);
             operationResult.put("instanceStatus", terminalStatus);
-            operationResult.put("jobId", jobId); operationResult.put("yarnApplicationId", applicationId);
-            operationResult.put("savepointPath", savepoint);
             repository.completeOperation(operationId, "SUCCESS", json(operationResult), null);
             if (isProductionLifecycleChange(debug)) {
                 repository.addChange(taskId, operationId, null, instanceId, actor,
@@ -319,7 +330,8 @@ public class RealtimeRuntimeService {
             }
         } catch (RuntimeException ex) {
             repository.updateInstanceRuntime(instanceId, "running", text(instance.get("lastRuntimeLog")), safe(ex));
-            repository.completeOperation(operationId, "FAILED", null, safe(ex));
+            operationResult.put("error", safe(ex));
+            repository.completeOperation(operationId, "FAILED", json(operationResult), safe(ex));
             if (!debug) repository.changeTaskStatus(taskId, "running");
             repository.addAlert(taskId, "warning", "同步任务停止失败", safe(ex));
         }
@@ -349,6 +361,13 @@ public class RealtimeRuntimeService {
         result.put("available", true);
         result.put("status", text(job.get("state"), text(instance.get("status"))));
         result.put("uptimeMs", job.get("duration"));
+        Map<String, Object> timestamps = objectMap(job.get("timestamps"));
+        long runningSinceMs = number(timestamps.get("RUNNING"));
+        result.put("runningSinceMs", runningSinceMs > 0 ? runningSinceMs : null);
+        result.put("runningDurationMs", runningSinceMs > 0
+                ? Math.max(0L, System.currentTimeMillis() - runningSinceMs) : null);
+        result.put("debugSuccessMinRunningSeconds",
+                Math.max(1, properties.getDebugSuccessMinRunningMinutes()) * 60L);
         Topology topology = topology(job);
         List<Map<String, Object>> vertices = new ArrayList<>();
         for (Object value : objectList(job.get("vertices"))) {
@@ -453,6 +472,21 @@ public class RealtimeRuntimeService {
     public Object stateHistory(long taskId, String type) {
         repository.requiredTask(taskId);
         List<Map<String, Object>> result = new ArrayList<>(stateHistoryReader.list(taskId, type));
+        if ("checkpoint".equalsIgnoreCase(type)) {
+            List<Map<String, Object>> production = repository.instances(taskId).stream()
+                    .filter(instance -> "PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode"))))
+                    .filter(instance -> !text(instance.get("jobId")).isEmpty())
+                    .collect(java.util.stream.Collectors.toList());
+            result.removeIf(item -> production.stream().noneMatch(instance ->
+                    pathContainsSegment(text(item.get("path")), text(instance.get("jobId"))))
+                    || !stateHistoryReader.exists(taskId, "checkpoint", text(item.get("path"))));
+            result.forEach(item -> production.stream()
+                    .filter(instance -> pathContainsSegment(text(item.get("path")), text(instance.get("jobId"))))
+                    .findFirst().ifPresent(instance -> item.put("label", text(item.get("createTime"))
+                            + " · 实例 " + instance.get("id") + " · " + item.get("path"))));
+            result.sort(java.util.Comparator.comparing(item -> text(item.get("createTime")),
+                    java.util.Comparator.reverseOrder()));
+        }
         for (Map<String, Object> instance : repository.instances(taskId)) {
             String path = text(instance.get("savepointPath"));
             if (!path.isEmpty() && ("savepoint".equalsIgnoreCase(type) || text(type).isEmpty())) {
@@ -664,19 +698,22 @@ public class RealtimeRuntimeService {
         Map<String, Object> latest = repository.requiredInstance(taskId, instanceId);
         String savepoint = text(latest.get("savepointPath"));
         String actor = text(operation.get("operator"), "system");
+        Map<String, Object> result = new LinkedHashMap<>(objectMap(operation.get("result")));
+        result.put("instanceStatus", status);
         if ("failed".equals(status)) {
-            repository.completeOperation(operationId, "FAILED", null,
+            repository.completeOperation(operationId, "FAILED", json(result),
                     text(latest.get("failureMessage"), "外部作业停止时失败"));
             return;
         }
         if (savepoint.isEmpty()) {
             String reason = "外部作业已终止，但停止命令未返回 Savepoint 路径";
-            repository.completeOperation(operationId, "FAILED", null, reason);
+            result.put("error", reason);
+            repository.completeOperation(operationId, "FAILED", json(result), reason);
             repository.addAlert(taskId, "warning", "同步任务停止结果异常", reason);
             return;
         }
-        repository.completeOperation(operationId, "SUCCESS",
-                json(Map.of("instanceStatus", status, "savepointPath", savepoint)), null);
+        result.put("savepointPath", savepoint);
+        repository.completeOperation(operationId, "SUCCESS", json(result), null);
         repository.addChange(taskId, operationId, null, instanceId, actor,
                 "STOP", "停止类型：savepoint，savepoint：" + savepoint);
     }
@@ -806,7 +843,7 @@ public class RealtimeRuntimeService {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("command", shell(submitCommand));
         if ("sync".equalsIgnoreCase(spec.getTask().getTaskType())) {
-            PaimonSyncCommandBuilder.Command action = new PaimonSyncCommandBuilder().build(spec);
+            PaimonSyncCommandBuilder.Command action = new PaimonSyncCommandBuilder().buildPreview(spec);
             result.put("arguments", action.maskedArguments()); result.put("paimonActionJar", action.getJarPath());
         } else {
             result.put("arguments", List.of("--submission-file", "<submission-spec>", "--config-sha256", "<config-sha256>"));
@@ -868,7 +905,20 @@ public class RealtimeRuntimeService {
         else config.remove("statePath");
         if (!"sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) { result.put("taskConfig", config); return result; }
         Map<String, Object> cdc = new LinkedHashMap<>(objectMap(config.get("cdcConfig")));
-        if (action.getMysqlConfOverrides() != null) cdc.put("mysqlConfOverrides", action.getMysqlConfOverrides());
+        if (action.getSourceStartupTimestampMillis() != null) {
+            Map<String, Object> mysql = new LinkedHashMap<>(objectMap(cdc.get("mysqlConfOverrides")));
+            mysql.put("scan.startup.mode", "timestamp");
+            mysql.put("scan.startup.timestamp-millis", String.valueOf(action.getSourceStartupTimestampMillis()));
+            cdc.put("mysqlConfOverrides", mysql);
+            config.put("sourceStartupTimestampMillis", action.getSourceStartupTimestampMillis());
+        } else {
+            config.remove("sourceStartupTimestampMillis");
+        }
+        if (action.getMysqlConfOverrides() != null) {
+            Map<String, Object> mysql = new LinkedHashMap<>(objectMap(cdc.get("mysqlConfOverrides")));
+            mysql.putAll(action.getMysqlConfOverrides());
+            cdc.put("mysqlConfOverrides", mysql);
+        }
         if (action.getTableConfOverrides() != null) cdc.put("tableConfOverrides", action.getTableConfOverrides());
         config.put("cdcConfig", cdc); result.put("taskConfig", config);
         if (debug) applyDebugTarget(result, config, cdc);
@@ -1381,8 +1431,14 @@ public class RealtimeRuntimeService {
         String start = text(action.getStartType(), "direct").toLowerCase(Locale.ROOT);
         if (!List.of("direct", "checkpoint", "savepoint").contains(start)) throw new IllegalArgumentException("启动类型不正确");
         if (!"direct".equals(start) && text(action.getStatePath()).isEmpty()) throw new IllegalArgumentException("恢复启动必须选择状态路径");
-        if (action.getParallelism() != null && (action.getParallelism() < 1 || action.getParallelism() > 128)) {
-            throw new IllegalArgumentException("任务并行度必须为 1 到 128 的整数");
+        Long timestamp = action.getSourceStartupTimestampMillis();
+        if (timestamp != null) {
+            if (timestamp <= 0) throw new IllegalArgumentException("消费点时间戳必须是正整数");
+            if (timestamp > System.currentTimeMillis()) throw new IllegalArgumentException("消费点时间戳不能晚于当前时间");
+            if (!"direct".equals(start)) throw new IllegalArgumentException("按时间戳重置消费点只能使用 direct 启动");
+        }
+        if (action.getParallelism() != null && (action.getParallelism() < 1 || action.getParallelism() > 4)) {
+            throw new IllegalArgumentException("任务并行度必须为 1 到 4 的整数");
         }
         if (action.getCheckpointInterval() != null
                 && (action.getCheckpointInterval() < 10 || action.getCheckpointInterval() > 600)) {
@@ -1399,17 +1455,44 @@ public class RealtimeRuntimeService {
     }
     private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
         Map<String, Object> policy = repository.editPolicy(taskId);
-        if (!Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) return;
+        if (action.getSourceStartupTimestampMillis() != null) {
+            if (!Boolean.TRUE.equals(policy.get("productionLocked"))) {
+                throw new IllegalArgumentException("首次正式启动必须执行 initial 全量快照，不能按时间戳重置消费点");
+            }
+            return;
+        }
+        if ("checkpoint".equalsIgnoreCase(text(action.getStartType()))) {
+            if (!belongsToProductionCheckpoint(taskId, text(action.getStatePath()))) {
+                throw new IllegalArgumentException("请选择当前任务正式实例的有效 Checkpoint，请刷新恢复点后重新选择");
+            }
+            return;
+        }
         String requiredPath = text(policy.get("requiredStatePath"));
         if (requiredPath.isEmpty()) {
-            throw new IllegalStateException("同步表集合已变化，但没有可用的正式 Savepoint，请先恢复原配置运行并通过 Savepoint 停止");
+            if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
+                throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
+            }
+            return;
         }
         if (!"savepoint".equalsIgnoreCase(text(action.getStartType()))) {
-            throw new IllegalArgumentException("增删同步表后必须从最近一次正式停止产生的 Savepoint 启动");
+            throw new IllegalArgumentException("存在可恢复的正式 Savepoint，必须从该 Savepoint 启动或显式重置消费点");
         }
         if (!requiredPath.equals(text(action.getStatePath()))) {
-            throw new IllegalArgumentException("增删同步表后只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
+            throw new IllegalArgumentException("只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
         }
+    }
+    private boolean belongsToProductionCheckpoint(long taskId, String path) {
+        for (Map<String, Object> instance : repository.instances(taskId)) {
+            if (!"PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode")))) continue;
+            String jobId = text(instance.get("jobId"));
+            if (!jobId.isEmpty() && pathContainsSegment(path, jobId)) return true;
+        }
+        return false;
+    }
+    private boolean pathContainsSegment(String path, String segment) {
+        if (path.isEmpty() || segment.isEmpty()) return false;
+        for (String part : path.replace('\\', '/').split("/")) if (segment.equals(part)) return true;
+        return false;
     }
     private void addFlinkArg(List<String> command, String key, Object value) {
         if (!text(value).isEmpty()) command.add("-D" + key + "=" + value);

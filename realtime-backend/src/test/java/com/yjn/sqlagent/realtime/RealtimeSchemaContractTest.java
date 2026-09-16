@@ -87,6 +87,38 @@ class RealtimeSchemaContractTest {
         assertTrue(migration.contains("同步任务引用闭包校验失败"));
     }
 
+    @Test
+    void observabilityUpgradeCreatesAllThreeTablesAndIsRepeatable() throws Exception {
+        try (java.sql.Connection connection = java.sql.DriverManager.getConnection(
+                "jdbc:h2:mem:observabilityUpgrade;MODE=MySQL;DATABASE_TO_LOWER=TRUE")) {
+            String upgrade = resource("db/upgrade-20260907-sync-observability-schema-evolution.sql");
+            for (int attempt = 0; attempt < 2; attempt++) {
+                for (String statement : upgrade.split(";")) {
+                    if (statement.isBlank() || statement.trim().startsWith("SET NAMES")) continue;
+                    connection.createStatement().execute(statement);
+                }
+            }
+            for (String table : List.of("rt_sync_progress_snapshot", "rt_sync_dirty_record", "rt_schema_change_event")) {
+                try (java.sql.ResultSet rows = connection.createStatement().executeQuery("SELECT COUNT(*) FROM " + table)) {
+                    assertTrue(rows.next());
+                    assertEquals(0, rows.getInt(1));
+                }
+            }
+        }
+    }
+
+    @Test
+    void syncDefaultsUpgradeOnlyChangesDictionaryAndCoversLegacySlots() throws Exception {
+        String upgrade = resource("db/upgrade-20260911-sync-default-parallelism.sql");
+        assertTrue(upgrade.contains("param_value IN ('1', '2')"));
+        assertTrue(upgrade.contains("min_value = 1, max_value = 4"));
+        assertFalse(upgrade.contains("UPDATE rt_task SET"));
+        assertFalse(upgrade.contains("UPDATE rt_task_version"));
+        assertFalse(upgrade.contains("UPDATE rt_sync_task_config"));
+        assertFalse(upgrade.contains("UPDATE rt_task_instance"));
+        assertTrue(resource("db/upgrade-20260911-add-sync-precommit-compact.sql").contains("'precommit-compact'"));
+    }
+
     private String resource(String path) throws Exception {
         try (java.io.InputStream input = getClass().getClassLoader().getResourceAsStream(path)) {
             if (input == null) throw new IllegalStateException("missing resource " + path);

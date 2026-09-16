@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applySyncSchemaChange, createSyncTask, getStateHistory, getSyncProgress, getSyncTask, listManagedTasks, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, resolveSyncDirtyRecord } from './api';
+import { applySyncSchemaChange, canEnableSyncTask, createSyncTask, getStateHistory, getSyncProgress, getSyncTask, listAlerts, listManagedTasks, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, resolveSyncDirtyRecord, startSyncTask } from './api';
 import type { SyncTaskSave } from './types';
 
 const response = (data: unknown) => Promise.resolve({
@@ -75,6 +75,34 @@ describe('实时同步统一接口契约', () => {
     expect(calls[1]?.[0]).toBe('/v1/api/flink-common/listsavepoint?taskId=31');
   });
 
+  it('启动预检读取轻量启动策略', async () => {
+    const fetchMock = vi.fn(() => response({
+      canEnable: true,
+      startPolicy: {
+        productionLocked: true,
+        syncTableSetChanged: false,
+        requiredStartType: 'savepoint',
+        requiredStatePath: 'hdfs://savepoint/task-31/sp-1',
+        canResetConsumptionPoint: false,
+      },
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+    const result = await canEnableSyncTask(31);
+    expect(result.startPolicy?.requiredStartType).toBe('savepoint');
+    expect(fetchMock).toHaveBeenCalledWith('/v1/api/tasks/31/can-enable', expect.objectContaining({ method: 'POST' }));
+  });
+
+  it('正式启动可以显式提交消费点时间戳', async () => {
+    const fetchMock = vi.fn(() => response({ id: 90, taskId: 31, status: 'submitting' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await startSyncTask(31, { startType: 'direct', sourceStartupTimestampMillis: 1_700_000_000_000 });
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
+    expect(url).toBe('/v1/api/tasks/31/enable');
+    expect(JSON.parse(String(init.body))).toEqual({
+      startType: 'direct', sourceStartupTimestampMillis: 1_700_000_000_000,
+    });
+  });
+
   it('计算与出仓列表完整发送同步布局中的筛选条件', async () => {
     const fetchMock = vi.fn(() => response({ records: [], total: 0, pageNo: 2, pageSize: 50 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -103,5 +131,14 @@ describe('实时同步统一接口契约', () => {
       '/api/realtime/sync-tasks/31/schema-changes?refresh=true',
       '/api/realtime/sync-tasks/31/schema-changes/8/apply',
     ]);
+  });
+
+  it('任务详情按任务查询告警，避免加载全平台告警', async () => {
+    const fetchMock = vi.fn(() => response([]));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await listAlerts(31);
+
+    expect(fetchMock).toHaveBeenCalledWith('/api/alerts?taskId=31', { credentials: 'include' });
   });
 });
