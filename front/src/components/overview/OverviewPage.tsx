@@ -126,10 +126,7 @@ export default function OverviewPage() {
   return (
     <div className="overview-page">
       <div className="overview-page-head">
-        <div>
-          <Typography.Title level={3}>统一工作台</Typography.Title>
-          <Typography.Text type="secondary">离线与实时任务的运行概览、异常处置和开发入口</Typography.Text>
-        </div>
+        <Typography.Text type="secondary">离线与实时任务的运行概览、异常处置和开发入口</Typography.Text>
         <Space size={10}>
           {generatedAt && <Typography.Text type="secondary">更新于 {generatedAt}</Typography.Text>}
           <Tooltip title="刷新"><Button aria-label="刷新工作台" icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} /></Tooltip>

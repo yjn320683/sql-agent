@@ -39,7 +39,7 @@ export default function ScheduleDagPage() {
   useEffect(() => { void load(); }, [load]);
   const graph = useMemo(() => data ? layout(data, status, navigate) : { nodes: [], edges: [] }, [data, navigate, status]);
   return <div className="schedule-dag-page">
-    <header><div><h2>调度拓扑</h2><p>展示所有启用任务、依赖、最近实例和基于最近 20 次成功实例中位耗时估算的关键路径。</p></div><div><Select value={status} onChange={setStatus} options={['ALL','SUCCEEDED','FAILED','RUNNING','NONE'].map((value) => ({ value, label: value === 'ALL' ? '全部状态' : value }))} /><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></div></header>
+    <header><span className="schedule-dag-context">启用任务依赖、最近实例与关键路径</span><div><Select value={status} onChange={setStatus} options={['ALL','SUCCEEDED','FAILED','RUNNING','NONE'].map((value) => ({ value, label: value === 'ALL' ? '全部状态' : value }))} /><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></div></header>
     {error ? <Alert type="error" showIcon message="调度拓扑加载失败" description={error} /> : null}
     <section>{loading ? <Spin /> : <ReactFlow nodes={graph.nodes} edges={graph.edges} fitView onNodeDoubleClick={(_, node) => navigate(`/tasks/${node.id}/edit`)}><Background /><Controls /></ReactFlow>}</section>
   </div>;

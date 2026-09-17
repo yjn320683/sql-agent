@@ -12,7 +12,6 @@ import {
   Table,
   Tag,
   Tooltip,
-  Typography,
   message,
 } from 'antd';
 import { EditOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
@@ -138,13 +137,6 @@ export default function BusinessDomainsPage() {
   return (
     <div className="data-page business-domain-page">
       <section className="data-panel">
-        <div className="data-toolbar business-domain-heading">
-          <div>
-            <Typography.Title level={3}>业务域</Typography.Title>
-            <Typography.Text type="secondary">统一维护 Hive 与 Paimon 资产的业务归属；停用不会删除已有关系。</Typography.Text>
-          </div>
-          <Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建业务域</Button>
-        </div>
         <div className="data-toolbar business-domain-filter">
           <Input
             allowClear
@@ -161,6 +153,7 @@ export default function BusinessDomainsPage() {
           />
           <Button type="primary" icon={<SearchOutlined />} onClick={() => { setPage(1); setCommittedKeyword(keyword.trim()); }}>查询</Button>
           <Tooltip title="刷新"><Button icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
+          <Button className="business-domain-create" type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建业务域</Button>
         </div>
         <Table
           rowKey="id"

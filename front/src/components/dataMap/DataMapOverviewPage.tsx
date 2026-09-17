@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Alert, Button, Card, Col, Row, Spin, Statistic, Table, Tag, Typography, message } from 'antd';
+import { Alert, Button, Card, Col, Row, Spin, Statistic, Table, Tag, Tooltip, Typography, message } from 'antd';
 import { ApartmentOutlined, BranchesOutlined, DatabaseOutlined, ReloadOutlined } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { getDataMapOverview, type DataMapOverview, type DataMapRun } from '../../api/dataMap';
@@ -18,8 +18,8 @@ export default function DataMapOverviewPage() {
   };
   useEffect(() => { void load(); }, []);
   return <div className="data-map-page">
-    <header className="data-map-page-header"><div><Typography.Title level={2}>数据地图</Typography.Title><Typography.Text type="secondary">统一查看当前生产口径的数据资产、任务血缘、字段派生和解析完整性。</Typography.Text></div><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></header>
-    {data && (!data.graphConfigured || !data.graphAvailable) ? <Alert showIcon type="warning" message={data.graphConfigured ? 'Neo4j 暂不可用' : 'Neo4j 尚未启用'} description="MySQL 中的不可变血缘快照不会丢失；图存储恢复后，Outbox 会继续投影。血缘查询在此期间明确降级，不会伪装成无上下游。" /> : null}
+    <div className="data-map-page-toolbar"><Typography.Text type="secondary">当前生产口径的数据资产、任务血缘、字段派生和解析完整性</Typography.Text><Tooltip title="刷新"><Button aria-label="刷新数据概览" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip></div>
+    {data && (!data.graphConfigured || !data.graphAvailable) ? <Alert className="data-map-status-alert" banner showIcon type="warning" message={<span>{data.graphConfigured ? 'Neo4j 暂不可用' : 'Neo4j 尚未启用'}；MySQL 血缘快照不会丢失，图存储恢复后将继续投影。</span>} /> : null}
     <Spin spinning={loading && !data}>
       <Row gutter={[16,16]} className="data-map-statistics">
         <Col xs={24} md={12} xl={6}><Card><Statistic title="表资产" value={data?.assetCount || 0} prefix={<DatabaseOutlined />} /></Card></Col>
@@ -43,4 +43,3 @@ export default function DataMapOverviewPage() {
     </Spin>
   </div>;
 }
-

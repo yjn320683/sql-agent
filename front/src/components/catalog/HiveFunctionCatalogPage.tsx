@@ -46,13 +46,10 @@ export default function HiveFunctionCatalogPage() {
   const copy = async (text: string) => { await navigator.clipboard.writeText(text); message.success('调用模板已复制'); };
 
   return <div className="function-catalog-page">
-    <header className="function-catalog-header">
-      <div><h2>Hive 函数目录</h2><p>签名与说明均来自当前 HiveServer2；缺失信息明确显示“未提供”。</p></div>
-      <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
-    </header>
     <section className="function-catalog-filter">
       <Input allowClear prefix={<SearchOutlined />} value={keyword} placeholder="搜索函数名称" onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
       <Select allowClear value={database} placeholder="默认数据库" options={databases.map((value) => ({ value, label: value }))} onChange={(value) => { setDatabase(value); setPage(1); }} />
+      <Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button>
     </section>
     {error ? <Alert type="error" showIcon message="Hive 函数服务暂不可用" description={error} action={<Button size="small" onClick={() => void load()}>重试</Button>} /> : null}
     <Table rowKey={(name) => name} loading={loading} dataSource={items} columns={[
