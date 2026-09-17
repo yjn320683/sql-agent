@@ -24,7 +24,7 @@ import {
   TableOutlined,
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { useSearchParams } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import {
   getHivePartitions,
   getHiveStorageLayout,
@@ -46,6 +46,14 @@ import type {
   HiveTableDetailVO,
   HiveTableVO,
 } from '../../types';
+import {
+  assignAssetDomain,
+  getAssetDomainAssignment,
+  listBusinessDomainAssets,
+  listBusinessDomainOptions,
+  unassignAssetDomain,
+} from '../../realtime/api';
+import type { BusinessDomain } from '../../realtime/types';
 
 type DetailTab = 'columns' | 'partitions' | 'statistics' | 'storage' | 'freshness' | 'ddl';
 
@@ -105,6 +113,7 @@ function FactTable({ value, emptyText }: { value: Record<string, unknown>; empty
 }
 
 export default function DataCatalogPage() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTableRef = useRef(searchParams.get('table') || '');
   const [databases, setDatabases] = useState<string[]>([]);
@@ -128,6 +137,10 @@ export default function DataCatalogPage() {
   const [ddl, setDdl] = useState<HiveDdlVO>();
   const [tabLoading, setTabLoading] = useState(false);
   const [tabError, setTabError] = useState('');
+  const [domainOptions, setDomainOptions] = useState<BusinessDomain[]>([]);
+  const [domainId, setDomainId] = useState<number>();
+  const [domainFilter, setDomainFilter] = useState<number>();
+  const [domainSaving, setDomainSaving] = useState(false);
 
   const selectedKey = selected ? `${selected.db}.${selected.table}` : '';
 
@@ -149,17 +162,32 @@ export default function DataCatalogPage() {
     return () => { active = false; };
   }, []);
 
+  useEffect(() => {
+    void listBusinessDomainOptions().then(setDomainOptions).catch(() => setDomainOptions([]));
+  }, []);
+
   const loadTables = useCallback(async () => {
     if (!database) return;
     setTableLoading(true);
     try {
-      const result = await searchHiveTables(
-        database,
-        committedKeyword,
-        TABLE_PAGE_SIZE,
-        (tablePage - 1) * TABLE_PAGE_SIZE,
-      );
-      setTables(result.items);
+      const result = domainFilter
+        ? await listBusinessDomainAssets(domainFilter, new URLSearchParams({
+          assetType: 'HIVE', databaseName: database, keyword: committedKeyword,
+          page: String(tablePage), pageSize: String(TABLE_PAGE_SIZE),
+        })).then((pageResult) => ({
+          items: pageResult.records.map((item): HiveTableVO => ({
+            catalog: item.catalogName || 'hive', db: item.databaseName || database,
+            table: item.tableName || '', tableType: 'HIVE', comment: '业务域资产',
+          })),
+          total: pageResult.total,
+        }))
+        : await searchHiveTables(
+          database,
+          committedKeyword,
+          TABLE_PAGE_SIZE,
+          (tablePage - 1) * TABLE_PAGE_SIZE,
+        );
+      setTables(result.items.filter((item) => item.table));
       setTableTotal(result.total);
       setSelected((current) => {
         const requested = requestedTableRef.current;
@@ -178,7 +206,7 @@ export default function DataCatalogPage() {
     } finally {
       setTableLoading(false);
     }
-  }, [committedKeyword, database, syncQuery, tablePage]);
+  }, [committedKeyword, database, domainFilter, syncQuery, tablePage]);
 
   useEffect(() => { void loadTables(); }, [loadTables]);
 
@@ -205,6 +233,41 @@ export default function DataCatalogPage() {
     });
     return () => { active = false; };
   }, [selectedKey]);
+
+  useEffect(() => {
+    if (!selected) {
+      setDomainId(undefined);
+      return;
+    }
+    let active = true;
+    void getAssetDomainAssignment('HIVE', 'hive', selected.db, selected.table)
+      .then((value) => { if (active) setDomainId(value.domainId); })
+      .catch(() => { if (active) setDomainId(undefined); });
+    return () => { active = false; };
+  }, [selected, selectedKey]);
+
+  const changeDomain = async (nextDomainId?: number) => {
+    if (!selected) return;
+    setDomainSaving(true);
+    try {
+      if (nextDomainId) {
+        await assignAssetDomain({
+          assetType: 'HIVE', catalogName: 'hive', databaseName: selected.db,
+          tableName: selected.table, domainId: nextDomainId,
+        });
+        setDomainId(nextDomainId);
+        message.success('业务域已关联');
+      } else {
+        await unassignAssetDomain('HIVE', 'hive', selected.db, selected.table);
+        setDomainId(undefined);
+        message.success('业务域关联已解除');
+      }
+    } catch (error) {
+      message.error(`更新业务域失败：${(error as Error).message}`);
+    } finally {
+      setDomainSaving(false);
+    }
+  };
 
   useEffect(() => {
     if (!selected || activeTab === 'columns') return;
@@ -473,6 +536,19 @@ export default function DataCatalogPage() {
                 syncQuery(value, committedKeyword);
               }}
             />
+            <Select
+              allowClear
+              showSearch
+              optionFilterProp="label"
+              value={domainFilter}
+              placeholder="全部业务域"
+              options={domainOptions.map((item) => ({ value: item.id, label: `${item.name} (${item.code})` }))}
+              onChange={(value) => {
+                setDomainFilter(value);
+                setTablePage(1);
+                setSelected(undefined);
+              }}
+            />
             <div className="catalog-search-row">
               <Input
                 allowClear
@@ -542,6 +618,22 @@ export default function DataCatalogPage() {
                     { key: 'owner', label: '负责人', children: detail.table.owner || '-' },
                     { key: 'fields', label: '字段数', children: columnRows.length },
                     { key: 'source', label: '数据来源', children: detail.source },
+                    { key: 'lineage', label: '血缘', children: <Button type="link" onClick={() => navigate(`/data-map/lineage?catalog=hive&database=${detail.table.db}&table=${detail.table.table}`)}>查看全局血缘</Button> },
+                    {
+                      key: 'domain', label: '业务域', children: (
+                        <Select
+                          allowClear
+                          showSearch
+                          optionFilterProp="label"
+                          loading={domainSaving}
+                          value={domainId}
+                          placeholder="未归属业务域"
+                          style={{ minWidth: 180 }}
+                          options={domainOptions.map((item) => ({ value: item.id, label: `${item.name} (${item.code})` }))}
+                          onChange={(value) => void changeDomain(value)}
+                        />
+                      ),
+                    },
                     { key: 'comment', label: '表注释', children: detail.table.comment || '-' },
                     { key: 'location', label: '存储位置', span: 2, children: <code className="catalog-location">{detail.table.location || '-'}</code> },
                   ]}

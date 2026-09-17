@@ -28,14 +28,13 @@ app:
     hadoop-bin: ${HADOOP_BIN:hadoop}
     yarn-bin: ${YARN_BIN:yarn}
     yarn-web-url: ${YARN_WEB_URL:http://127.0.0.1:8088}
+    yarn-queue: ${YARN_QUEUE:root.default}
     submit-jar: ${REALTIME_SUBMIT_JAR:../realtime-task-submit/target/realtime-task-submit.jar}
     submission-dir: ${REALTIME_SUBMISSION_DIR:/tmp/sql-agent/realtime/submissions}
     submission-uri-prefix: ${REALTIME_SUBMISSION_URI_PREFIX:hdfs://127.0.0.1:8020/realtime-platform/task-submit/submissions}
     paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:./lib/paimon-flink-action-1.4.2.jar}
     paimon-warehouse: ${PAIMON_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon_debug}
-    paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
-    target-database: ${PAIMON_TARGET_DATABASE:ods_real}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:hdfs://127.0.0.1:8020/flink/checkpoints/sql-agent}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:hdfs://127.0.0.1:8020/flink/savepoints/sql-agent}
     catalog-conf:

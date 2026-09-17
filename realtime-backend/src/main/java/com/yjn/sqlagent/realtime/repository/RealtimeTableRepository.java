@@ -38,6 +38,12 @@ public class RealtimeTableRepository {
             where.append(" AND (CAST(r.producer_task_id AS CHAR) LIKE :producer OR t.task_name LIKE :producer)");
             params.addValue("producer", "%" + producer + "%");
         }
+        String businessDomainId = text(query.get("businessDomainId"));
+        if (!businessDomainId.isEmpty()) {
+            where.append(" AND EXISTS (SELECT 1 FROM rt_asset_business_domain_relation ar "
+                    + "WHERE ar.asset_type='PAIMON' AND ar.realtime_table_id=r.id AND ar.domain_id=:businessDomainId)");
+            params.addValue("businessDomainId", businessDomainId);
+        }
         Long total = named.queryForObject("SELECT COUNT(*) FROM rt_realtime_table r LEFT JOIN rt_task t ON t.id=r.producer_task_id" + where, params, Long.class);
         params.addValue("limit", pageSize).addValue("offset", (page - 1) * pageSize);
         List<Map<String, Object>> records = named.queryForList("SELECT r.id,r.catalog_name catalogName,r.database_name databaseName,"

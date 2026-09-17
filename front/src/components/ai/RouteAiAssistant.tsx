@@ -39,7 +39,7 @@ export function resolveRouteAiContext(pathname: string, search = ''): RouteConte
   };
   if ((found = match(/^\/data-compares\/(\d+)/))) return { type: 'DATA_COMPARE', title: `验数任务 #${found[1]}`, entityId: found[1] };
   if (pathname.startsWith('/data-compares')) return { type: 'DATA_COMPARE', title: '数据验数' };
-  if (pathname.startsWith('/catalog')) return { type: 'CATALOG_TABLE', title: '数据目录', entityId: params.get('table') ?? undefined };
+  if (pathname.startsWith('/catalog') || pathname.startsWith('/data-map/catalog')) return { type: 'CATALOG_TABLE', title: '数据目录', entityId: params.get('table') ?? undefined };
   if ((found = match(/^\/realtime\/sync-tasks\/(\d+)/))) return { type: 'REALTIME_SYNC_TASK', title: `实时同步任务 #${found[1]}`, entityId: found[1] };
   if (pathname.startsWith('/realtime/sync-tasks')) return { type: 'REALTIME_SYNC_TASK', title: '实时同步任务' };
   if ((found = match(/^\/realtime\/compute\/(\d+)/))) return { type: 'REALTIME_COMPUTE_TASK', title: `实时计算任务 #${found[1]}`, entityId: found[1] };

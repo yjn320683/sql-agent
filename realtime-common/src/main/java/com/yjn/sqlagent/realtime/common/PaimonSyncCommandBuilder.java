@@ -41,7 +41,8 @@ public class PaimonSyncCommandBuilder {
         String warehouse = "DEBUG".equalsIgnoreCase(spec.getExecutionMode())
                 ? first(runtime.getPaimonDebugWarehouse(), runtime.getPaimonWarehouse())
                 : runtime.getPaimonWarehouse();
-        String database = first(text(cdc.get("targetDatabase")), runtime.getTargetDatabase());
+        // 目标库由平台运行配置统一控制，任务快照中的旧值不得覆盖。
+        String database = text(runtime.getTargetDatabase());
         List<String> args = new ArrayList<>();
         args.add("mysql_sync_database");
         option(args, "--warehouse", required(warehouse, "Paimon warehouse 未配置"));

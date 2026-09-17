@@ -125,6 +125,18 @@ public class RealtimePaimonCatalogService {
     }
 
     public Map<String, Object> safeAlter(String database, String tableName, Map<String, Object> request) {
+        List<SchemaChange> changes = safeChanges(request);
+        try (Catalog catalog = catalog()) {
+            Identifier identifier = Identifier.create(database, tableName);
+            catalog.alterTable(identifier, changes, false);
+            return describe(catalog.getTable(identifier));
+        } catch (Exception ex) { throw failure("更新 Paimon 实时表失败", ex); }
+    }
+
+    /** 与实际 safeAlter 共用规则，但不访问或修改物理 Catalog。 */
+    public void validateSafeAlter(Map<String,Object>request) { safeChanges(request); }
+
+    private List<SchemaChange> safeChanges(Map<String,Object> request) {
         List<SchemaChange> changes = new ArrayList<>();
         if (request.containsKey("comment")) changes.add(SchemaChange.updateComment(text(request.get("comment"))));
         for (Map<String, Object> column : maps(request.get("addColumns"))) {
@@ -145,11 +157,7 @@ public class RealtimePaimonCatalogService {
             changes.add(SchemaChange.setOption(key, value));
         });
         if (changes.isEmpty()) throw new IllegalArgumentException("没有可应用的安全变更");
-        try (Catalog catalog = catalog()) {
-            Identifier identifier = Identifier.create(database, tableName);
-            catalog.alterTable(identifier, changes, false);
-            return describe(catalog.getTable(identifier));
-        } catch (Exception ex) { throw failure("更新 Paimon 实时表失败", ex); }
+        return changes;
     }
 
     private Catalog catalog() {

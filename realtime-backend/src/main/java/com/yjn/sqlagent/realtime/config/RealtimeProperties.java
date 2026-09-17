@@ -8,6 +8,9 @@ import org.springframework.stereotype.Component;
 @Component
 @ConfigurationProperties(prefix = "app.realtime")
 public class RealtimeProperties {
+    public static final String SYNC_TASK_TARGET_DATABASE = "ods_rt";
+    public static final String SYNC_TASK_DEBUG_TARGET_DATABASE = "paimon_debug";
+
     private boolean enabled = true;
     private long defaultProjectId = 1L;
     private String flinkBin = "flink";
@@ -15,20 +18,19 @@ public class RealtimeProperties {
     private String hadoopClasspath = "";
     private String yarnBin = "yarn";
     private String yarnWebUrl = "";
+    private String yarnQueue = "root.default";
     private String submitJar = "../realtime-task-submit/target/realtime-task-submit.jar";
     private String submissionDir = "/tmp/sql-agent-realtime/submissions";
     private String submissionUriPrefix = "";
     private String paimonActionJarPath = "";
     private String paimonWarehouse = "";
     private String paimonDebugWarehouse = "";
-    private String paimonDebugTargetDatabase = "paimon_debug";
-    private String targetDatabase = "";
     private String checkpointDir = "";
     private String savepointDir = "";
     private long syncDelayMs = 10000L;
     private boolean stateSyncEnabled = true;
     private int debugSuccessMinRunningMinutes = 2;
-    private Map<String, String> catalogConf = new LinkedHashMap<>();
+    private Map<String, String> catalogConf = defaultCatalogConf();
     private Map<String, String> defaultTableConf = new LinkedHashMap<>();
     private Map<String, String> mysqlDefaultConf = new LinkedHashMap<>();
 
@@ -46,6 +48,13 @@ public class RealtimeProperties {
     public void setYarnBin(String value) { yarnBin = value; }
     public String getYarnWebUrl() { return yarnWebUrl; }
     public void setYarnWebUrl(String value) { yarnWebUrl = value; }
+    public String getYarnQueue() { return yarnQueue; }
+    public void setYarnQueue(String value) { yarnQueue = value; }
+    public String resolveYarnQueue() {
+        String value = yarnQueue == null ? "" : yarnQueue.trim();
+        if (value.isEmpty()) throw new IllegalStateException("app.realtime.yarn-queue 未配置");
+        return value;
+    }
     public String getSubmitJar() { return submitJar; }
     public void setSubmitJar(String value) { submitJar = value; }
     public String getSubmissionDir() { return submissionDir; }
@@ -58,10 +67,10 @@ public class RealtimeProperties {
     public void setPaimonWarehouse(String value) { paimonWarehouse = value; }
     public String getPaimonDebugWarehouse() { return paimonDebugWarehouse; }
     public void setPaimonDebugWarehouse(String value) { paimonDebugWarehouse = value; }
-    public String getPaimonDebugTargetDatabase() { return paimonDebugTargetDatabase; }
-    public void setPaimonDebugTargetDatabase(String value) { paimonDebugTargetDatabase = value; }
-    public String getTargetDatabase() { return targetDatabase; }
-    public void setTargetDatabase(String value) { targetDatabase = value; }
+    public String getPaimonDebugTargetDatabase() { return SYNC_TASK_DEBUG_TARGET_DATABASE; }
+    public void setPaimonDebugTargetDatabase(String value) { /* 平台固定值，保留绑定兼容。 */ }
+    public String getTargetDatabase() { return SYNC_TASK_TARGET_DATABASE; }
+    public void setTargetDatabase(String value) { /* 平台固定值，保留绑定兼容。 */ }
     public String getCheckpointDir() { return checkpointDir; }
     public void setCheckpointDir(String value) { checkpointDir = value; }
     public String getSavepointDir() { return savepointDir; }
@@ -78,4 +87,11 @@ public class RealtimeProperties {
     public void setDefaultTableConf(Map<String, String> value) { defaultTableConf = value; }
     public Map<String, String> getMysqlDefaultConf() { return mysqlDefaultConf; }
     public void setMysqlDefaultConf(Map<String, String> value) { mysqlDefaultConf = value; }
+
+    private static Map<String, String> defaultCatalogConf() {
+        Map<String, String> result = new LinkedHashMap<>();
+        result.put("metastore", "hive");
+        result.put("hive.metastore.uri.selection", "SEQUENTIAL");
+        return result;
+    }
 }

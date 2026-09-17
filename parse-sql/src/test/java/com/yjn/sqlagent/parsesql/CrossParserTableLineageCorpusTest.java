@@ -9,6 +9,7 @@ import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.security.MessageDigest;
 import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.ResultSet;
@@ -109,7 +110,7 @@ class CrossParserTableLineageCorpusTest {
                         Comparison comparison = compare(currentResult, antlrResult, relationResult);
                         increment(counters, comparison.category);
                         if (!comparison.agreement) {
-                            mismatches.add(new Mismatch(taskId, statementIndex, comparison.decision,
+                            mismatches.add(new Mismatch(taskId, statementIndex, sha256(sql), comparison.decision,
                                     currentResult, antlrResult, relationResult));
                         }
                     }
@@ -126,7 +127,7 @@ class CrossParserTableLineageCorpusTest {
 
         writeReport(counters, mismatches);
         assertEquals(0, counters.getOrDefault("CURRENT_EXCEPTION", 0),
-                "当前解析器存在未捕获异常，任务 ID 见 target/sql-table-lineage-comparison.txt");
+                "当前解析器存在未捕获异常，任务 ID 见语料差异报告");
     }
 
     private ParserResult parseCurrent(SqlLineageParser parser, String sql) {
@@ -218,13 +219,17 @@ class CrossParserTableLineageCorpusTest {
         for (Mismatch mismatch : mismatches) {
             report.append("taskId=").append(safe(mismatch.taskId)).append('\n');
             report.append("statementIndex=").append(mismatch.statementIndex).append('\n');
+            report.append("sqlHash=").append(mismatch.sqlHash).append('\n');
             report.append("decision=").append(mismatch.decision).append('\n');
             appendResult(report, "current", mismatch.current);
             appendResult(report, "antlr4Study", mismatch.antlr);
             appendResult(report, "parseSqlRelation", mismatch.relation);
             report.append('\n');
         }
-        Path output = Path.of("target", "sql-table-lineage-comparison.txt");
+        Path output = Path.of(settingOrDefault(
+                "sql.corpus.comparison.report",
+                "SQL_CORPUS_COMPARISON_REPORT",
+                "../docs/testing/results/2026-09-17-sql-table-lineage-comparison.txt"));
         Files.createDirectories(output.getParent());
         Files.writeString(output, report.toString(), StandardCharsets.UTF_8);
     }
@@ -257,6 +262,18 @@ class CrossParserTableLineageCorpusTest {
 
     private static String safe(String value) {
         return value == null ? "" : value.replaceAll("[\\r\\n=]", "_");
+    }
+
+    private static String sha256(String value) {
+        try {
+            byte[] digest = MessageDigest.getInstance("SHA-256")
+                    .digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : digest) result.append(String.format("%02x", item));
+            return result.toString();
+        } catch (Exception error) {
+            throw new IllegalStateException("cannot calculate SQL hash", error);
+        }
     }
 
     private static void increment(Map<String, Integer> counters, String key) {
@@ -360,7 +377,8 @@ class CrossParserTableLineageCorpusTest {
             Throwable root = error;
             while ((root instanceof InvocationTargetException || root instanceof ExecutionException)
                     && root.getCause() != null) root = root.getCause();
-            String detail = root == null ? status : root.getClass().getSimpleName();
+            String detail = root == null ? status : root.getClass().getSimpleName()
+                    + (root.getMessage() == null ? "" : ":" + safe(root.getMessage()));
             return new ParserResult(false, true, status, Collections.emptySet(), Collections.emptySet(),
                     Collections.singletonList(detail));
         }
@@ -406,13 +424,15 @@ class CrossParserTableLineageCorpusTest {
     private static final class Mismatch {
         final String taskId;
         final int statementIndex;
+        final String sqlHash;
         final String decision;
         final ParserResult current;
         final ParserResult antlr;
         final ParserResult relation;
-        Mismatch(String taskId, int statementIndex, String decision, ParserResult current,
+        Mismatch(String taskId, int statementIndex, String sqlHash, String decision, ParserResult current,
                  ParserResult antlr, ParserResult relation) {
-            this.taskId = taskId; this.statementIndex = statementIndex; this.decision = decision;
+            this.taskId = taskId; this.statementIndex = statementIndex; this.sqlHash = sqlHash;
+            this.decision = decision;
             this.current = current; this.antlr = antlr; this.relation = relation;
         }
     }

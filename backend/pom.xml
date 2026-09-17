@@ -30,6 +30,11 @@
     <dependencies>
         <dependency>
             <groupId>com.yjn</groupId>
+            <artifactId>sql-agent-data-map</artifactId>
+            <version>${project.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>com.yjn</groupId>
             <artifactId>sql-agent-parse-sql</artifactId>
             <version>${project.version}</version>
         </dependency>

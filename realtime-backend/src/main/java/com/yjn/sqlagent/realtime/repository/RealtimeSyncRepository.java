@@ -6,6 +6,7 @@ import com.yjn.sqlagent.realtime.common.PaimonSyncOptionValidator;
 import com.yjn.sqlagent.realtime.config.RealtimeProperties;
 import com.yjn.sqlagent.realtime.model.ServerRequest;
 import com.yjn.sqlagent.realtime.model.SyncTaskRequest;
+import com.yjn.sqlagent.datamap.store.LineageOutboxService;
 import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
@@ -23,6 +24,7 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Pattern;
 import org.springframework.dao.DuplicateKeyException;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.core.namedparam.MapSqlParameterSource;
 import org.springframework.jdbc.core.namedparam.NamedParameterJdbcTemplate;
@@ -45,6 +47,8 @@ public class RealtimeSyncRepository {
     private final NamedParameterJdbcTemplate named;
     private final ObjectMapper mapper;
     private final RealtimeProperties properties;
+    private LineageRelationRepository lineageRelations;
+    private LineageOutboxService lineageOutbox;
 
     public RealtimeSyncRepository(JdbcTemplate jdbc, ObjectMapper mapper, RealtimeProperties properties) {
         this.jdbc = jdbc;
@@ -52,6 +56,13 @@ public class RealtimeSyncRepository {
         this.mapper = mapper;
         this.properties = properties;
     }
+
+    @Autowired(required = false)
+    void setLineageRelations(LineageRelationRepository lineageRelations) {
+        this.lineageRelations = lineageRelations;
+    }
+    @Autowired(required = false)
+    void setLineageOutbox(LineageOutboxService value) { this.lineageOutbox = value; }
 
     public Map<String, Object> taskPage(Map<String, String> query) {
         int page = positive(query.get("page"), 1);
@@ -78,15 +89,16 @@ public class RealtimeSyncRepository {
         if (!sourceKeyword.isEmpty()) {
             where.append(" AND EXISTS (SELECT 1 FROM rt_sync_task_table_mapping fm"
                     + " LEFT JOIN rt_server fs ON fs.id=fm.source_server_id WHERE fm.task_id=t.id AND ("
-                    + "fs.name LIKE :sourceKeyword OR fm.source_database LIKE :sourceKeyword"
-                    + " OR fm.source_table LIKE :sourceKeyword"
-                    + " OR CONCAT_WS('.',fm.source_database,fm.source_table) LIKE :sourceKeyword))");
+                    + "fs.name LIKE :sourceKeyword OR CONVERT(fm.source_database USING utf8mb4) COLLATE utf8mb4_bin LIKE :sourceKeyword"
+                    + " OR CONVERT(fm.source_table USING utf8mb4) COLLATE utf8mb4_bin LIKE :sourceKeyword"
+                    + " OR CONVERT(CONCAT_WS('.',fm.source_database,fm.source_table) USING utf8mb4) COLLATE utf8mb4_bin LIKE :sourceKeyword))");
             params.addValue("sourceKeyword", "%" + sourceKeyword + "%");
         }
         if (!targetKeyword.isEmpty()) {
             where.append(" AND EXISTS (SELECT 1 FROM rt_sync_task_table_mapping fm WHERE fm.task_id=t.id AND ("
-                    + "fm.target_database LIKE :targetKeyword OR fm.target_table LIKE :targetKeyword"
-                    + " OR CONCAT_WS('.',fm.target_database,fm.target_table) LIKE :targetKeyword))");
+                    + "CONVERT(fm.target_database USING utf8mb4) COLLATE utf8mb4_bin LIKE :targetKeyword"
+                    + " OR CONVERT(fm.target_table USING utf8mb4) COLLATE utf8mb4_bin LIKE :targetKeyword"
+                    + " OR CONVERT(CONCAT_WS('.',fm.target_database,fm.target_table) USING utf8mb4) COLLATE utf8mb4_bin LIKE :targetKeyword))");
             params.addValue("targetKeyword", "%" + targetKeyword + "%");
         }
         Long total = named.queryForObject("SELECT COUNT(*) FROM rt_task t JOIN rt_sync_task_config c ON c.task_id=t.id"
@@ -235,7 +247,7 @@ public class RealtimeSyncRepository {
             PreparedStatement ps = connection.prepareStatement(
                     "INSERT INTO rt_task(project_id,task_name,task_type,flink_version,owner,description,status)"
                             + " VALUES(?,?,'sync',?,?,?,'not_running')", Statement.RETURN_GENERATED_KEYS);
-            ps.setLong(1, properties.getDefaultProjectId());
+            ps.setLong(1, request.getProjectId() == null ? properties.getDefaultProjectId() : request.getProjectId());
             ps.setString(2, request.getName().trim());
             ps.setString(3, text(request.getFlinkVersion(), "2.2.1"));
             ps.setString(4, text(request.getOwner(), actor));
@@ -426,6 +438,49 @@ public class RealtimeSyncRepository {
             return ps;
         }, holder);
         return requiredKey(holder);
+    }
+
+    private void insertSyncLineageSnapshot(long taskId, long versionId, int versionNo,
+                                           Map<String, Object> snapshot, Map<String, Object> config) {
+        Map<String, Object> cdc = objectMap(config.get("cdcConfig"));
+        long sourceServerId = snapshot.get("sourceServerId") instanceof Number
+                ? ((Number) snapshot.get("sourceServerId")).longValue() : 0L;
+        String sourceDatabase = text(cdc.get("databaseName"), sourceServerId > 0
+                ? text(requiredServer(sourceServerId, false).get("databaseName")) : "");
+        String targetDatabase = text(snapshot.get("targetDatabase"));
+        String prefix = text(cdc.get("tablePrefix"));
+        String suffix = text(cdc.get("tableSuffix"));
+        List<Map<String, Object>> inputs = new ArrayList<>(), outputs = new ArrayList<>();
+        for (String table : strings(cdc.get("selectedTables"))) {
+            inputs.add(lineageTable("mysql", sourceDatabase, table));
+            outputs.add(lineageTable("paimon", targetDatabase, prefix + table + suffix));
+        }
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("statementCount", inputs.size()); facts.put("inputs", inputs); facts.put("outputs", outputs);
+        facts.put("statements", List.of()); facts.put("diagnostics", List.of()); facts.put("complete", true);
+        KeyHolder holder = new GeneratedKeyHolder();
+        jdbc.update(connection -> {
+            PreparedStatement ps = connection.prepareStatement(
+                    "INSERT INTO task_lineage_snapshot(task_scope,task_id,version_id,version_no,sql_checksum,dialect,default_database,parser_version,snapshot_source,complete_flag,lineage_json,diagnostics_json) VALUES('REALTIME',?,?,?,?,'FLINK',?,'parse-sql-v2','SAVED',1,?,?)",
+                    Statement.RETURN_GENERATED_KEYS);
+            ps.setLong(1, taskId); ps.setLong(2, versionId); ps.setInt(3, versionNo);
+            ps.setString(4, sha256(json(snapshot))); ps.setString(5, targetDatabase);
+            ps.setString(6, json(facts)); ps.setString(7, "[]"); return ps;
+        }, holder);
+        Number snapshotId = holder.getKey();
+        if (snapshotId != null && lineageRelations != null) {
+            lineageRelations.index(snapshotId.longValue(), "REALTIME", taskId, versionId, versionNo, facts);
+        }
+        if (snapshotId != null && lineageOutbox != null) {
+            lineageOutbox.enqueue(snapshotId.longValue(), "REALTIME", taskId, versionId, versionNo);
+        }
+    }
+
+    private Map<String, Object> lineageTable(String catalog, String database, String table) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("catalog", catalog); value.put("db", database); value.put("table", table);
+        value.put("qualifiedName", catalog + "." + database + "." + table); value.put("dynamic", false);
+        return value;
     }
 
     public void updateInstanceSubmission(long instanceId, String status, String jobId, String applicationId,
@@ -1131,7 +1186,11 @@ public class RealtimeSyncRepository {
             ps.setLong(1, taskId); ps.setInt(2, version == null ? 1 : version);
             ps.setString(3, json(snapshot)); ps.setString(4, actor); return ps;
         }, holder);
-        return requiredKey(holder);
+        long versionId = requiredKey(holder);
+        if (lineageRelations != null) {
+            insertSyncLineageSnapshot(taskId, versionId, version == null ? 1 : version, snapshot, config);
+        }
+        return versionId;
     }
 
     void rebuildMappings(long taskId, long serverId, String targetDatabase, Map<String, Object> config, String actor) {

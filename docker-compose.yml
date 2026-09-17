@@ -1,4 +1,25 @@
 services:
+  neo4j:
+    container_name: sql-agent-neo4j
+    image: neo4j:5.26-community
+    restart: unless-stopped
+    environment:
+      NEO4J_AUTH: ${DATA_MAP_NEO4J_AUTH:-neo4j/sql-agent-map}
+      NEO4J_server_memory_heap_initial__size: ${DATA_MAP_NEO4J_HEAP_INITIAL:-512m}
+      NEO4J_server_memory_heap_max__size: ${DATA_MAP_NEO4J_HEAP_MAX:-1g}
+      NEO4J_server_memory_pagecache_size: ${DATA_MAP_NEO4J_PAGECACHE:-512m}
+    ports:
+      - "127.0.0.1:${DATA_MAP_NEO4J_HTTP_PORT:-7474}:7474"
+      - "127.0.0.1:${DATA_MAP_NEO4J_BOLT_PORT:-7687}:7687"
+    volumes:
+      - data-map-neo4j:/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1:7474/ || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
   agent:
     container_name: sql-agent-agent
     build:
@@ -30,3 +51,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 20s
+
+volumes:
+  data-map-neo4j:

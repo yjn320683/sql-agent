@@ -16,6 +16,8 @@ import RealtimeAlertTable from './RealtimeAlertTable';
 import RealtimeInstanceStopModal from './RealtimeInstanceStopModal';
 import RealtimeInstanceList from './RealtimeInstanceList';
 import RealtimeChangeLogTable from './RealtimeChangeLogTable';
+import { analyzeAssetImpact } from '../../api/assets';
+import { ImpactSummary } from './RealtimeTableLifecyclePanels';
 
 interface Props {
   task?: SyncTask;
@@ -40,6 +42,11 @@ const displayValue = (input: unknown) => {
   if (typeof input === 'object') return JSON.stringify(input);
   return String(input);
 };
+
+export const schemaImpactColumns = (event: SyncSchemaChange) => [
+  ...(event.change?.addColumns ?? []).map((column) => column.name),
+  ...(event.change?.incompatibleColumns ?? []).map((column) => String(column.column ?? column.name ?? column.columnName ?? '')).filter(Boolean),
+];
 
 const objectValue = (input: unknown) => input && typeof input === 'object' && !Array.isArray(input)
   ? input as Record<string, unknown> : {};
@@ -339,6 +346,27 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     });
   };
 
+  const showSchemaImpact = async (event: SyncSchemaChange) => {
+    try {
+      const columns = schemaImpactColumns(event);
+      const impact = await analyzeAssetImpact({
+        catalog: 'paimon',
+        database: event.targetDatabase,
+        table: event.targetTable,
+        columns,
+        changeType: event.changeType === 'INCOMPATIBLE' ? 'INCOMPATIBLE_SCHEMA_CHANGE' : 'COMPATIBLE_SCHEMA_CHANGE',
+      });
+      Modal.info({
+        title: `Schema 变更影响 · ${event.targetDatabase}.${event.targetTable}`,
+        content: <ImpactSummary value={impact} />,
+        width: 900,
+        okText: '关闭',
+      });
+    } catch (error) {
+      message.error((error as Error).message);
+    }
+  };
+
   if (!task) return null;
   const snapshotFinished = syncProgress?.snapshotFinished;
   const snapshotRemaining = syncProgress?.snapshotRemaining;
@@ -375,7 +403,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
               { title: '检测时间', dataIndex: 'detectedAt', width: 180 }, { title: '源表', width: 240, render: (_, row) => `${row.sourceDatabase}.${row.sourceTable}` }, { title: '目标表', width: 260, render: (_, row) => `${row.targetDatabase}.${row.targetTable}` },
               { title: '变更类型', dataIndex: 'changeType', width: 150, render: (value) => value === 'ADD_COLUMNS' ? '新增字段' : value === 'INCOMPATIBLE' ? '类型不兼容' : value },
               { title: '说明', dataIndex: 'message' }, { title: '状态', dataIndex: 'status', width: 110, render: (value) => <Tag color={value === 'APPLIED' ? 'success' : value === 'BLOCKED' ? 'error' : 'processing'}>{value === 'APPLIED' ? '已应用' : value === 'BLOCKED' ? '需人工处理' : '待应用'}</Tag> },
-              { title: '操作', fixed: 'right', width: 150, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `Schema 变更 #${row.id}`, value: row.change })}>查看</Typography.Link>{row.status === 'PENDING' && row.changeType === 'ADD_COLUMNS' && <Button type="link" size="small" loading={handlingId === row.id} onClick={() => applySchema(row)}>应用</Button>}</Space> },
+              { title: '操作', fixed: 'right', width: 210, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `Schema 变更 #${row.id}`, value: row.change })}>查看</Typography.Link><Typography.Link onClick={() => void showSchemaImpact(row)}>查看影响</Typography.Link>{row.status === 'PENDING' && row.changeType === 'ADD_COLUMNS' && <Button type="link" size="small" loading={handlingId === row.id} onClick={() => applySchema(row)}>应用</Button>}</Space> },
             ]} /></> },
           ]} />
         </div> },

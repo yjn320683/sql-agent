@@ -7,6 +7,7 @@ import java.sql.DatabaseMetaData;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -58,6 +59,23 @@ public class RealtimeServerService {
         Map<String, Object> schema = schemas.get(table);
         if (schema == null) throw new IllegalStateException("读取 MySQL 表结构失败：" + table + " 不存在");
         return schema;
+    }
+
+    /** DDL 只读取 Server 已配置的数据库，调用方不能通过参数跨库访问。 */
+    public Map<String, Object> ddl(long serverId, String table) {
+        Map<String, Object> server = repository.requiredServer(serverId, true);
+        String database = text(server.get("databaseName"));
+        String tableName = table == null ? "" : table.trim();
+        if (database.isEmpty()) throw new IllegalArgumentException("Server 未配置数据库");
+        if (tableName.isEmpty() || tableName.indexOf('\0') >= 0) throw new IllegalArgumentException("源表名不能为空");
+        try (Connection connection = connection(server);
+             Statement statement = connection.createStatement();
+             ResultSet rows = statement.executeQuery("SHOW CREATE TABLE " + quoteIdentifier(tableName))) {
+            if (!rows.next()) throw new IllegalStateException("源表不存在：" + tableName);
+            return Map.of("database", database, "table", tableName, "ddl", rows.getString(2));
+        } catch (Exception ex) {
+            throw new IllegalStateException("读取 MySQL 表 DDL 失败：" + safe(ex), ex);
+        }
     }
 
     /** 同一批源表复用一个 JDBC 连接，避免同步任务校验随表数重复建连。 */
@@ -116,6 +134,7 @@ public class RealtimeServerService {
         String value = ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
         return value.replaceAll("(?i)(password=)[^&\\s]+", "$1******");
     }
+    private String quoteIdentifier(String value) { return "`" + value.replace("`", "``") + "`"; }
     private Map<String, Map<String, Object>> readSchemas(Connection connection, String database,
             List<String> tableNames) throws Exception {
         Map<String, Map<String, Object>> result = new LinkedHashMap<>();

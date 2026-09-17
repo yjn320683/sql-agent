@@ -1,6 +1,7 @@
 package com.yjn.sqlagent.realtime.service;
 
 import com.yjn.sqlagent.realtime.repository.RealtimeTableRepository;
+import com.yjn.sqlagent.realtime.repository.RealtimeTableSchemaVersionRepository;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -8,15 +9,20 @@ import java.util.Map;
 import java.util.TreeMap;
 import org.springframework.stereotype.Service;
 import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.beans.factory.annotation.Autowired;
 
 @Service
 public class RealtimeTableService {
     private final RealtimeTableRepository repository;
     private final RealtimePaimonCatalogService catalog;
+    private RealtimeTableSchemaVersionRepository schemaVersions;
 
     public RealtimeTableService(RealtimeTableRepository repository, RealtimePaimonCatalogService catalog) {
         this.repository = repository; this.catalog = catalog;
     }
+
+    @Autowired(required = false)
+    void setSchemaVersions(RealtimeTableSchemaVersionRepository schemaVersions) { this.schemaVersions = schemaVersions; }
 
     public Map<String, Object> create(Map<String, Object> request, String actor) {
         String database = text(request.get("databaseName"));
@@ -25,7 +31,7 @@ public class RealtimeTableService {
             throw new IllegalStateException("实时表已登记：" + database + "." + tableName);
         }
         long id = repository.createDeclared(request, actor);
-        try { repository.markPhysical(id, catalog.create(request), actor); }
+        try { Map<String,Object> physical=catalog.create(request); repository.markPhysical(id, physical, actor); record(id,physical,"CREATE",actor,null); }
         catch (RuntimeException ex) { repository.markError(id, ex, actor); throw ex; }
         return repository.required(id);
     }
@@ -34,7 +40,7 @@ public class RealtimeTableService {
         Map<String, Object> table = repository.required(id);
         try {
             Map<String, Object> physical = catalog.describe(text(table.get("databaseName")), text(table.get("tableName")));
-            repository.markPhysical(id, physical, actor); return repository.required(id);
+            repository.markPhysical(id, physical, actor); record(id,physical,"MANUAL_REFRESH",actor,null); return repository.required(id);
         } catch (RuntimeException ex) { repository.markError(id, ex, actor); throw ex; }
     }
 
@@ -44,11 +50,17 @@ public class RealtimeTableService {
             throw new IllegalStateException("同步任务维护的表结构只能由同步任务演进");
         }
         Map<String, Object> physical = catalog.safeAlter(text(table.get("databaseName")), text(table.get("tableName")), request);
-        repository.updateFromPhysical(id, request, physical, actor); return repository.required(id);
+        repository.updateFromPhysical(id, request, physical, actor); record(id,physical,"SAFE_UPDATE",actor,null); return repository.required(id);
     }
+
+    public Map<String,Object> validateSafeUpdate(long id,Map<String,Object>request){Map<String,Object>table=repository.required(id);if("sync".equals(table.get("creationSource"))&&request.containsKey("addColumns"))throw new IllegalStateException("同步任务维护的表结构只能由同步任务演进");catalog.validateSafeAlter(request);return table;}
 
     /** 仅供同步 Schema 演进流程调用；依然只允许 Paimon Catalog 支持的安全增量变更。 */
     public Map<String, Object> applySyncEvolution(long id, Map<String, Object> request, String actor) {
+        return applySyncEvolution(id, request, actor, null);
+    }
+
+    public Map<String, Object> applySyncEvolution(long id, Map<String, Object> request, String actor, Long sourceEventId) {
         Map<String, Object> table = repository.required(id);
         if (!"sync".equals(table.get("creationSource"))) {
             throw new IllegalStateException("该表不是同步任务维护的实时表");
@@ -58,6 +70,7 @@ public class RealtimeTableService {
         }
         Map<String, Object> physical = catalog.safeAlter(text(table.get("databaseName")), text(table.get("tableName")), request);
         repository.updateFromPhysical(id, request, physical, actor);
+        record(id,physical,"SYNC_EVOLUTION",actor,sourceEventId);
         return repository.required(id);
     }
 
@@ -120,10 +133,11 @@ public class RealtimeTableService {
     public void discoverSyncTables() {
         List<Map<String,Object>> declared = repository.declaredSyncTables();
         if (declared.isEmpty()) return;
-        try { catalog.describeExisting(declared).forEach((id, physical) -> repository.markPhysical(id, physical, "system")); }
+        try { catalog.describeExisting(declared).forEach((id, physical) -> { repository.markPhysical(id, physical, "system"); record(id,physical,"SCHEDULED_REFRESH","system",null); }); }
         catch (RuntimeException ignored) { /* Catalog 暂时不可用时由下一轮重试。 */ }
     }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
+    private void record(long id,Map<String,Object>physical,String source,String actor,Long sourceEventId){if(schemaVersions!=null)schemaVersions.record(id,physical,source,actor,sourceEventId);}
     private boolean bool(Object value) { return Boolean.TRUE.equals(value) || "true".equalsIgnoreCase(text(value)) || "1".equals(text(value)); }
     private boolean boolDefault(Object value, boolean fallback) { return value == null ? fallback : bool(value); }
     private String quoteIdentifier(String value) { return "`" + value.replace("`", "``") + "`"; }

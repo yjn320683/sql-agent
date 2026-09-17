@@ -3,6 +3,7 @@ package com.yjn.sqlagent.realtime.controller;
 import com.yjn.sqlagent.realtime.common.RealtimeActorProvider;
 import com.yjn.sqlagent.realtime.common.RealtimeResponse;
 import com.yjn.sqlagent.realtime.repository.RealtimeTableRepository;
+import com.yjn.sqlagent.realtime.repository.RealtimeTableSchemaVersionRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeTableService;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -19,9 +20,9 @@ import org.springframework.web.bind.annotation.RestController;
 @RequestMapping("/api/realtime/tables")
 public class RealtimeTableController {
     private final RealtimeTableRepository repository; private final RealtimeTableService service;
-    private final RealtimeActorProvider actors;
-    public RealtimeTableController(RealtimeTableRepository repository, RealtimeTableService service, RealtimeActorProvider actors) {
-        this.repository=repository; this.service=service; this.actors=actors;
+    private final RealtimeActorProvider actors; private final RealtimeTableSchemaVersionRepository schemaVersions;
+    public RealtimeTableController(RealtimeTableRepository repository, RealtimeTableService service, RealtimeActorProvider actors,RealtimeTableSchemaVersionRepository schemaVersions) {
+        this.repository=repository; this.service=service; this.actors=actors;this.schemaVersions=schemaVersions;
     }
     @GetMapping public RealtimeResponse<Map<String,Object>> page(@RequestParam Map<String,String> query) { actors.requireActor(); return RealtimeResponse.success(repository.page(query)); }
     @GetMapping("/available") public RealtimeResponse<List<Map<String,Object>>> available() { actors.requireActor(); return RealtimeResponse.success(repository.available()); }
@@ -31,4 +32,7 @@ public class RealtimeTableController {
     @GetMapping("/{id}/dependencies") public RealtimeResponse<List<Map<String,Object>>> dependencies(@PathVariable long id) { actors.requireActor(); return RealtimeResponse.success(repository.dependencies(id)); }
     @PostMapping("/{id}/refresh") public RealtimeResponse<Map<String,Object>> refresh(@PathVariable long id) { return RealtimeResponse.success(service.refresh(id,actors.requireActor())); }
     @PostMapping("/{id}/safe-update") public RealtimeResponse<Map<String,Object>> update(@PathVariable long id,@RequestBody Map<String,Object> request) { return RealtimeResponse.success(service.safeUpdate(id,new LinkedHashMap<>(request),actors.requireActor())); }
+    @GetMapping("/{id}/schema-versions") public RealtimeResponse<Map<String,Object>>schemaVersions(@PathVariable long id,@RequestParam(defaultValue="1")int page,@RequestParam(defaultValue="20")int pageSize){actors.requireActor();repository.required(id);return RealtimeResponse.success(schemaVersions.page(id,page,pageSize));}
+    @GetMapping("/{id}/schema-versions/{versionNo}") public RealtimeResponse<Map<String,Object>>schemaVersion(@PathVariable long id,@PathVariable int versionNo){actors.requireActor();repository.required(id);return RealtimeResponse.success(schemaVersions.detail(id,versionNo));}
+    @GetMapping("/{id}/schema-compare") public RealtimeResponse<Map<String,Object>>schemaCompare(@PathVariable long id,@RequestParam int fromVersion,@RequestParam int toVersion){actors.requireActor();repository.required(id);return RealtimeResponse.success(schemaVersions.compare(id,fromVersion,toVersion));}
 }

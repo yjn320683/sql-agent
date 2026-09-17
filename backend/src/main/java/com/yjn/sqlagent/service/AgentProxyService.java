@@ -55,10 +55,6 @@ public interface AgentProxyService {
 
     Map<String, Object> getTaskExecutionDiagnostics(long executionId);
 
-    Map<String, Object> getTaskLineage(long taskId, Integer versionNo, String defaultDb);
-
-    Map<String, Object> getTaskDependencies(long taskId, Integer versionNo, String defaultDb);
-
     Map<String, Object> checkTaskQuality(long taskId, Integer versionNo, String defaultDb);
 
     Map<String, Object> searchHiveTables(String pattern, String db, int limit, int offset);

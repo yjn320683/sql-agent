@@ -22,6 +22,7 @@ class PaimonSyncCommandBuilderTest {
 
         assertEquals("/data/paimon-action.jar", command.getJarPath());
         assertOption(command.getArguments(), "--including_tables", "orders|order_item");
+        assertOption(command.getArguments(), "--database", "ods_rt");
         assertOption(command.getArguments(), "--mode", "combined");
         assertOption(command.getArguments(), "--metadata_column", "database_name,table_name,op_ts");
         assertOption(command.getArguments(), "--metadata_column_prefix", "__meta_");
@@ -100,6 +101,7 @@ class PaimonSyncCommandBuilderTest {
         SubmissionSpec.RuntimeConfig runtime = new SubmissionSpec.RuntimeConfig();
         runtime.setPaimonActionJarPath("/data/paimon-action.jar");
         runtime.setPaimonWarehouse("hdfs:///warehouse");
+        runtime.setTargetDatabase("ods_rt");
         runtime.setCatalogConf(Map.of("metastore", "hive"));
         spec.setRuntimeConfig(runtime);
         SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();

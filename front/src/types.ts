@@ -984,6 +984,17 @@ export interface TaskLineageVO {
   inputs: SqlLineageTableVO[];
   outputs: SqlLineageTableVO[];
   ctes: SqlLineageCteVO[];
+  lineageMode?: 'VERSION_SNAPSHOT' | 'CURRENT_PARSER';
+  parserVersion?: string;
+  snapshot?: {
+    snapshotId?: number;
+    parserVersion?: string;
+    snapshotSource?: 'SAVED' | 'BACKFILLED';
+    complete?: boolean;
+    createdAt?: string;
+    sqlChecksum?: string;
+  };
+  diagnostics?: Array<{ code: string; severity: string; message: string; line?: number; column?: number }>;
   warnings: string[];
   complete: boolean;
   missingReasons: string[];

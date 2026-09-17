@@ -55,6 +55,7 @@ export interface SyncTaskConfig {
 }
 
 export interface SyncTaskSave {
+  projectId?: number;
   name: string;
   owner?: string;
   description?: string;
@@ -64,6 +65,12 @@ export interface SyncTaskSave {
   targetDatabase: string;
   taskConfig: SyncTaskConfig;
   expectedUpdateTime?: string;
+}
+
+export interface MysqlTableDdl {
+  database: string;
+  table: string;
+  ddl: string;
 }
 
 export interface SyncTask extends SyncTaskSave {
@@ -324,7 +331,7 @@ export interface SyncSchemaChange {
   targetTable?: string;
   changeType: 'ADD_COLUMNS' | 'INCOMPATIBLE' | string;
   status: 'PENDING' | 'APPLIED' | 'BLOCKED' | string;
-  change?: { addColumns?: RealtimeTableColumn[]; incompatibleColumns?: Array<Record<string, string>> };
+  change?: { addColumns?: RealtimeTableColumn[]; incompatibleColumns?: Array<{ column?: string; name?: string; columnName?: string; sourceType?: string; targetType?: string }> };
   detectedAt?: string;
   appliedBy?: string;
   appliedAt?: string;
@@ -433,6 +440,15 @@ export interface TaskParam {
 }
 
 export interface PaimonTablePrefixOption { label: string; value: string }
+export interface BusinessDomain {
+  id: number; code: string; name: string; description?: string; owner?: string; sortOrder: number;
+  enabled: boolean | number; disabledTime?: string; assetCount?: number; createTime?: string; updateTime?: string;
+}
+export interface AssetDomainAssignment {
+  id?: number; assetType?: 'HIVE' | 'PAIMON'; assetKey?: string; realtimeTableId?: number;
+  catalogName?: string; databaseName?: string; tableName?: string; domainId?: number;
+  domainCode?: string; domainName?: string; domainEnabled?: boolean | number; updatedBy?: string; updateTime?: string;
+}
 export interface RealtimeAlert {
   id: number; taskId: number; taskName: string; taskType?: ManagedTaskType | 'sync'; taskInstanceId?: number;
   ruleId?: number; ruleCode?: string; ruleName?: string; eventType?: string; severity: string;
@@ -462,6 +478,18 @@ export interface RealtimeTable {
   producerTaskId?: number; producerTaskName?: string; physicalStatus: 'declared' | 'active' | 'error';
   options: Record<string, string>; columns?: RealtimeTableColumn[]; dependencies?: ManagedTableReference[];
   columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string; ddl?: string; ddlError?: string;
+}
+export interface RealtimeSchemaDiff {
+  addedColumns: RealtimeTableColumn[]; removedColumns: RealtimeTableColumn[];
+  modifiedColumns: Array<{ name: string; changes: Record<string, { before?: unknown; after?: unknown }> }>;
+  optionChanges: Array<{ key: string; before?: unknown; after?: unknown }>; commentChanged: boolean;
+}
+export interface RealtimeSchemaVersion {
+  id: number; realtimeTableId: number; versionNo: number; schemaFingerprint: string;
+  changeSource: 'CREATE'|'MANUAL_REFRESH'|'SCHEDULED_REFRESH'|'SAFE_UPDATE'|'SYNC_EVOLUTION'|'BACKFILLED_BASELINE';
+  compatibility: 'BASELINE'|'COMPATIBLE'|'INCOMPATIBLE'; sourceEventId?: number; operator: string;
+  firstSeenAt: string; lastSeenAt: string; diff: RealtimeSchemaDiff;
+  schema?: { comment?: string; options?: Record<string,string>; columns?: RealtimeTableColumn[] };
 }
 export interface RealtimeTableCreateRequest {
   catalogName?: string; databaseName: string; tableName: string; tableComment?: string; comment?: string;

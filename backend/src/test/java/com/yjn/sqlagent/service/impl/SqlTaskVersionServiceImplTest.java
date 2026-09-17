@@ -19,6 +19,7 @@ import com.yjn.sqlagent.model.entity.SqlTaskVersion;
 import com.yjn.sqlagent.service.SqlTaskVersionService;
 import com.yjn.sqlagent.service.TaskSqlStructureService;
 import com.yjn.sqlagent.service.TaskVersionUnionService;
+import com.yjn.sqlagent.service.TaskLineageSnapshotService;
 import java.util.Collections;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -37,6 +38,8 @@ class SqlTaskVersionServiceImplTest {
     private SqlTaskVersionStepMapper stepMapper;
     @Mock
     private TaskVersionUnionService unionService;
+    @Mock
+    private TaskLineageSnapshotService lineageSnapshotService;
 
     @Test
     void createDraftAlwaysCopiesCurrentEffectiveCode() {
@@ -183,6 +186,6 @@ class SqlTaskVersionServiceImplTest {
         ObjectMapper objectMapper = new ObjectMapper();
         return new SqlTaskVersionServiceImpl(
                 taskMapper, versionMapper, stepMapper,
-                new TaskSqlStructureService(objectMapper), objectMapper, unionService);
+                new TaskSqlStructureService(objectMapper), objectMapper, unionService, lineageSnapshotService);
     }
 }

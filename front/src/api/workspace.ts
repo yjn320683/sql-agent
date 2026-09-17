@@ -88,6 +88,13 @@ export function getTaskLineage(taskId: number, defaultDb?: string, versionNo?: n
   return requestJson<TaskLineageVO>(`/api/workspace/tasks/${taskId}/lineage?${params.toString()}`);
 }
 
+export function reanalyzeTaskLineage(taskId: number, defaultDb?: string, versionNo?: number): Promise<TaskLineageVO> {
+  const params = new URLSearchParams();
+  if (defaultDb) params.set('defaultDb', defaultDb);
+  if (versionNo) params.set('versionNo', String(versionNo));
+  return requestJson<TaskLineageVO>(`/api/workspace/tasks/${taskId}/lineage/reanalyze?${params.toString()}`, { method: 'POST' });
+}
+
 export function getTaskDependencies(taskId: number, defaultDb?: string, versionNo?: number): Promise<TaskDependenciesVO> {
   const params = new URLSearchParams();
   if (defaultDb) params.set('defaultDb', defaultDb);

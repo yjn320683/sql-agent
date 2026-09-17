@@ -14,6 +14,7 @@ import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import java.sql.Connection;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Statement;
 import java.util.List;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -24,6 +25,31 @@ import org.junit.jupiter.params.provider.ValueSource;
 import org.junit.jupiter.api.Test;
 
 class RealtimeServerServiceTest {
+
+    @Test
+    void tableDdlUsesConfiguredDatabaseConnectionAndQuotesTableName() throws Exception {
+        RealtimeSyncRepository repository = mock(RealtimeSyncRepository.class);
+        Map<String, Object> server = Map.of(
+                "address", "127.0.0.1:3306", "databaseName", "sales",
+                "account", "reader", "password", "secret");
+        when(repository.requiredServer(3L, true)).thenReturn(server);
+        Connection connection = mock(Connection.class);
+        Statement statement = mock(Statement.class);
+        ResultSet rows = mock(ResultSet.class);
+        when(connection.createStatement()).thenReturn(statement);
+        when(statement.executeQuery("SHOW CREATE TABLE `order detail`")).thenReturn(rows);
+        when(rows.next()).thenReturn(true);
+        when(rows.getString(2)).thenReturn("CREATE TABLE `order detail` (`id` bigint)");
+        RealtimeServerService service = org.mockito.Mockito.spy(new RealtimeServerService(repository));
+        doReturn(connection).when(service).connection(server);
+
+        Map<String, Object> ddl = service.ddl(3L, "order detail");
+
+        assertEquals("sales", ddl.get("database"));
+        assertEquals("order detail", ddl.get("table"));
+        assertEquals("CREATE TABLE `order detail` (`id` bigint)", ddl.get("ddl"));
+        verify(statement).executeQuery("SHOW CREATE TABLE `order detail`");
+    }
 
     @ParameterizedTest
     @ValueSource(ints = {20, 100})

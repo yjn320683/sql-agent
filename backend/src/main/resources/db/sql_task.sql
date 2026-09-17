@@ -73,6 +73,56 @@ CREATE TABLE IF NOT EXISTS sql_task_version_step (
   KEY idx_version_step_version (task_id, version_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SQL Agent 任务版本草稿Step表';
 
+CREATE TABLE IF NOT EXISTS task_lineage_snapshot (
+  id                BIGINT       NOT NULL AUTO_INCREMENT COMMENT '血缘快照ID',
+  task_scope        VARCHAR(16)  NOT NULL COMMENT 'OFFLINE或REALTIME',
+  task_id           BIGINT       NOT NULL COMMENT '任务ID',
+  version_id        BIGINT       NULL COMMENT '任务版本记录ID',
+  version_no        INT          NOT NULL COMMENT '任务版本号；未版本化当前代码为0',
+  sql_checksum      CHAR(64)     NOT NULL COMMENT 'SQL或配置SHA-256',
+  dialect           VARCHAR(16)  NOT NULL COMMENT 'HIVE、TRINO或FLINK',
+  default_database  VARCHAR(128) NOT NULL DEFAULT 'default' COMMENT '解析默认数据库',
+  parser_version    VARCHAR(32)  NOT NULL COMMENT '解析器版本',
+  snapshot_source   VARCHAR(16)  NOT NULL COMMENT 'SAVED或BACKFILLED',
+  complete_flag     TINYINT(1)   NOT NULL DEFAULT 0 COMMENT '解析是否完整',
+  lineage_json      LONGTEXT     NOT NULL COMMENT '不含SQL正文的血缘事实JSON',
+  diagnostics_json  LONGTEXT     NOT NULL COMMENT '解析诊断JSON',
+  create_time       DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '创建时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_lineage_snapshot_fact
+    (task_scope, task_id, version_no, sql_checksum, default_database),
+  KEY idx_lineage_snapshot_version (task_scope, task_id, version_no, id),
+  KEY idx_lineage_snapshot_checksum (sql_checksum)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线与实时任务版本不可变血缘快照';
+
+CREATE TABLE IF NOT EXISTS task_lineage_relation (
+  id                 BIGINT       NOT NULL AUTO_INCREMENT COMMENT '规范化血缘关系ID',
+  snapshot_id        BIGINT       NOT NULL COMMENT '血缘快照ID',
+  relation_signature CHAR(64)     NOT NULL COMMENT '快照内关系唯一签名',
+  task_scope         VARCHAR(16)  NOT NULL COMMENT 'OFFLINE或REALTIME',
+  task_id            BIGINT       NOT NULL COMMENT '任务ID',
+  version_id         BIGINT       NULL COMMENT '任务版本记录ID',
+  version_no         INT          NOT NULL COMMENT '任务版本号',
+  statement_index    INT          NULL COMMENT '语句序号',
+  relation_kind      VARCHAR(32)  NOT NULL COMMENT 'SNAPSHOT/TABLE_INPUT/TABLE_OUTPUT/COLUMN_DERIVATION/COLUMN_USAGE',
+  source_catalog     VARCHAR(64)  NULL,
+  source_database    VARCHAR(128) NULL,
+  source_table       VARCHAR(128) NULL,
+  source_column      VARCHAR(128) NULL,
+  target_catalog     VARCHAR(64)  NULL,
+  target_database    VARCHAR(128) NULL,
+  target_table       VARCHAR(128) NULL,
+  target_column      VARCHAR(128) NULL,
+  usage_type         VARCHAR(32)  NULL COMMENT 'JOIN/FILTER/GROUP_BY等字段用途',
+  direct_flag        TINYINT(1)   NULL COMMENT '是否直接字段来源',
+  create_time        DATETIME     NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_lineage_relation_signature (snapshot_id,relation_signature),
+  KEY idx_lineage_relation_task (task_scope,task_id,version_no,relation_kind),
+  KEY idx_lineage_relation_source (source_catalog,source_database,source_table,source_column),
+  KEY idx_lineage_relation_target (target_catalog,target_database,target_table,target_column)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务版本规范化表字段血缘索引';
+
 CREATE TABLE IF NOT EXISTS sql_task_execution (
   id                    BIGINT        NOT NULL AUTO_INCREMENT COMMENT '执行实例ID',
   task_id               BIGINT        NOT NULL COMMENT '任务ID',

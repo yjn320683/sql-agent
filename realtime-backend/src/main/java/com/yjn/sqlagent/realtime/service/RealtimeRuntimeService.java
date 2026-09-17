@@ -1294,6 +1294,8 @@ public class RealtimeRuntimeService {
         objectMap(config.get("flinkConfOverrides")).forEach((key, value) -> {
             if (key.matches("[A-Za-z0-9._-]+") && value != null) addFlinkArg(command, key, value);
         });
+        // YARN 队列由平台统一管理，任务快照和自定义参数均不得覆盖。
+        addFlinkArg(command, "yarn.application.queue", properties.resolveYarnQueue());
         if (!"direct".equalsIgnoreCase(spec.getStartType())) {
             command.add("--fromSavepoint"); command.add(spec.getStatePath());
         }

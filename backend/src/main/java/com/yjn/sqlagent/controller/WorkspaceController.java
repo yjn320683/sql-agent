@@ -12,6 +12,7 @@ import com.yjn.sqlagent.service.PlatformHealthService;
 import com.yjn.sqlagent.service.TaskVersionCheckService;
 import com.yjn.sqlagent.service.SqlQueryPreviewService;
 import com.yjn.sqlagent.service.HiveFunctionCatalogService;
+import com.yjn.sqlagent.service.TaskLineageQueryService;
 import com.yjn.sqlagent.datacompare.service.HiveDdlService;
 import java.util.Map;
 import java.util.Collections;
@@ -37,6 +38,7 @@ public class WorkspaceController {
     private final SqlQueryPreviewService sqlQueryPreviewService;
     private final HiveFunctionCatalogService hiveFunctionCatalogService;
     private final HiveDdlService hiveDdlService;
+    private final TaskLineageQueryService taskLineageQueryService;
 
     public WorkspaceController(AgentProxyService agentProxyService,
                                CurrentUserService currentUserService,
@@ -44,7 +46,8 @@ public class WorkspaceController {
                                TaskVersionCheckService taskVersionCheckService,
                                SqlQueryPreviewService sqlQueryPreviewService,
                                HiveFunctionCatalogService hiveFunctionCatalogService,
-                               HiveDdlService hiveDdlService) {
+                               HiveDdlService hiveDdlService,
+                               TaskLineageQueryService taskLineageQueryService) {
         this.agentProxyService = agentProxyService;
         this.currentUserService = currentUserService;
         this.platformHealthService = platformHealthService;
@@ -52,6 +55,7 @@ public class WorkspaceController {
         this.sqlQueryPreviewService = sqlQueryPreviewService;
         this.hiveFunctionCatalogService = hiveFunctionCatalogService;
         this.hiveDdlService = hiveDdlService;
+        this.taskLineageQueryService = taskLineageQueryService;
     }
 
     @GetMapping("/hive/databases")
@@ -116,7 +120,7 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
         currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.getTaskLineage(taskId, versionNo, defaultDb));
+        return BaseResponse.success(taskLineageQueryService.lineage(taskId, versionNo, defaultDb));
     }
 
     @GetMapping("/tasks/{taskId}/dependencies")
@@ -126,7 +130,17 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
         currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.getTaskDependencies(taskId, versionNo, defaultDb));
+        return BaseResponse.success(taskLineageQueryService.dependencies(taskId, versionNo, defaultDb));
+    }
+
+    @PostMapping("/tasks/{taskId}/lineage/reanalyze")
+    public BaseResponse<Map<String, Object>> reanalyzeTaskLineage(
+            @PathVariable long taskId,
+            @RequestParam(required = false) Integer versionNo,
+            @RequestParam(required = false) String defaultDb,
+            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(taskLineageQueryService.reanalyze(taskId, versionNo, defaultDb));
     }
 
     @PostMapping("/tasks/{taskId}/quality")

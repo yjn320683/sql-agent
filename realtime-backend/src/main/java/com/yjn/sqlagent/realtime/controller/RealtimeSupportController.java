@@ -37,7 +37,10 @@ public class RealtimeSupportController {
                 "label", domain.get("name"), "value", domain.get("code")))
                 .collect(java.util.stream.Collectors.toList());
         return RealtimeResponse.success(Map.of(
-                "targetDatabase", properties.getTargetDatabase(), "tablePrefixes", tablePrefixes));
+                "targetDatabase", properties.getTargetDatabase(),
+                "debugTargetDatabase", properties.getPaimonDebugTargetDatabase(),
+                "defaultProjectId", properties.getDefaultProjectId(),
+                "tablePrefixes", tablePrefixes));
     }
     @GetMapping("/alerts") public RealtimeResponse<List<Map<String,Object>>> alerts(
             @RequestParam(required=false) Long taskId) {

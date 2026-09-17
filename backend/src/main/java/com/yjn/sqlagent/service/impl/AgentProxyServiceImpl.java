@@ -218,25 +218,6 @@ public class AgentProxyServiceImpl implements AgentProxyService {
     }
 
     @Override
-    public Map<String, Object> getTaskLineage(long taskId, Integer versionNo, String defaultDb) {
-        return workspaceRequest(agentWebClient.get().uri(builder -> builder
-                .path("/workspace/tasks/{taskId}/lineage")
-                .queryParamIfPresent("versionNo", java.util.Optional.ofNullable(versionNo))
-                .queryParamIfPresent("defaultDb", java.util.Optional.ofNullable(defaultDb))
-                .build(taskId)));
-    }
-
-    @Override
-    public Map<String, Object> getTaskDependencies(long taskId, Integer versionNo, String defaultDb) {
-        return workspaceRequest(agentWebClient.get().uri(builder -> builder
-                .path("/workspace/tasks/{taskId}/dependencies")
-                .queryParamIfPresent("versionNo", java.util.Optional.ofNullable(versionNo))
-                .queryParamIfPresent("defaultDb", java.util.Optional.ofNullable(defaultDb))
-                .queryParam("limit", 500)
-                .build(taskId)));
-    }
-
-    @Override
     public Map<String, Object> checkTaskQuality(long taskId, Integer versionNo, String defaultDb) {
         return workspaceRequest(agentWebClient.post().uri(builder -> builder
                 .path("/workspace/tasks/{taskId}/quality")

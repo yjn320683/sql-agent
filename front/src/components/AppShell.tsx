@@ -25,6 +25,8 @@ import {
   SearchOutlined,
   AlertOutlined,
   FunctionOutlined,
+  ApartmentOutlined,
+  RadarChartOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { modeOf, storageKeyOf, validRememberedPath } from '../realtime/mode';
@@ -63,7 +65,6 @@ const offlineNavigation: NavigationGroup[] = [
   },
   {
     key: 'assets', label: '数据资产', icon: <DatabaseOutlined />, items: [
-      { path: '/catalog', label: '数据目录', icon: <DatabaseOutlined /> },
       { path: '/functions', label: '函数目录', icon: <FunctionOutlined /> },
     ],
   },
@@ -101,6 +102,18 @@ const workspaceNavigation: NavigationGroup[] = [{
   ],
 }];
 
+const dataMapNavigation: NavigationGroup[] = [
+  {
+    key: 'data-map', label: '数据地图', icon: <ApartmentOutlined />, items: [
+      { path: '/data-map', label: '数据概览', icon: <DashboardOutlined /> },
+      { path: '/data-map/catalog', label: '数据目录', icon: <DatabaseOutlined /> },
+      { path: '/data-map/lineage', label: '血缘分析', icon: <NodeIndexOutlined /> },
+      { path: '/data-map/domains', label: '业务域', icon: <BranchesOutlined /> },
+      { path: '/data-map/parsing', label: '解析监控', icon: <RadarChartOutlined /> },
+    ],
+  },
+];
+
 export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
   const location = useLocation();
   const navigate = useNavigate();
@@ -113,7 +126,9 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
   const iconOnlyNavigation = navigationCollapsed || !screens.xl;
   const applicationMode = modeOf(location.pathname);
   const realtime = applicationMode === 'realtime';
-  const navigation = applicationMode === 'workspace' ? workspaceNavigation : realtime ? realtimeNavigation : offlineNavigation;
+  const navigation = applicationMode === 'workspace'
+    ? workspaceNavigation
+    : applicationMode === 'data-map' ? dataMapNavigation : realtime ? realtimeNavigation : offlineNavigation;
 
   useEffect(() => {
     if (applicationMode === 'workspace') return;
@@ -123,7 +138,7 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
 
   const switchMode = (mode: string | number) => {
     if (mode === 'workspace') { navigate('/overview'); return; }
-    const targetMode = mode === 'realtime' ? 'realtime' : 'offline';
+    const targetMode = mode === 'realtime' ? 'realtime' : mode === 'data-map' ? 'data-map' : 'offline';
     const remembered = window.localStorage.getItem(storageKeyOf(targetMode));
     navigate(validRememberedPath(targetMode, remembered));
   };
@@ -200,7 +215,9 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
                 aria-hidden={groupCollapsed && !navigationCollapsed && screens.md !== false}
               >
                 {group.items.map((item) => {
-                  const active = location.pathname.startsWith(item.path);
+                  const active = item.path === '/data-map'
+                    ? location.pathname === item.path
+                    : location.pathname.startsWith(item.path);
                   return (
                     <Tooltip key={item.path} title={iconOnlyNavigation ? item.label : undefined} placement="right">
                       <button
@@ -240,34 +257,41 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
             className="app-mode-switch ui-flat-segmented"
             value={applicationMode}
             onChange={switchMode}
-            options={[{ label: '工作台', value: 'workspace' }, { label: '离线', value: 'offline' }, { label: '实时', value: 'realtime' }]}
+            options={[{ label: '工作台', value: 'workspace' }, { label: '离线', value: 'offline' }, { label: '实时', value: 'realtime' }, { label: '数据地图', value: 'data-map' }]}
           />
-          <button type="button" className="global-search-entry" onClick={() => setSearchOpen(true)}>
-            <SearchOutlined />
-            <span>搜索</span>
-            <kbd>⌘K</kbd>
-          </button>
-          <Dropdown
-            trigger={['click']}
-            placement="bottomRight"
-            menu={{
-              items: [
-                { key: 'switch', icon: <SwapOutlined />, label: '切换账号' },
-                { type: 'divider' },
-                { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
-              ],
-              onClick: ({ key }) => {
-                if (key === 'switch') onSwitchAccount();
-                if (key === 'logout') onLogout();
-              },
-            }}
-          >
-            <button type="button" className="header-account-entry" aria-label={`当前用户 ${obId}`}>
-              <Avatar size={28} className="account-avatar" icon={<UserOutlined />} />
-              <span className="header-account-id">{obId}</span>
-              <DownOutlined className="header-account-caret" />
-            </button>
-          </Dropdown>
+          <div className="app-mode-actions">
+            <Tooltip title="全局搜索（Ctrl / ⌘ + K）" placement="bottom">
+              <button
+                type="button"
+                className="global-search-entry"
+                aria-label="打开全局搜索"
+                onClick={() => setSearchOpen(true)}
+              >
+                <SearchOutlined />
+              </button>
+            </Tooltip>
+            <Dropdown
+              trigger={['click']}
+              placement="bottomRight"
+              menu={{
+                items: [
+                  { key: 'switch', icon: <SwapOutlined />, label: '切换账号' },
+                  { type: 'divider' },
+                  { key: 'logout', icon: <LogoutOutlined />, label: '退出登录', danger: true },
+                ],
+                onClick: ({ key }) => {
+                  if (key === 'switch') onSwitchAccount();
+                  if (key === 'logout') onLogout();
+                },
+              }}
+            >
+              <button type="button" className="header-account-entry" aria-label={`当前用户 ${obId}`}>
+                <Avatar size={28} className="account-avatar" icon={<UserOutlined />} />
+                <span className="header-account-id">{obId}</span>
+                <DownOutlined className="header-account-caret" />
+              </button>
+            </Dropdown>
+          </div>
         </header>
         <div className="app-mode-content"><Outlet /></div>
         <RouteAiAssistant />

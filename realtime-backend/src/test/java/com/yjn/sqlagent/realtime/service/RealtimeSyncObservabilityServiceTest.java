@@ -102,12 +102,12 @@ class RealtimeSyncObservabilityServiceTest {
         when(observability.requiredSchemaEvent(17L)).thenReturn(Map.of(
                 "taskId", 9L, "realtimeTableId", 5L, "status", "PENDING",
                 "changeType", "ADD_COLUMNS", "change", Map.of("addColumns", List.of(addition))));
-        when(tables.applySyncEvolution(eq(5L), anyMap(), eq("admin"))).thenReturn(Map.of("applied", true));
+        when(tables.applySyncEvolution(eq(5L), anyMap(), eq("admin"), eq(17L))).thenReturn(Map.of("applied", true));
 
         Map<String, Object> result = service.applySchemaChange(9L, 17L, "admin");
 
         assertEquals(true, result.get("applied"));
-        verify(tables).applySyncEvolution(eq(5L), eq(Map.of("addColumns", List.of(addition))), eq("admin"));
+        verify(tables).applySyncEvolution(eq(5L), eq(Map.of("addColumns", List.of(addition))), eq("admin"), eq(17L));
         verify(observability).markSchemaApplied(17L, "admin");
     }
 
@@ -122,7 +122,7 @@ class RealtimeSyncObservabilityServiceTest {
                 "taskId", 9L, "realtimeTableId", 5L, "status", "BLOCKED",
                 "changeType", "INCOMPATIBLE", "change", Map.of("incompatibleColumns", List.of())));
         assertThrows(IllegalStateException.class, () -> service.applySchemaChange(9L, 18L, "admin"));
-        verify(tables, never()).applySyncEvolution(eq(5L), anyMap(), eq("admin"));
+        verify(tables, never()).applySyncEvolution(eq(5L), anyMap(), eq("admin"), eq(18L));
     }
 
     @Test

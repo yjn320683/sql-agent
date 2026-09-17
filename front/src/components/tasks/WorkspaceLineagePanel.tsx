@@ -8,7 +8,7 @@ import {
   ReloadOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
-import { getTaskDependencies, getTaskLineage } from '../../api/workspace';
+import { getTaskDependencies, getTaskLineage, reanalyzeTaskLineage } from '../../api/workspace';
 import type {
   LineageValidationStatus,
   SqlLineageTableVO,
@@ -162,6 +162,19 @@ export default function WorkspaceLineagePanel({
     }
   }, [defaultDb, taskId, versionNo]);
 
+  const reanalyze = useCallback(async () => {
+    if (!taskId) return;
+    setLoading(true);
+    try {
+      setLineage(await reanalyzeTaskLineage(taskId, defaultDb, versionNo));
+      setError('');
+    } catch (loadError) {
+      setError((loadError as Error).message);
+    } finally {
+      setLoading(false);
+    }
+  }, [defaultDb, taskId, versionNo]);
+
   useEffect(() => { void load(); }, [load, refreshKey]);
   useEffect(() => {
     if (mode === 'tasks') void loadDependencies();
@@ -232,7 +245,12 @@ export default function WorkspaceLineagePanel({
           onChange={(value) => setMode(value as 'tables' | 'tasks')}
         />
         <span className="lineage-bottom-source">基于{versionNo ? `版本 v${versionNo}` : '任务当前生效代码'} · {defaultDb || '未指定默认库'}</span>
-        <Tooltip title="重新解析已保存 SQL">
+        {mode === 'tables' ? (
+          lineage?.lineageMode === 'CURRENT_PARSER'
+            ? <Button type="link" size="small" onClick={() => void load()}>返回版本快照</Button>
+            : <Button type="link" size="small" loading={loading} onClick={() => void reanalyze()}>按当前解析器分析</Button>
+        ) : null}
+        <Tooltip title={mode === 'tables' ? '刷新版本快照结果' : '刷新任务依赖'}>
           <Button
             type="text"
             size="small"
@@ -262,6 +280,12 @@ export default function WorkspaceLineagePanel({
         {mode === 'tables' && lineage ? (
           <div className="lineage-bottom-facts">
             {lineage.ctes.map((cte) => <Tag key={cte.name}>CTE {cte.name}</Tag>)}
+            <Tag color={lineage.lineageMode === 'CURRENT_PARSER' ? 'processing' : 'blue'}>
+              {lineage.lineageMode === 'CURRENT_PARSER' ? '当前解析' : '版本快照'}
+            </Tag>
+            <span>解析器 <code>{lineage.snapshot?.parserVersion || lineage.parserVersion || '-'}</code></span>
+            {lineage.snapshot?.snapshotSource ? <span>来源 {lineage.snapshot.snapshotSource}</span> : null}
+            {lineage.diagnostics?.length ? <Tag color="warning">诊断 {lineage.diagnostics.length}</Tag> : null}
             <span>来源 <code>{lineage.source}</code></span>
           </div>
         ) : null}

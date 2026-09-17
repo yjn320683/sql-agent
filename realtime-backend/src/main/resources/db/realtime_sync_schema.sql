@@ -40,6 +40,55 @@ CREATE TABLE IF NOT EXISTS rt_task_version (
   KEY idx_rt_task_version_current (task_id, version_no)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务版本';
 
+CREATE TABLE IF NOT EXISTS task_lineage_snapshot (
+  id BIGINT NOT NULL AUTO_INCREMENT COMMENT '血缘快照ID',
+  task_scope VARCHAR(16) NOT NULL COMMENT 'OFFLINE或REALTIME',
+  task_id BIGINT NOT NULL COMMENT '任务ID',
+  version_id BIGINT NULL COMMENT '任务版本记录ID',
+  version_no INT NOT NULL COMMENT '任务版本号',
+  sql_checksum CHAR(64) NOT NULL COMMENT 'SQL或配置SHA-256',
+  dialect VARCHAR(16) NOT NULL COMMENT 'HIVE、TRINO或FLINK',
+  default_database VARCHAR(128) NOT NULL DEFAULT 'default',
+  parser_version VARCHAR(32) NOT NULL,
+  snapshot_source VARCHAR(16) NOT NULL COMMENT 'SAVED或BACKFILLED',
+  complete_flag TINYINT(1) NOT NULL DEFAULT 0,
+  lineage_json LONGTEXT NOT NULL COMMENT '不含SQL正文的血缘事实JSON',
+  diagnostics_json LONGTEXT NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_lineage_snapshot_fact (task_scope,task_id,version_no,sql_checksum,default_database),
+  KEY idx_lineage_snapshot_version (task_scope,task_id,version_no,id),
+  KEY idx_lineage_snapshot_checksum (sql_checksum)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线与实时任务版本不可变血缘快照';
+
+CREATE TABLE IF NOT EXISTS task_lineage_relation (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  snapshot_id BIGINT NOT NULL,
+  relation_signature CHAR(64) NOT NULL,
+  task_scope VARCHAR(16) NOT NULL,
+  task_id BIGINT NOT NULL,
+  version_id BIGINT NULL,
+  version_no INT NOT NULL,
+  statement_index INT NULL,
+  relation_kind VARCHAR(32) NOT NULL COMMENT 'SNAPSHOT/TABLE_INPUT/TABLE_OUTPUT/COLUMN_DERIVATION/COLUMN_USAGE',
+  source_catalog VARCHAR(64) NULL,
+  source_database VARCHAR(128) NULL,
+  source_table VARCHAR(128) NULL,
+  source_column VARCHAR(128) NULL,
+  target_catalog VARCHAR(64) NULL,
+  target_database VARCHAR(128) NULL,
+  target_table VARCHAR(128) NULL,
+  target_column VARCHAR(128) NULL,
+  usage_type VARCHAR(32) NULL,
+  direct_flag TINYINT(1) NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_lineage_relation_signature (snapshot_id,relation_signature),
+  KEY idx_lineage_relation_task (task_scope,task_id,version_no,relation_kind),
+  KEY idx_lineage_relation_source (source_catalog,source_database,source_table,source_column),
+  KEY idx_lineage_relation_target (target_catalog,target_database,target_table,target_column)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='任务版本规范化表字段血缘索引';
+
 CREATE TABLE IF NOT EXISTS rt_sync_task_config (
   task_id BIGINT NOT NULL,
   source_type VARCHAR(32) NOT NULL DEFAULT 'mysql-cdc',
@@ -112,6 +161,25 @@ CREATE TABLE IF NOT EXISTS rt_realtime_table_column (
   UNIQUE KEY uk_realtime_table_column_order (realtime_table_id,sort_order),
   KEY idx_realtime_column_table (realtime_table_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='受管实时表字段';
+
+CREATE TABLE IF NOT EXISTS rt_realtime_table_schema_version (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  realtime_table_id BIGINT NOT NULL,
+  version_no INT NOT NULL,
+  schema_fingerprint CHAR(64) NOT NULL,
+  change_source VARCHAR(32) NOT NULL COMMENT 'CREATE/MANUAL_REFRESH/SCHEDULED_REFRESH/SAFE_UPDATE/SYNC_EVOLUTION/BACKFILLED_BASELINE',
+  compatibility VARCHAR(16) NOT NULL COMMENT 'BASELINE/COMPATIBLE/INCOMPATIBLE',
+  schema_json LONGTEXT NOT NULL,
+  diff_json LONGTEXT NOT NULL,
+  source_event_id BIGINT NULL,
+  operator VARCHAR(64) NOT NULL,
+  first_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_seen_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_rt_table_schema_version (realtime_table_id,version_no),
+  UNIQUE KEY uk_rt_table_schema_fingerprint (realtime_table_id,schema_fingerprint),
+  KEY idx_rt_table_schema_time (realtime_table_id,last_seen_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='受管实时表不可变Schema版本';
 
 CREATE TABLE IF NOT EXISTS rt_task_table_reference (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -381,13 +449,35 @@ CREATE TABLE IF NOT EXISTS rt_paimon_business_domain (
   id BIGINT NOT NULL AUTO_INCREMENT,
   domain_code VARCHAR(32) NOT NULL,
   domain_name VARCHAR(64) NOT NULL,
+  description VARCHAR(512) NULL,
+  owner VARCHAR(64) NULL,
   sort_order INT NOT NULL DEFAULT 0,
   enabled_flag TINYINT(1) NOT NULL DEFAULT 1,
+  disabled_time DATETIME NULL,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_paimon_business_domain_code (domain_code)
-) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='同步业务域';
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='统一数据资产业务域';
+
+CREATE TABLE IF NOT EXISTS rt_asset_business_domain_relation (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  asset_type VARCHAR(16) NOT NULL COMMENT 'HIVE或PAIMON',
+  asset_key VARCHAR(512) NOT NULL COMMENT '规范化资产唯一键',
+  asset_key_hash CHAR(64) NOT NULL COMMENT '资产唯一键SHA-256',
+  realtime_table_id BIGINT NULL,
+  catalog_name VARCHAR(128) NULL,
+  database_name VARCHAR(128) NOT NULL,
+  table_name VARCHAR(128) NOT NULL,
+  domain_id BIGINT NOT NULL,
+  updated_by VARCHAR(64) NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_asset_business_domain (asset_type,asset_key_hash),
+  KEY idx_asset_domain_id (domain_id,asset_type),
+  KEY idx_asset_realtime_table (realtime_table_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='Hive与Paimon资产的业务域归属';
 
 INSERT IGNORE INTO rt_project (id,project_name,enabled_flag) VALUES (1,'默认项目',1);
 

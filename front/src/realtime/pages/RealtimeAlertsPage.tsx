@@ -101,14 +101,14 @@ export default function RealtimeAlertsPage() {
           onChange: (next, size) => { setPage(next); setPageSize(size); },
         }} /></div>
       </>}
-      {view === 'RULES' && <Table rowKey="id" loading={loading} dataSource={rules} columns={[
+      {view === 'RULES' && <div className="realtime-sync-table-section"><Table rowKey="id" loading={loading} dataSource={rules} columns={[
         { title: '规则', dataIndex: 'ruleName', width: 190, render: (value: string, row: RealtimeAlertRule) => <div><Typography.Text strong>{value}</Typography.Text><div className="realtime-cell-secondary">{row.ruleCode}</div></div> },
         { title: '说明', dataIndex: 'description' }, { title: '级别', dataIndex: 'severity', width: 90 },
         { title: '阈值', dataIndex: 'thresholdValue', width: 90 }, { title: '连续采样', dataIndex: 'consecutiveSamples', width: 100 },
         { title: '窗口', dataIndex: 'windowSeconds', width: 100, render: (value: number) => `${value}s` },
         { title: '状态', dataIndex: 'enabled', width: 90, render: (value: boolean | number) => <Tag color={Boolean(value) ? 'success' : 'default'}>{Boolean(value) ? '启用' : '停用'}</Tag> },
         { title: '操作', width: 90, render: (_: unknown, row: RealtimeAlertRule) => <Button type="link" icon={<EditOutlined />} onClick={() => editRule(row)}>配置</Button> },
-      ]} pagination={false} />}
+      ]} pagination={false} /></div>}
     </section>
 
     <Drawer width={680} title={detail?.title || '告警详情'} open={Boolean(detail)} onClose={() => {

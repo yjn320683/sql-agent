@@ -1,6 +1,7 @@
 package com.yjn.sqlagent.realtime.service;
 
 import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
+import com.yjn.sqlagent.realtime.model.RealtimeLineageSnapshotDraft;
 import com.yjn.sqlagent.realtime.common.ExportSchemaCompatibility;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.repository.RealtimeTableRepository;
@@ -12,6 +13,8 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.security.MessageDigest;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.stereotype.Service;
 
 @Service
@@ -19,12 +22,13 @@ public class RealtimeTaskDefinitionService {
     private final RealtimeTaskDefinitionRepository repository; private final RealtimeTableRepository tables;
     private final RealtimeSyncRepository syncRepository; private final RealtimeServerService servers; private final ManagedFlinkPlannerService flinkPlanner;
     private final RealtimePaimonCatalogService paimon;
+    private final ObjectMapper objectMapper;
     public RealtimeTaskDefinitionService(RealtimeTaskDefinitionRepository repository,RealtimeTableRepository tables,
             RealtimeSyncRepository syncRepository,RealtimeServerService servers,ManagedFlinkPlannerService flinkPlanner,
-            RealtimePaimonCatalogService paimon){this.repository=repository;this.tables=tables;this.syncRepository=syncRepository;this.servers=servers;this.flinkPlanner=flinkPlanner;this.paimon=paimon;}
+            RealtimePaimonCatalogService paimon,ObjectMapper objectMapper){this.repository=repository;this.tables=tables;this.syncRepository=syncRepository;this.servers=servers;this.flinkPlanner=flinkPlanner;this.paimon=paimon;this.objectMapper=objectMapper;}
 
-    public long create(UnifiedTaskRequest request,String actor){References refs=validate(request,null);return repository.create(request,actor,refs.inputs,refs.outputs);}
-    public void update(long id,UnifiedTaskRequest request,String actor){References refs=validate(request,id);repository.update(id,request,actor,refs.inputs,refs.outputs);}
+    public long create(UnifiedTaskRequest request,String actor){References refs=validate(request,null);return repository.create(request,actor,refs.inputs,refs.outputs,snapshot(request,refs));}
+    public void update(long id,UnifiedTaskRequest request,String actor){References refs=validate(request,id);repository.update(id,request,actor,refs.inputs,refs.outputs,snapshot(request,refs));}
     public Map<String,Object> analyze(UnifiedTaskRequest request){
         requireCommon(request);if(!"compute".equals(type(request)))throw new IllegalArgumentException("SQL 分析仅支持计算任务");
         Map<String,Object>compute=map(request.getTaskConfig().get("computeConfig"));ManagedFlinkPlannerService.Analysis analysis=flinkPlanner.analyze(text(compute.get("sql")),text(compute.get("defaultDatabase")));
@@ -38,19 +42,19 @@ public class RealtimeTaskDefinitionService {
         ManagedFlinkPlannerService.Analysis analysis=flinkPlanner.validate(text(config.get("sql")),database);return validateCompute(analysis,taskId);
     }
     private References validateCompute(ManagedFlinkPlannerService.Analysis analysis,Long taskId){Map<String,Map<String,Object>>managed=managedByName();
-        List<Long>inputs=resolve(analysis.getInputs(),managed,false,taskId),outputs=resolve(analysis.getOutputs(),managed,true,taskId);return new References(inputs,outputs);
+        List<Long>inputs=resolve(analysis.getInputs(),managed,false,taskId),outputs=resolve(analysis.getOutputs(),managed,true,taskId);return new References(inputs,outputs,analysis.getInputs(),analysis.getOutputs(),analysis.getStatementCount(),analysis.getLineageFacts());
     }
     private References validateExport(UnifiedTaskRequest request,Long taskId){
         Map<String,Object>config=map(request.getTaskConfig().get("exportConfig"));long serverId=number(config.get("targetServerId"),"目标 Server");Map<String,Object>server=syncRepository.requiredServer(serverId,false);String database=text(server.get("databaseName"));String sourceDatabase=text(config.get("sourceDatabase"));
         if(database.isEmpty())throw new IllegalArgumentException("目标 Server 未配置数据库");List<String>targetTables=servers.tables(serverId);List<Long>inputs=new ArrayList<>();Set<String>seenTargets=new LinkedHashSet<>();
-        List<Map<String,Object>>mappings=maps(config.get("mappings"));if(mappings.isEmpty())throw new IllegalArgumentException("出仓任务至少需要一组表映射");
+        List<Map<String,Object>>mappings=maps(config.get("mappings"));if(mappings.isEmpty())throw new IllegalArgumentException("出仓任务至少需要一组表映射");List<String>lineageInputs=new ArrayList<>(),lineageOutputs=new ArrayList<>();
         List<String>requestedTargets=new ArrayList<>();for(Map<String,Object>mapping:mappings)requestedTargets.add(text(mapping.get("targetTable")));
         Map<String,Map<String,Object>>targetSchemas=servers.schemas(serverId,requestedTargets);List<Map<String,Object>>contracts=new ArrayList<>();
-        for(Map<String,Object>mapping:mappings){long tableId=number(mapping.get("realtimeTableId"),"实时表");Map<String,Object>source=tables.required(tableId);requireUsable(source);if(!sourceDatabase.isEmpty()&&!sourceDatabase.equalsIgnoreCase(text(source.get("databaseName"))))throw new IllegalArgumentException("出仓源表不属于所选实时库："+source.get("databaseName")+"."+source.get("tableName"));inputs.add(tableId);String target=text(mapping.get("targetTable"));if(!targetTables.contains(target))throw new IllegalArgumentException("MySQL 目标表不存在："+database+"."+target);if(!seenTargets.add(target.toLowerCase(Locale.ROOT)))throw new IllegalArgumentException("MySQL 目标表重复："+target);
+        for(Map<String,Object>mapping:mappings){long tableId=number(mapping.get("realtimeTableId"),"实时表");Map<String,Object>source=tables.required(tableId);requireUsable(source);if(!sourceDatabase.isEmpty()&&!sourceDatabase.equalsIgnoreCase(text(source.get("databaseName"))))throw new IllegalArgumentException("出仓源表不属于所选实时库："+source.get("databaseName")+"."+source.get("tableName"));inputs.add(tableId);lineageInputs.add("paimon."+text(source.get("databaseName"))+"."+text(source.get("tableName")));String target=text(mapping.get("targetTable"));if(!targetTables.contains(target))throw new IllegalArgumentException("MySQL 目标表不存在："+database+"."+target);if(!seenTargets.add(target.toLowerCase(Locale.ROOT)))throw new IllegalArgumentException("MySQL 目标表重复："+target);lineageOutputs.add("mysql."+database+"."+target);
             Map<String,Object>schema=targetSchemas.get(target);if(schema==null)throw new IllegalArgumentException("MySQL 目标表结构不存在："+database+"."+target);List<String>keys=strings(schema.get("primaryKeys"));if(keys.isEmpty())throw new IllegalArgumentException("MySQL 目标表必须有主键："+target);List<Map<String,Object>>columnMappings=maps(mapping.get("columnMappings"));if(columnMappings.isEmpty())columnMappings=autoMappings(source,schema);validateMappings(source,schema,columnMappings,keys,target);mapping.put("columnMappings",columnMappings);mapping.put("primaryKeys",keys);
             Map<String,Object>contract=new LinkedHashMap<>();contract.put("realtimeTableId",tableId);contract.put("source",ExportSchemaCompatibility.snapshot(text(source.get("databaseName")),text(source.get("tableName")),maps(source.get("columns")),sourcePrimaryKeys(source)));contract.put("target",ExportSchemaCompatibility.snapshot(database,target,maps(schema.get("columns")),keys));contracts.add(contract);}
         config.put("schemaContracts",contracts);request.getTaskConfig().put("exportConfig",config);
-        return new References(new ArrayList<>(new LinkedHashSet<>(inputs)),List.of());
+        return new References(new ArrayList<>(new LinkedHashSet<>(inputs)),List.of(),lineageInputs,lineageOutputs,mappings.size(),Map.of());
     }
     private List<Map<String,Object>>autoMappings(Map<String,Object>source,Map<String,Object>target){Set<String>targetNames=new LinkedHashSet<>();for(Map<String,Object>c:maps(target.get("columns")))targetNames.add(text(c.get("name")).toLowerCase(Locale.ROOT));List<Map<String,Object>>result=new ArrayList<>();for(Map<String,Object>c:maps(source.get("columns"))){String name=text(c.get("name"));if(targetNames.contains(name.toLowerCase(Locale.ROOT)))result.add(Map.of("sourceColumn",name,"targetColumn",name));}return result;}
     private void validateMappings(Map<String,Object>source,Map<String,Object>target,List<Map<String,Object>>mappings,List<String>keys,String table){ExportSchemaCompatibility.validate(maps(source.get("columns")),maps(target.get("columns")),mappings,keys,table);}
@@ -67,5 +71,28 @@ public class RealtimeTaskDefinitionService {
     private String type(UnifiedTaskRequest r){String t=text(r.getTaskType()).toLowerCase(Locale.ROOT);if(!List.of("compute","export").contains(t))throw new IllegalArgumentException("任务类型必须是 compute 或 export");return t;}
     private long number(Object v,String label){try{return Long.parseLong(String.valueOf(v));}catch(Exception e){throw new IllegalArgumentException(label+"不能为空");}}
     @SuppressWarnings("unchecked")private Map<String,Object>map(Object v){return v instanceof Map?new LinkedHashMap<>((Map<String,Object>)v):new LinkedHashMap<>();}@SuppressWarnings("unchecked")private List<Map<String,Object>>maps(Object v){return v instanceof List?(List<Map<String,Object>>)v:List.of();}@SuppressWarnings("unchecked")private List<String>strings(Object v){return v instanceof List?(List<String>)v:List.of();}private String text(Object v){return v==null?"":String.valueOf(v).trim();}
-    public static final class References{final List<Long>inputs,outputs;public References(List<Long>inputs,List<Long>outputs){this.inputs=inputs;this.outputs=outputs;}public List<Long>getInputs(){return inputs;}public List<Long>getOutputs(){return outputs;}}
+    private RealtimeLineageSnapshotDraft snapshot(UnifiedTaskRequest request, References refs) {
+        Map<String, Object> lineage = refs.lineageFacts.isEmpty()
+                ? new LinkedHashMap<>() : new LinkedHashMap<>(refs.lineageFacts);
+        lineage.put("statementCount", refs.statementCount);
+        lineage.put("inputs", lineageTables(refs.lineageInputs));
+        lineage.put("outputs", lineageTables(refs.lineageOutputs));
+        lineage.putIfAbsent("statements", List.of());
+        lineage.putIfAbsent("diagnostics", List.of());
+        boolean complete = !lineage.containsKey("complete") || Boolean.TRUE.equals(lineage.get("complete"));
+        lineage.put("complete", complete);
+
+        String database = "default";
+        if ("compute".equals(type(request))) {
+            database = text(map(request.getTaskConfig().get("computeConfig")).get("defaultDatabase"));
+        } else {
+            database = text(map(request.getTaskConfig().get("exportConfig")).get("sourceDatabase"));
+        }
+        List<Map<String, Object>> diagnostics = maps(lineage.get("diagnostics"));
+        return new RealtimeLineageSnapshotDraft(checksum(request), "FLINK",
+                database.isEmpty() ? "default" : database, complete, lineage, diagnostics);
+    }
+    private List<Map<String,Object>>lineageTables(List<String>values){List<Map<String,Object>>result=new ArrayList<>();for(String value:new LinkedHashSet<>(values)){String[]parts=value.split("\\.",3);Map<String,Object>table=new LinkedHashMap<>();if(parts.length==3){table.put("catalog",parts[0]);table.put("db",parts[1]);table.put("table",parts[2]);}else if(parts.length==2){table.put("catalog",null);table.put("db",parts[0]);table.put("table",parts[1]);}else{table.put("catalog",null);table.put("db",null);table.put("table",value);}table.put("qualifiedName",value);table.put("dynamic",false);result.add(table);}return result;}
+    private String checksum(UnifiedTaskRequest request){try{byte[]bytes=MessageDigest.getInstance("SHA-256").digest(objectMapper.writeValueAsBytes(request));StringBuilder value=new StringBuilder();for(byte item:bytes)value.append(String.format("%02x",item));return value.toString();}catch(Exception error){throw new IllegalStateException("无法计算实时任务配置校验和",error);}}
+    public static final class References{final List<Long>inputs,outputs;final List<String>lineageInputs,lineageOutputs;final int statementCount;final Map<String,Object>lineageFacts;public References(List<Long>inputs,List<Long>outputs){this(inputs,outputs,List.of(),List.of(),0,Map.of());}public References(List<Long>inputs,List<Long>outputs,List<String>lineageInputs,List<String>lineageOutputs,int statementCount,Map<String,Object>lineageFacts){this.inputs=inputs;this.outputs=outputs;this.lineageInputs=lineageInputs;this.lineageOutputs=lineageOutputs;this.statementCount=statementCount;this.lineageFacts=lineageFacts;}public List<Long>getInputs(){return inputs;}public List<Long>getOutputs(){return outputs;}}
 }

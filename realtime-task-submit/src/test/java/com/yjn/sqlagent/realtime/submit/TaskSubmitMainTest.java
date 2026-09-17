@@ -81,6 +81,7 @@ class TaskSubmitMainTest {
         spec.setTask(task);
         SubmissionSpec.RuntimeConfig runtime = new SubmissionSpec.RuntimeConfig();
         runtime.setPaimonActionJarPath("/data/action.jar"); runtime.setPaimonWarehouse("hdfs:///warehouse");
+        runtime.setTargetDatabase("ods_rt");
         spec.setRuntimeConfig(runtime);
         SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
         server.setId(3L); server.setAddress("mysql:3306"); server.setDatabaseName("sales");

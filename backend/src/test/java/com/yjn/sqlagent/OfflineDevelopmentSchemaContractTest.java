@@ -1,6 +1,7 @@
 package com.yjn.sqlagent;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import java.nio.charset.StandardCharsets;
@@ -34,6 +35,7 @@ class OfflineDevelopmentSchemaContractTest {
         assertTrue(schema.contains("timeout_policy VARCHAR(16) NOT NULL DEFAULT 'ALERT_ONLY'"));
         assertTrue(schema.contains("UNIQUE KEY uk_backfill_batch_date (batch_id,business_date)"));
         assertTrue(schema.contains("idx_task_execution_success_sample (task_id, status, id)"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_lineage_snapshot"));
     }
 
     @Test
@@ -56,6 +58,42 @@ class OfflineDevelopmentSchemaContractTest {
         assertTrue(migration.contains("information_schema.COLUMNS"));
         assertTrue(migration.contains("idx_task_execution_success_sample"));
         assertTrue(migration.contains("UNIQUE KEY uk_backfill_batch_date (batch_id,business_date)"));
+    }
+
+    @Test
+    void batchSevenUpgradeKeepsLineageAndBusinessDomainSchemaIdempotent() throws Exception {
+        String migration = resource("db/upgrade-20260917-lineage-domain-assets.sql");
+
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS task_lineage_snapshot"));
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS rt_asset_business_domain_relation"));
+        assertTrue(migration.contains("information_schema.columns"));
+        assertTrue(migration.contains("column_name='description'"));
+        assertTrue(migration.contains("column_name='owner'"));
+        assertTrue(migration.contains("column_name='disabled_time'"));
+    }
+
+    @Test
+    void batchEightUpgradeKeepsSnapshotsImmutableAndBackfillsOnlyCurrentSchemaBaseline() throws Exception {
+        String migration = resource("db/upgrade-20260917-global-lineage-schema-history.sql");
+
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS task_lineage_relation"));
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS rt_realtime_table_schema_version"));
+        assertTrue(migration.contains("BACKFILLED_BASELINE"));
+        assertTrue(migration.contains("WHERE NOT EXISTS"));
+        assertFalse(migration.contains("UPDATE task_lineage_snapshot"));
+    }
+
+    @Test
+    void batchNineUpgradeProvidesReliableNeo4jProjectionContracts() throws Exception {
+        String migration = resource("db/upgrade-20260917-data-map-neo4j.sql");
+
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS data_map_lineage_run"));
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS data_map_lineage_task_state"));
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS data_map_graph_outbox"));
+        assertTrue(migration.contains("CREATE TABLE IF NOT EXISTS data_map_projection_generation"));
+        assertTrue(migration.contains("UNIQUE KEY uk_data_map_outbox_snapshot (snapshot_id,event_type,generation_no)"));
+        assertTrue(migration.contains("KEY idx_data_map_outbox_claim (status,available_at,id)"));
+        assertTrue(migration.contains("UNIQUE KEY uk_data_map_generation_no (generation_no)"));
     }
 
     private Set<String> tables(String sql) {

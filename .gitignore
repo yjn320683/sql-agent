@@ -9,6 +9,13 @@ backend/src/main/resources/application-dev.yml
 .idea/
 .vscode/
 docs/
+!/docs/
+/docs/*
+!/docs/testing/
+/docs/testing/*
+!/docs/testing/results/
+/docs/testing/results/*
+!/docs/testing/results/2026-09-17-sql-table-lineage-comparison.txt
 
 node_modules/
 dist/

@@ -3,6 +3,7 @@ import type { DiagnosticReport } from '../types';
 import type {
   PaimonTablePrefixOption,
   MysqlColumn,
+  MysqlTableDdl,
   MysqlTableSchema,
   RealtimeAlert,
   RealtimeAlertPage,
@@ -32,12 +33,13 @@ const json = (method: string, body?: unknown): RequestInit => ({
 
 type UnifiedTaskWire = {
   id?: number; taskId?: number; taskType: 'sync'; name: string; owner?: string; description?: string;
+  projectId?: number;
   flinkVersion: string; status?: SyncTask['status']; updateTime?: string; createTime?: string;
   expectedUpdateTime?: string; startType?: string; statePath?: string; sourceStartupTimestampMillis?: number;
   alarmConfig: { alarmType?: string; alarmGroup?: string };
   flinkConf: { parallelism?: number; checkpointIntervalSeconds?: number; taskManagerMemoryGb?: number; jobManagerMemoryGb?: number; flinkConfOverrides?: Record<string, string> };
   taskConfig: SyncTaskSave['taskConfig'] & { sourceServerId: number; sourceType: 'mysql-cdc' };
-  editPolicy?: SyncTask['editPolicy']; sourceServerName?: string; projectId?: number; projectName?: string;
+  editPolicy?: SyncTask['editPolicy']; sourceServerName?: string; projectName?: string;
 };
 
 const memoryGb = (value?: string) => {
@@ -49,6 +51,7 @@ const memoryGb = (value?: string) => {
 
 const toUnifiedTask = (value: SyncTaskSave): UnifiedTaskWire => ({
   taskType: 'sync', name: value.name, owner: value.owner, description: value.description,
+  projectId: value.projectId,
   flinkVersion: value.flinkVersion, expectedUpdateTime: value.expectedUpdateTime,
   alarmConfig: { alarmType: value.taskConfig.alarmType, alarmGroup: value.taskConfig.alarmGroup },
   flinkConf: {
@@ -169,10 +172,11 @@ export const listSyncSourceTables = (serverId: number, database: string, exclude
   return requestJson<SyncSourceTableOption[]>(`/api/tasks/sync/source-tables?${query}`);
 };
 export const getMysqlSchema = (id: number, database: string, table: string) => requestJson<MysqlTableSchema>(`/api/servers/${id}/mysql/table-schema?database=${encodeURIComponent(database)}&table=${encodeURIComponent(table)}`);
+export const getMysqlTableDdl = (id: number, table: string) => requestJson<MysqlTableDdl>(`/api/servers/${id}/mysql/table-ddl?table=${encodeURIComponent(table)}`);
 export const getCommonColumns = (id: number, database: string, tables: string[]) => requestJson<MysqlColumn[]>(`/api/servers/${id}/mysql/common-columns?database=${encodeURIComponent(database)}&${tables.map((table) => `tables=${encodeURIComponent(table)}`).join('&')}`);
 
 export const listTaskParams = () => requestJson<TaskParam[]>('/v1/api/tasks/params?taskType=sync');
-export const getCdcOptions = () => requestJson<{ targetDatabase: string; tablePrefixes: PaimonTablePrefixOption[] }>('/api/paimon/cdc-options');
+export const getCdcOptions = () => requestJson<{ targetDatabase: string; debugTargetDatabase: string; defaultProjectId: number; tablePrefixes: PaimonTablePrefixOption[] }>('/api/paimon/cdc-options');
 export const listAlerts = (taskId?: number) => requestJson<RealtimeAlert[]>(`/api/alerts${taskId ? `?taskId=${taskId}` : ''}`);
 export const acknowledgeAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
 export const listAlertsPage = (query = new URLSearchParams()) => requestJson<RealtimeAlertPage>(`/api/alerts/page?${query.toString()}`);
@@ -191,6 +195,20 @@ export const getRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api
 export const createRealtimeTable = (value: RealtimeTableCreateRequest) => requestJson<RealtimeTable>('/api/realtime/tables', json('POST', value));
 export const refreshRealtimeTable = (id: number) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/refresh`, json('POST'));
 export const safeUpdateRealtimeTable = (id: number, value: { comment?: string; addColumns?: RealtimeTable['columns']; columnComments?: Array<{ name: string; comment: string }>; options?: Record<string, string> }) => requestJson<RealtimeTable>(`/api/realtime/tables/${id}/safe-update`, json('POST', value));
+export const validateRealtimeTableSafeUpdate = (id: number, value: { comment?: string; addColumns?: RealtimeTable['columns']; columnComments?: Array<{ name: string; comment: string }>; options?: Record<string, string> }) => requestJson<import('../api/assets').AssetImpact & { valid: boolean }>(`/api/realtime/tables/${id}/safe-update/validate`, json('POST', value));
+export const listRealtimeTableSchemaVersions = (id: number, page = 1, pageSize = 50) => requestJson<{ records: import('./types').RealtimeSchemaVersion[]; total: number; page: number; pageSize: number }>(`/api/realtime/tables/${id}/schema-versions?page=${page}&pageSize=${pageSize}`);
+export const getRealtimeTableSchemaVersion = (id: number, versionNo: number) => requestJson<import('./types').RealtimeSchemaVersion>(`/api/realtime/tables/${id}/schema-versions/${versionNo}`);
+export const compareRealtimeTableSchemaVersions = (id: number, fromVersion: number, toVersion: number) => requestJson<{ fromVersion: import('./types').RealtimeSchemaVersion; toVersion: import('./types').RealtimeSchemaVersion; diff: import('./types').RealtimeSchemaDiff; compatibility: string }>(`/api/realtime/tables/${id}/schema-compare?fromVersion=${fromVersion}&toVersion=${toVersion}`);
+
+export const listBusinessDomains = (query = new URLSearchParams()) => requestJson<{ records: import('./types').BusinessDomain[]; total: number; pageNo: number; pageSize: number }>(`/api/realtime/business-domains?${query}`);
+export const listBusinessDomainOptions = () => requestJson<import('./types').BusinessDomain[]>('/api/realtime/business-domains/options');
+export const createBusinessDomain = (value: { code: string; name: string; description?: string; owner?: string; sortOrder?: number }) => requestJson<import('./types').BusinessDomain>('/api/realtime/business-domains', json('POST', value));
+export const updateBusinessDomain = (id: number, value: { name: string; description?: string; owner?: string; sortOrder?: number }) => requestJson<import('./types').BusinessDomain>(`/api/realtime/business-domains/${id}`, json('PUT', value));
+export const updateBusinessDomainStatus = (id: number, enabled: boolean) => requestJson<import('./types').BusinessDomain>(`/api/realtime/business-domains/${id}/status`, json('POST', { enabled }));
+export const listBusinessDomainAssets = (id: number, query = new URLSearchParams()) => requestJson<{ records: import('./types').AssetDomainAssignment[]; total: number; pageNo: number; pageSize: number }>(`/api/realtime/business-domains/${id}/assets?${query}`);
+export const getAssetDomainAssignment = (assetType: 'HIVE' | 'PAIMON', catalogName: string, databaseName: string, tableName: string) => requestJson<import('./types').AssetDomainAssignment>(`/api/realtime/business-domains/assignment?${new URLSearchParams({ assetType, catalogName, databaseName, tableName })}`);
+export const assignAssetDomain = (value: { assetType: 'HIVE' | 'PAIMON'; catalogName: string; databaseName: string; tableName: string; realtimeTableId?: number; domainId: number }) => requestJson<import('./types').AssetDomainAssignment>('/api/realtime/business-domains/assignment', json('PUT', value));
+export const unassignAssetDomain = (assetType: 'HIVE' | 'PAIMON', catalogName: string, databaseName: string, tableName: string) => requestJson<boolean>(`/api/realtime/business-domains/assignment?${new URLSearchParams({ assetType, catalogName, databaseName, tableName })}`, { method: 'DELETE' });
 
 export const listManagedTasks = async (taskType: ManagedTaskType, query: URLSearchParams) => {
   const page = await requestJson<{ records: ManagedTask[]; total: number; pageNo: number; pageSize: number }>('/v1/api/tasks/page', json('POST', {

@@ -640,6 +640,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         assertFalse(json.contains("\"servers\""));
         assertFalse(json.contains("inst-null"));
         assertTrue(json.contains("flink run -t yarn-application"));
+        assertTrue(json.contains("-Dyarn.application.queue=root.default"));
         assertFalse(json.contains("run-application"));
     }
 

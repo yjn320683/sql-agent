@@ -41,6 +41,7 @@ import { MYSQL_METADATA_COLUMN_PREFIX, type
 import SyncMoreConfigRows from './SyncMoreConfigRows';
 import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
 import ComputedColumnEditorModal from './ComputedColumnEditorModal';
+import MysqlTableDdlDrawer from './MysqlTableDdlDrawer';
 import SyncSectionNav from './SyncSectionNav';
 import { computedColumnName } from './computedColumns';
 import type { AiProposal } from '../../types';
@@ -157,6 +158,9 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   const [preview, setPreview] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [computedColumnTable, setComputedColumnTable] = useState<string>();
+  const [mysqlDdlOpen, setMysqlDdlOpen] = useState(false);
+  const [mysqlDdlInitialTable, setMysqlDdlInitialTable] = useState<string>();
+  const [defaultProjectId, setDefaultProjectId] = useState<number>();
   const initializedKeyRef = useRef('');
   const schemasRef = useRef<Record<string, MysqlTableSchema>>({});
   const schemaErrorsRef = useRef<Set<string>>(new Set());
@@ -273,6 +277,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       }
       if (optionResult.status === 'fulfilled') {
         setDomains(optionResult.value.tablePrefixes);
+        setDefaultProjectId(optionResult.value.defaultProjectId);
         if (!task) {
           form.setFieldValue('targetDatabase', optionResult.value.targetDatabase);
           form.setFieldValue(['taskConfig', 'cdcConfig', 'targetDatabase'], optionResult.value.targetDatabase);
@@ -439,6 +444,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       ),
     };
     return {
+      projectId: task?.projectId ?? defaultProjectId,
       name: values.name,
       owner: values.owner,
       description: values.description,
@@ -502,7 +508,12 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
   );
 
   const mappingColumns = [
-    { title: '源表', dataIndex: 'table', width: 180 },
+    {
+      title: '源表', dataIndex: 'table', width: 180,
+      render: (table: string) => <Typography.Link onClick={() => {
+        setMysqlDdlInitialTable(table); setMysqlDdlOpen(true);
+      }}>{table}</Typography.Link>,
+    },
     {
       title: '表结构',
       width: 96,
@@ -612,13 +623,16 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
               catch (error) { message.error((error as Error).message); }
               finally { setMetadataLoading(false); }
             }} />
+            <Button type="link" icon={<EyeOutlined />} disabled={!serverId} onClick={() => {
+              setMysqlDdlInitialTable(selectedTables?.[0] ?? tables[0]?.tableName); setMysqlDdlOpen(true);
+            }}>查看源表 DDL</Button>
           </Space.Compact>
         </Descriptions.Item>
         <Descriptions.Item label="MySQL 配置" span={2}>
           <div className="realtime-dynamic-param-grid">{params.filter((item) => item.paramType === 'mysql_conf' && Boolean(item.required)).map((item) => dynamicParam(item, structureLocked))}</div>
           <SyncMoreConfigRows paramType="mysql_conf" formNamePath={['taskConfig', 'cdcConfig', 'mysqlConfOverrides']} taskParams={params} readOnly={structureLocked} />
         </Descriptions.Item>
-        <Descriptions.Item label={fieldLabel('目标Paimon库', true)}><Form.Item name="targetDatabase" rules={[{ required: true }]} noStyle><Input disabled placeholder="ods_real" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label={fieldLabel('目标Paimon库', true)}><Form.Item name="targetDatabase" rules={[{ required: true }]} noStyle><Input disabled placeholder="ods_rt" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('目标Paimon表所属域', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'domainPrefix']} rules={[{ required: true }]} noStyle><Select disabled={structureLocked} placeholder="请选择业务域" options={domains} /></Form.Item></Descriptions.Item>
         <Descriptions.Item label={fieldLabel('目标Paimon表前缀', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'tablePrefix']} rules={[{ required: true, message: '请选择业务域以生成目标Paimon表前缀' }]} noStyle><Input disabled placeholder="目标Paimon库_[库前缀_]库名_业务域_" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={(selectedTables ?? []).map((table) => `${form.getFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix']) || ''}${table}`).join('\n')} autoSize={{ minRows: 2, maxRows: 6 }} /></Descriptions.Item>
@@ -760,6 +774,14 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         setPreview('');
       }}
       onCancel={() => setComputedColumnTable(undefined)}
+    />
+    <MysqlTableDdlDrawer
+      open={mysqlDdlOpen}
+      serverId={serverId}
+      tables={tables}
+      selectedTables={selectedTables ?? []}
+      initialTable={mysqlDdlInitialTable}
+      onClose={() => setMysqlDdlOpen(false)}
     />
   </>);
 }

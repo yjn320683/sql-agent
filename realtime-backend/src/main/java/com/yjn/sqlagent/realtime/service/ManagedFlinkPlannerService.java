@@ -79,7 +79,8 @@ public class ManagedFlinkPlannerService {
             requireSameLineage("输入", expected.getInputs(), inputs);
             requireSameLineage("输出", expected.getOutputs(), outputs);
             String plan = includeExplain ? statementSet.explain() : "";
-            return new Analysis(new ArrayList<>(inputs), new ArrayList<>(outputs), insertCount, plan);
+            return new Analysis(new ArrayList<>(inputs), new ArrayList<>(outputs), insertCount,
+                    expected.getStatementCount(), plan, expected.getLineageFacts());
         } catch (IllegalArgumentException ex) {
             throw ex;
         } catch (Exception ex) {
@@ -192,14 +193,24 @@ public class ManagedFlinkPlannerService {
         private final List<String> inputs;
         private final List<String> outputs;
         private final int insertCount;
+        private final int statementCount;
         private final String plan;
+        private final java.util.Map<String, Object> lineageFacts;
 
-        Analysis(List<String> inputs, List<String> outputs, int insertCount, String plan) {
-            this.inputs = inputs; this.outputs = outputs; this.insertCount = insertCount; this.plan = plan;
+        Analysis(List<String> inputs, List<String> outputs, int insertCount, int statementCount, String plan) {
+            this(inputs, outputs, insertCount, statementCount, plan, java.util.Map.of());
+        }
+
+        Analysis(List<String> inputs, List<String> outputs, int insertCount, int statementCount, String plan,
+                 java.util.Map<String, Object> lineageFacts) {
+            this.inputs = inputs; this.outputs = outputs; this.insertCount = insertCount;
+            this.statementCount = statementCount; this.plan = plan; this.lineageFacts = lineageFacts;
         }
         public List<String> getInputs() { return inputs; }
         public List<String> getOutputs() { return outputs; }
         public int getInsertCount() { return insertCount; }
+        public int getStatementCount() { return statementCount; }
         public String getPlan() { return plan; }
+        public java.util.Map<String, Object> getLineageFacts() { return lineageFacts; }
     }
 }
