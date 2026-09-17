@@ -24,6 +24,15 @@ export default function TaskWorkspacePage() {
     const value = Number(new URLSearchParams(location.search).get('versionNo'));
     return Number.isInteger(value) && value > 0 ? value : undefined;
   }, [location.search]);
+  const scheduleDeepLink = useMemo(() => {
+    const params = new URLSearchParams(location.search);
+    const taskId = Number(params.get('scheduleTaskId'));
+    const backfillId = Number(params.get('backfillId'));
+    return {
+      taskId: Number.isInteger(taskId) && taskId > 0 ? taskId : undefined,
+      backfillId: Number.isInteger(backfillId) && backfillId > 0 ? backfillId : undefined,
+    };
+  }, [location.search]);
   const [taskTabs, setTaskTabs] = useState<TaskTab[]>([]);
   const [newTabOpen, setNewTabOpen] = useState(false);
   const [dirtyTabs, setDirtyTabs] = useState<Record<string, boolean>>({});
@@ -140,10 +149,13 @@ export default function TaskWorkspacePage() {
           refreshKey={listRefreshKey}
           initialExecutionTaskId={'executionTaskId' in route ? route.executionTaskId : undefined}
           initialExecutionId={'executionId' in route ? route.executionId : undefined}
+          initialScheduleTaskId={scheduleDeepLink.taskId}
+          initialBackfillBatchId={scheduleDeepLink.backfillId}
           onCreateTask={openNew}
           onEditTask={openTask}
           onExecutionOpen={openExecutions}
           onExecutionClose={closeExecutions}
+          onScheduleClose={() => navigate('/tasks')}
         />
       ),
     },

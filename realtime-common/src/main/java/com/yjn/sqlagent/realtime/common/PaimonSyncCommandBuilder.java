@@ -13,6 +13,9 @@ import java.util.stream.Collectors;
 public class PaimonSyncCommandBuilder {
 
     private static final Pattern DOMAIN = Pattern.compile("[a-z0-9]+");
+    private static final String METADATA_COLUMN_PREFIX = "__meta_";
+    private static final List<String> METADATA_COLUMNS =
+            List.of("database_name", "table_name", "op_ts");
     public Command build(SubmissionSpec spec) {
         return build(spec, false);
     }
@@ -57,7 +60,8 @@ public class PaimonSyncCommandBuilder {
         option(args, "--table_prefix", tablePrefix);
         option(args, "--table_suffix", text(cdc.get("tableSuffix")));
         csv(args, "--type_mapping", strings(cdc.get("typeMappings")));
-        csv(args, "--metadata_column", strings(cdc.get("metadataColumns")));
+        csv(args, "--metadata_column", METADATA_COLUMNS);
+        option(args, "--metadata_column_prefix", METADATA_COLUMN_PREFIX);
         validateTableConfigs(tables, objectMap(cdc.get("tableConfigs")));
         appendTableConfigs(args, tables, objectMap(cdc.get("tableConfigs")));
         Map<String, String> mysql = new LinkedHashMap<>(runtime.getMysqlDefaultConf());

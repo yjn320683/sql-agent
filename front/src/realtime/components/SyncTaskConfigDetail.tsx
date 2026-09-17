@@ -3,6 +3,7 @@ import { isValidElement, type ReactNode } from 'react';
 import { StructuredKeyValueTable } from './InstanceInspectorModal';
 import SyncSectionNav from './SyncSectionNav';
 import { syncStartMethodLabel } from './syncStartMethod';
+import { MYSQL_METADATA_COLUMN_PREFIX } from '../types';
 
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
@@ -118,6 +119,7 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
         {item('目标Paimon表前缀', cdc.tablePrefix, ['taskConfig.cdcConfig.tablePrefix'])}
         {item('目标Paimon表列表', targetTables, ['taskConfig.cdcConfig.targetTableList'])}
         {item('目标Paimon表同步元数据列', cdc.metadataColumns, ['taskConfig.cdcConfig.metadataColumns'])}
+        {item('目标Paimon表同步元数据列前缀', MYSQL_METADATA_COLUMN_PREFIX, ['taskConfig.cdcConfig.metadataColumnPrefix'])}
         {item('目标Paimon表类型映射', cdc.typeMappings, ['taskConfig.cdcConfig.typeMappings'])}
         {Object.keys(asRecord(cdc.tableConfOverrides)).length > 0 && item('目标Paimon表配置', configRows(cdc.tableConfOverrides), ['taskConfig.cdcConfig.tableConfOverrides'])}
         {item('整库模式', cdc.mode ?? 'combined', ['taskConfig.cdcConfig.mode'])}

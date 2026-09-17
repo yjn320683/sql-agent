@@ -170,6 +170,15 @@ public class AgentProxyServiceImpl implements AgentProxyService {
     }
 
     @Override
+    public Map<String, Object> previewHiveQuery(String sql, String defaultDb, int limit) {
+        Map<String, Object> body = new java.util.LinkedHashMap<>();
+        body.put("sql", sql); body.put("defaultDb", defaultDb); body.put("limit", limit);
+        return workspaceRequest(agentWebClient.post()
+                .uri("/workspace/sql/query-preview")
+                .bodyValue(body));
+    }
+
+    @Override
     public Map<String, Object> searchHiveFunctions(
             String keyword, int limit, int offset, String defaultDb) {
         return workspaceRequest(agentWebClient.get().uri(builder -> builder

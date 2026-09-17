@@ -26,10 +26,13 @@ interface Props {
   refreshKey?: number;
   initialExecutionTaskId?: number;
   initialExecutionId?: number;
+  initialScheduleTaskId?: number;
+  initialBackfillBatchId?: number;
   onCreateTask?: () => void;
   onEditTask?: (taskId: number, title?: string, versionNo?: number) => void;
   onExecutionOpen?: (taskId: number, executionId?: number) => void;
   onExecutionClose?: () => void;
+  onScheduleClose?: () => void;
 }
 
 export default function TaskListPage({
@@ -37,10 +40,13 @@ export default function TaskListPage({
   refreshKey = 0,
   initialExecutionTaskId,
   initialExecutionId,
+  initialScheduleTaskId,
+  initialBackfillBatchId,
   onCreateTask,
   onEditTask,
   onExecutionOpen,
   onExecutionClose,
+  onScheduleClose,
 }: Props) {
   const navigate = useNavigate();
   const { actionColumnWidth, actionRef } = useAutoTableActionWidth({ initialWidth: 328 });
@@ -82,6 +88,16 @@ export default function TaskListPage({
       onExecutionClose?.();
     });
   }, [data.items, initialExecutionTaskId, onExecutionClose]);
+
+  useEffect(() => {
+    if (!initialScheduleTaskId) return;
+    const existing = data.items.find((item) => item.id === initialScheduleTaskId);
+    if (existing) { setScheduleTask(existing); return; }
+    void getTask(initialScheduleTaskId).then(setScheduleTask).catch((error) => {
+      message.error(`加载任务调度失败：${(error as Error).message}`);
+      onScheduleClose?.();
+    });
+  }, [data.items, initialScheduleTaskId, onScheduleClose]);
 
   const editTask = async (task: SqlTaskVO) => {
     let versionNo: number | undefined;
@@ -319,7 +335,7 @@ export default function TaskListPage({
           onActivated={(activatedTask) => { setVersionTask(activatedTask); void load(); }}
         />
       ) : null}
-      {scheduleTask ? <TaskScheduleDrawer open task={scheduleTask} onClose={() => setScheduleTask(undefined)} /> : null}
+      {scheduleTask ? <TaskScheduleDrawer open task={scheduleTask} initialBackfillId={initialBackfillBatchId} onClose={() => { setScheduleTask(undefined); onScheduleClose?.(); }} /> : null}
     </div>
   );
 }

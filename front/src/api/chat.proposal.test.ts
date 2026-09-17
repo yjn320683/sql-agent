@@ -14,12 +14,13 @@ describe('页面 AI Proposal SSE', () => {
     const cb = callbacks();
     const event = dispatchFrame([
       'event: proposal',
-      'data: {"target":"sync-task-form","kind":"CONFIG","patch":{"flinkConf":{"parallelism":2}},"baseRevision":"2026-09-08T15:00:00","risks":["需重新校验"]}',
+      'data: {"proposalId":"toolu_proposal","target":"sync-task-form","kind":"CONFIG","patch":{"flinkConf":{"parallelism":2}},"baseRevision":"2026-09-08T15:00:00","risks":["需重新校验"]}',
     ].join('\n'), cb);
 
     expect(event).toBe('proposal');
     expect(cb.onProposal).toHaveBeenCalledWith(expect.objectContaining({
       target: 'sync-task-form',
+      proposalId: 'toolu_proposal',
       baseRevision: '2026-09-08T15:00:00',
       patch: { flinkConf: { parallelism: 2 } },
     }));

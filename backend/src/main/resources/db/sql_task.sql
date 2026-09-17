@@ -82,9 +82,11 @@ CREATE TABLE IF NOT EXISTS sql_task_execution (
   rendered_sql_snapshot LONGTEXT      NULL COMMENT '参数渲染后的 SQL 快照',
   parameter_values      LONGTEXT      NULL COMMENT '本次运行参数 JSON',
   business_date         DATE          NULL COMMENT '旧日期表达式的计算基准日期',
-  source_type           VARCHAR(16)   NOT NULL COMMENT '执行来源：EFFECTIVE、VERSION',
+  source_type           VARCHAR(16)   NOT NULL COMMENT '执行来源：EFFECTIVE、VERSION、REPLAY',
   task_version_no       INT           NULL COMMENT '执行版本号；未版本化的初始生效代码为空',
   task_revision         BIGINT        NULL COMMENT '执行生效代码时的任务revision',
+  source_execution_id   BIGINT        NULL COMMENT '快照重跑的来源执行实例',
+  replay_strategy       VARCHAR(32)   NULL COMMENT '重跑策略，当前为SNAPSHOT_REPLAY',
   status                VARCHAR(16)   NOT NULL COMMENT 'PENDING、QUEUED、RUNNING、SUCCEEDED、FAILED、CANCELLING、CANCELLED',
   current_step_no       INT           NULL COMMENT '当前正在执行的Step编号',
   total_steps           INT           NOT NULL DEFAULT 0 COMMENT 'Step总数',
@@ -104,7 +106,9 @@ CREATE TABLE IF NOT EXISTS sql_task_execution (
   PRIMARY KEY (id),
   KEY idx_task_execution_task_time (task_id, submitted_at),
   KEY idx_task_execution_status_time (status, update_time),
-  KEY idx_task_execution_source (task_id, source_type, task_version_no)
+  KEY idx_task_execution_source (task_id, source_type, task_version_no),
+  KEY idx_task_execution_parent (source_execution_id),
+  KEY idx_task_execution_success_sample (task_id, status, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SQL Agent Hive任务执行实例表';
 
 CREATE TABLE IF NOT EXISTS sql_task_execution_step (
@@ -131,6 +135,23 @@ CREATE TABLE IF NOT EXISTS sql_task_execution_step (
   KEY idx_execution_step_status (execution_id, status),
   KEY idx_execution_step_task (task_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='SQL Agent Hive任务执行Step表';
+
+CREATE TABLE IF NOT EXISTS task_diagnostic_report (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  target_kind VARCHAR(32) NOT NULL COMMENT 'OFFLINE_EXECUTION或REALTIME_INSTANCE',
+  target_id BIGINT NOT NULL COMMENT '执行或实例ID',
+  revision INT NOT NULL COMMENT '报告修订号',
+  report_status VARCHAR(16) NOT NULL COMMENT 'COMPLETE、PARTIAL或FAILED',
+  complete_flag TINYINT(1) NOT NULL DEFAULT 0,
+  failure_stage VARCHAR(32) NULL,
+  summary VARCHAR(1024) NULL,
+  report_json LONGTEXT NOT NULL,
+  generated_at DATETIME NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_diagnostic_target_revision (target_kind,target_id,revision),
+  KEY idx_diagnostic_target_latest (target_kind,target_id,generated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线与实时共用的不可变诊断报告';
 
 CREATE TABLE IF NOT EXISTS sql_task_version_check (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -165,6 +186,9 @@ CREATE TABLE IF NOT EXISTS sql_task_schedule (
   concurrency_policy VARCHAR(16) NOT NULL DEFAULT 'FORBID',
   max_retries INT NOT NULL DEFAULT 0,
   retry_interval_seconds INT NOT NULL DEFAULT 60,
+  execution_timeout_seconds INT NOT NULL DEFAULT 0,
+  sla_duration_minutes INT NOT NULL DEFAULT 0,
+  timeout_policy VARCHAR(16) NOT NULL DEFAULT 'ALERT_ONLY',
   parameter_values LONGTEXT NULL,
   next_trigger_time DATETIME NULL,
   last_trigger_time DATETIME NULL,
@@ -224,6 +248,7 @@ CREATE TABLE IF NOT EXISTS sql_task_backfill_batch (
   submitted_count INT NOT NULL DEFAULT 0,
   succeeded_count INT NOT NULL DEFAULT 0,
   failed_count INT NOT NULL DEFAULT 0,
+  max_concurrency INT NOT NULL DEFAULT 3,
   parameter_values LONGTEXT NULL,
   requested_by VARCHAR(20) NOT NULL,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -232,3 +257,20 @@ CREATE TABLE IF NOT EXISTS sql_task_backfill_batch (
   KEY idx_backfill_task_time (task_id,create_time),
   KEY idx_backfill_status (status,update_time)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线任务补数批次';
+
+CREATE TABLE IF NOT EXISTS sql_task_backfill_item (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  batch_id BIGINT NOT NULL,
+  task_id BIGINT NOT NULL,
+  business_date DATE NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  execution_id BIGINT NULL,
+  attempt_no INT NOT NULL DEFAULT 0,
+  message VARCHAR(1024) NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_backfill_batch_date (batch_id,business_date),
+  KEY idx_backfill_item_claim (batch_id,status,business_date),
+  KEY idx_backfill_item_execution (execution_id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线补数逐日执行项';

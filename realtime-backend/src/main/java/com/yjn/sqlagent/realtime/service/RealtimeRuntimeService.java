@@ -44,6 +44,9 @@ public class RealtimeRuntimeService {
     private static final Pattern APPLICATION_ID = Pattern.compile("application_\\d+_\\d+");
     private static final Pattern JOB_ID = Pattern.compile("(?i)(?:JobID|Job ID)[:\\s]+([0-9a-f]{32})");
     private static final Pattern TRACKING_URL = Pattern.compile("(?im)^\\s*Tracking-URL\\s*:\\s*(\\S+)");
+    private static final Pattern SUBMIT_STAGE = Pattern.compile("(?m)^.*\\[SUBMIT_STAGE]\\s+(.+?)\\s*$");
+    private static final Pattern SUBMIT_ERROR_STAGE = Pattern.compile("(?m)^.*\\[SUBMIT_ERROR]\\s+启动失败，阶段：(.+?)\\s*$");
+    private static final Map<String, SubmissionStage> SUBMISSION_STAGES = submissionStages();
     private final RealtimeSyncRepository repository;
     private final RealtimeProperties properties;
     private final ObjectMapper mapper;
@@ -157,6 +160,87 @@ public class RealtimeRuntimeService {
         }
     }
 
+    public Map<String, Object> recoveryOptions(long taskId, long sourceInstanceId) {
+        Map<String, Object> task = repository.requiredTask(taskId);
+        Map<String, Object> source = requireRecoverableSource(taskId, sourceInstanceId);
+        String taskType = text(task.get("taskType"), "sync");
+        List<Map<String, Object>> strategies = new ArrayList<>();
+        boolean syncDirectBlocked = "sync".equalsIgnoreCase(taskType)
+                && Boolean.TRUE.equals(repository.editPolicy(taskId).get("productionLocked"));
+        strategies.add(recoveryOption("direct", !syncDirectBlocked, null,
+                syncDirectBlocked ? "同步任务已有正式实例，不能重新首次全量启动" : null));
+        String sourceJobId = text(source.get("jobId"));
+        @SuppressWarnings("unchecked") List<Map<String, Object>> checkpoints = new ArrayList<>(
+                (List<Map<String, Object>>) stateHistory(taskId, "checkpoint"));
+        checkpoints.removeIf(item -> !pathContainsSegment(text(item.get("path")), sourceJobId));
+        for (Map<String, Object> checkpoint : checkpoints) {
+            strategies.add(recoveryOption("checkpoint", true, text(checkpoint.get("path")), null));
+        }
+        String savepoint = text(source.get("savepointPath"));
+        strategies.add(recoveryOption("savepoint", !savepoint.isEmpty(), savepoint,
+                savepoint.isEmpty() ? "来源实例没有可用 Savepoint" : null));
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("taskId", taskId); result.put("taskType", taskType); result.put("sourceInstance", source);
+        result.put("versionId", source.get("versionId")); result.put("config", source.get("config"));
+        result.put("strategies", strategies);
+        return result;
+    }
+
+    public Map<String, Object> recover(long taskId, long sourceInstanceId, TaskActionRequest action, String actor) {
+        Map<String, Object> task = repository.requiredTask(taskId);
+        Map<String, Object> source = requireRecoverableSource(taskId, sourceInstanceId);
+        @SuppressWarnings("unchecked") Map<String, Object> sourceConfig = (Map<String, Object>) source.get("config");
+        if (sourceConfig == null || sourceConfig.isEmpty()) throw new IllegalStateException("来源实例缺少不可变配置快照");
+        Map<String, Object> effectiveTask = new LinkedHashMap<>(sourceConfig);
+        validateStart(action); validateStatePath(taskId, action);
+        if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateRequiredRecovery(taskId, action);
+        if (repository.hasActiveManagedInstance(taskId)) throw new IllegalStateException("任务已有本平台管理的活动实例，禁止重复恢复");
+        if (repository.hasActiveImportedInstance(taskId)) throw new IllegalStateException("任务存在历史导入的活动实例，禁止恢复后双跑");
+        List<String> liveApplications = liveSyncApplications(taskId);
+        if (!liveApplications.isEmpty()) throw new IllegalStateException("检测到旧实例仍在运行，请先处理残留实例");
+
+        Long versionId = nullableNumber(source.get("versionId"));
+        String strategy = action.getSourceStartupTimestampMillis() != null ? "TIMESTAMP"
+                : text(action.getStartType(), "direct").toUpperCase(Locale.ROOT);
+        long operationId = repository.startOperation(taskId, null, "RECOVER", actor,
+                json(Map.of("sourceInstanceId", sourceInstanceId, "strategy", strategy,
+                        "statePath", text(action.getStatePath()))));
+        long instanceId = 0L;
+        try {
+            instanceId = repository.insertInstance(taskId, versionId, "PRODUCTION", json(effectiveTask),
+                    sourceInstanceId, strategy, empty(text(action.getStatePath())));
+            repository.attachOperationInstance(operationId, instanceId);
+            repository.changeTaskStatus(taskId, "submitting");
+            long prepared = instanceId;
+            if (!operationExecutor.submit(taskId, "恢复", () -> completeStart(taskId, task, effectiveTask,
+                    versionId, prepared, operationId, action, actor, false))) {
+                throw new IllegalStateException("任务已有后台操作处理中，请稍后重试");
+            }
+            return repository.requiredInstance(taskId, instanceId);
+        } catch (RuntimeException ex) {
+            if (instanceId > 0) repository.updateInstanceSubmission(instanceId, "failed", null, null, null, null, safe(ex));
+            repository.completeOperation(operationId, "FAILED", null, safe(ex));
+            repository.changeTaskStatus(taskId, "failed");
+            throw ex;
+        }
+    }
+
+    private Map<String, Object> requireRecoverableSource(long taskId, long sourceInstanceId) {
+        Map<String, Object> source = repository.requiredInstance(taskId, sourceInstanceId);
+        if (!Boolean.TRUE.equals(source.get("managed"))) throw new IllegalStateException("历史导入实例不能作为恢复源");
+        if (!"PRODUCTION".equalsIgnoreCase(text(source.get("executionMode")))) throw new IllegalArgumentException("只能从正式实例恢复");
+        String status = text(source.get("status")).toLowerCase(Locale.ROOT);
+        if (!List.of("failed", "canceled", "finished", "killed_success").contains(status)) {
+            throw new IllegalStateException("只能从失败或已停止的终态实例恢复");
+        }
+        return source;
+    }
+
+    private Map<String, Object> recoveryOption(String type, boolean available, String statePath, String reason) {
+        Map<String, Object> result = new LinkedHashMap<>(); result.put("type", type); result.put("available", available);
+        result.put("statePath", statePath); result.put("reason", reason); return result;
+    }
+
     public Map<String, Object> stop(long taskId, long instanceId, TaskActionRequest action, String actor) {
         Map<String, Object> instance = repository.requiredInstance(taskId, instanceId);
         if (!Boolean.TRUE.equals(instance.get("managed"))) {
@@ -167,19 +251,23 @@ public class RealtimeRuntimeService {
         boolean debug = "DEBUG".equalsIgnoreCase(text(instance.get("executionMode")));
         String requestedStopType = text(action.getStopType(), debug ? "direct" : "savepoint").toLowerCase(Locale.ROOT);
         final String stopType = debug ? "direct" : requestedStopType;
-        if (!debug && !"savepoint".equals(stopType)) {
-            throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
-        }
         if (!List.of("direct", "savepoint").contains(stopType)) {
             throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
         }
         if ("savepoint".equals(stopType) && !"running".equals(currentStatus)) {
-            throw new IllegalStateException("savepoint 停止只支持已确认 RUNNING 的 Flink Job，请先刷新状态后重试");
+            throw new IllegalStateException("当前正式实例不是运行中状态，无法生成 Savepoint；确认风险后可使用直接停止");
+        }
+        if ("direct".equals(stopType)
+                && !List.of("submitting", "running", "debug_success_running", "restarting").contains(currentStatus)) {
+            throw new IllegalStateException("当前正式实例状态不支持直接停止：" + currentStatus);
         }
         String jobId = text(instance.get("jobId"));
         String applicationId = text(instance.get("yarnApplicationId"));
-        if (!debug && "savepoint".equals(stopType) && jobId.isEmpty()) {
-            throw new IllegalStateException("正式实例缺少 Flink JobID，禁止降级为 YARN kill；请先刷新实例状态");
+        if ("savepoint".equals(stopType) && jobId.isEmpty()) {
+            throw new IllegalStateException("Savepoint 停止需要 Job ID，请等待状态同步后重试");
+        }
+        if ("direct".equals(stopType) && jobId.isEmpty() && applicationId.isEmpty()) {
+            throw new IllegalStateException("直接停止需要 Flink Job ID 或 YARN Application ID，请等待状态同步后重试");
         }
         long operationId = repository.startOperation(taskId, instanceId,
                 "DEBUG".equals(instance.get("executionMode")) ? "DEBUG_STOP" : "STOP", actor,
@@ -189,14 +277,14 @@ public class RealtimeRuntimeService {
         try {
             if (!operationExecutor.submit(taskId, debug ? "调试停止" : "停止",
                     () -> completeStop(taskId, instanceId, instance, stopType, jobId, applicationId,
-                            operationId, actor, debug))) {
+                            operationId, actor, debug, currentStatus))) {
                 throw new IllegalStateException("任务已有后台操作处理中，请稍后刷新状态");
             }
             return repository.requiredInstance(taskId, instanceId);
         } catch (RuntimeException ex) {
-            repository.updateInstanceRuntime(instanceId, "running", text(instance.get("lastRuntimeLog")), safe(ex));
+            repository.updateInstanceRuntime(instanceId, currentStatus, text(instance.get("lastRuntimeLog")), safe(ex));
             repository.completeOperation(operationId, "FAILED", null, safe(ex));
-            if (!debug) repository.changeTaskStatus(taskId, "running");
+            if (!debug) repository.changeTaskStatus(taskId, currentStatus);
             repository.addAlert(taskId, "warning", "同步任务停止失败", safe(ex));
             throw ex;
         }
@@ -205,28 +293,58 @@ public class RealtimeRuntimeService {
     private void completeStart(long taskId, Map<String, Object> task, Map<String, Object> effectiveTask,
             Long versionId, long instanceId, long operationId, TaskActionRequest action,
             String actor, boolean debug) {
+        String startupLog = "";
+        String stage = debug ? "准备调试提交配置" : "准备正式提交配置";
         try {
+            startupLog = persistSubmissionStage(instanceId, startupLog, stage);
             String mode = debug ? "DEBUG" : "PRODUCTION";
             SubmissionSpec spec = spec(effectiveTask, versionId, instanceId, action, mode);
+            stage = "写入 HDFS 提交文件";
+            startupLog = persistSubmissionStage(instanceId, startupLog, stage);
             StoredSpec stored = store(spec);
-            List<String> command = flinkCommand(spec, stored, action.isDryRun());
+            String debugReportUri = action.isDryRun() ? debugReportUri(stored.uri) : "";
+            stage = "生成启动命令";
+            startupLog = persistSubmissionStage(instanceId, startupLog, stage);
+            List<String> command = flinkCommand(spec, stored, action.isDryRun(), debugReportUri);
+            stage = "执行 Flink 启动命令";
+            startupLog = persistSubmissionStage(instanceId, startupLog, stage);
             CommandResult result = execute(command, 180);
             String applicationId = match(APPLICATION_ID, result.output, 0);
             String jobId = match(JOB_ID, result.output, 1);
             String trackingUrl = applicationId.isEmpty() ? "" : yarnTrackingUrl(applicationId);
             if (result.exitCode != 0) {
+                if (action.isDryRun()) {
+                    try {
+                        Map<String, Object> debugReport = readDebugReport(debugReportUri);
+                        repository.updateInstanceDebugReport(instanceId, text(debugReport.get("status"), "FAILED"),
+                                text(debugReport.get("summary")), json(debugReport));
+                    } catch (RuntimeException reportFailure) {
+                        startupLog = append(startupLog, "[DEBUG_REPORT_ERROR] " + safe(reportFailure));
+                    }
+                }
                 throw new IllegalStateException("Flink 提交失败：" + tail(result.output, 4000));
             }
             String status = "submitting";
-            String startupLog = result.output;
+            startupLog = append(startupLog, result.output);
             if (action.isDryRun()) {
-                CommandResult terminal = awaitYarnTerminal(applicationId, 120);
-                status = yarnStatus(terminal.output);
-                startupLog = append(startupLog, terminal.output);
-                String terminalTrackingUrl = usableTrackingUrl(match(TRACKING_URL, terminal.output, 1));
-                if (!terminalTrackingUrl.isEmpty()) trackingUrl = terminalTrackingUrl;
-                if (!"finished".equals(status)) {
-                    throw new IllegalStateException("DEBUG Dry Run 未成功结束：" + tail(terminal.output, 4000));
+                if (!applicationId.isEmpty()) {
+                    CommandResult terminal = awaitYarnTerminal(applicationId, 120);
+                    status = yarnStatus(terminal.output);
+                    startupLog = append(startupLog, terminal.output);
+                    String terminalTrackingUrl = usableTrackingUrl(match(TRACKING_URL, terminal.output, 1));
+                    if (!terminalTrackingUrl.isEmpty()) trackingUrl = terminalTrackingUrl;
+                    if (!"finished".equals(status)) {
+                        throw new IllegalStateException("无写入调试未成功结束：" + tail(terminal.output, 4000));
+                    }
+                } else {
+                    status = "finished";
+                }
+                Map<String, Object> debugReport = readDebugReport(debugReportUri);
+                String reportStatus = text(debugReport.get("status"), "FAILED");
+                repository.updateInstanceDebugReport(instanceId, reportStatus,
+                        text(debugReport.get("summary")), json(debugReport));
+                if (!"PASSED".equalsIgnoreCase(reportStatus)) {
+                    throw new IllegalStateException("无写入调试报告未通过：" + text(debugReport.get("summary")));
                 }
             } else if (jobId.isEmpty() && !trackingUrl.isEmpty()) {
                 jobId = discoverJobId(trackingUrl, 30);
@@ -246,16 +364,26 @@ public class RealtimeRuntimeService {
                         "START", "提交同步生产实例");
             }
         } catch (RuntimeException ex) {
-            repository.updateInstanceSubmission(instanceId, "failed", null, null, null, null, safe(ex));
+            startupLog = append(startupLog, "[SUBMIT_ERROR] 启动失败，阶段：" + stage);
+            startupLog = append(startupLog, safe(ex));
+            repository.updateInstanceSubmission(instanceId, "failed", null, null, null,
+                    tail(mask(startupLog), 1024 * 1024), safe(ex));
             repository.completeOperation(operationId, "FAILED", null, safe(ex));
             if (!debug) repository.changeTaskStatus(taskId, "failed");
             repository.addAlert(taskId, "critical", "同步任务提交失败", safe(ex));
         }
     }
 
+    private String persistSubmissionStage(long instanceId, String startupLog, String stage) {
+        String value = append(startupLog, "[SUBMIT_STAGE] " + stage);
+        repository.updateInstanceSubmission(instanceId, "submitting", null, null, null,
+                tail(mask(value), 1024 * 1024), null);
+        return value;
+    }
+
     private void completeStop(long taskId, long instanceId, Map<String, Object> instance,
             String stopType, String jobId, String applicationId, long operationId,
-            String actor, boolean debug) {
+            String actor, boolean debug, String previousStatus) {
         Map<String, Object> operationResult = new LinkedHashMap<>();
         operationResult.put("stopType", stopType);
         operationResult.put("jobId", jobId);
@@ -265,6 +393,7 @@ public class RealtimeRuntimeService {
                     ? ("savepoint".equals(stopType) ? "flink_savepoint" : "flink_cancel")
                     : "yarn_kill";
             boolean fallbackToYarnKill = false;
+            String fallbackDetail = "";
             boolean canFallbackToYarn = "direct".equals(stopType) && !applicationId.isEmpty()
                     && !jobId.isEmpty();
             CommandResult result;
@@ -295,8 +424,24 @@ public class RealtimeRuntimeService {
                 combinedOutput = append(combinedOutput, fallback.output);
                 result = fallback;
             }
+            if (result.exitCode == 0 && canFallbackToYarn && !fallbackToYarnKill
+                    && "flink_cancel".equals(actualMethod)) {
+                ObservedStatus observed = observeStatus(instance);
+                if (!isTerminal(observed.status)) {
+                    fallbackToYarnKill = true;
+                    actualMethod = "yarn_kill";
+                    fallbackDetail = "Flink cancel 后外部状态仍未终止：" + observed.status;
+                    CommandResult fallback = execute(
+                            List.of(properties.getYarnBin(), "application", "-kill", applicationId), 60);
+                    operationResult.put("fallbackCommand", shell(List.of(
+                            properties.getYarnBin(), "application", "-kill", applicationId)));
+                    combinedOutput = append(append(combinedOutput, observed.output), fallback.output);
+                    result = fallback;
+                }
+            }
             operationResult.put("actualMethod", actualMethod);
             operationResult.put("fallbackToYarnKill", fallbackToYarnKill);
+            operationResult.put("fallbackDetail", fallbackDetail);
             operationResult.put("exitCode", result.exitCode);
             operationResult.put("output", tail(mask(combinedOutput), 1024 * 1024));
             if (result.exitCode != 0) {
@@ -326,13 +471,14 @@ public class RealtimeRuntimeService {
             if (isProductionLifecycleChange(debug)) {
                 repository.addChange(taskId, operationId, null, instanceId, actor,
                         "STOP", savepoint.isEmpty() ? "停止类型：" + stopType
+                                + ("direct".equals(stopType) ? "，已有 Checkpoint 已保留" : "")
                                 : "停止类型：" + stopType + "，savepoint：" + savepoint);
             }
         } catch (RuntimeException ex) {
-            repository.updateInstanceRuntime(instanceId, "running", text(instance.get("lastRuntimeLog")), safe(ex));
+            repository.updateInstanceRuntime(instanceId, previousStatus, text(instance.get("lastRuntimeLog")), safe(ex));
             operationResult.put("error", safe(ex));
             repository.completeOperation(operationId, "FAILED", json(operationResult), safe(ex));
-            if (!debug) repository.changeTaskStatus(taskId, "running");
+            if (!debug) repository.changeTaskStatus(taskId, previousStatus);
             repository.addAlert(taskId, "warning", "同步任务停止失败", safe(ex));
         }
     }
@@ -383,7 +529,8 @@ public class RealtimeRuntimeService {
             }
         }
         result.put("vertices", vertices);
-        result.put("sync", syncSummary(vertices, topology));
+        if ("export".equalsIgnoreCase(repository.taskType(taskId))) result.put("export", exportSummary(vertices, topology));
+        else result.put("sync", syncSummary(vertices, topology));
         try {
             Map<String, String> metrics = metricValues(instance, "/jobs/" + jobId + "/metrics", "numRestarts");
             result.put("restartCount", metricNumber(metrics, "numRestarts"));
@@ -467,6 +614,141 @@ public class RealtimeRuntimeService {
         result.put("latest", raw.get("latest")); result.put("history", raw.get("history"));
         result.put("available", true);
         return result;
+    }
+
+    /** 三类实时任务共用的提交阶段及调试资格进度；只读，不改变实例状态。 */
+    public Map<String, Object> progress(long taskId, long instanceId) {
+        Map<String, Object> task = repository.requiredTask(taskId);
+        String taskType = text(task.get("taskType"), "sync").toLowerCase(Locale.ROOT);
+        Map<String, Object> instance = repository.requiredInstance(taskId, instanceId);
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("taskId", taskId);
+        result.put("instanceId", instanceId);
+        result.put("taskType", taskType);
+        result.put("executionMode", text(instance.get("executionMode")));
+        result.put("instanceStatus", text(instance.get("status")));
+        result.put("failureMessage", instance.get("failureMessage"));
+        applyProgressLifecycle(result, instance);
+        if ("DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
+            result.put("qualification", progressQualification(taskId, taskType, instance));
+        }
+        return result;
+    }
+
+    private void applyProgressLifecycle(Map<String, Object> result, Map<String, Object> instance) {
+        String status = text(instance.get("status")).toLowerCase(Locale.ROOT);
+        SubmissionStage stage = lastSubmissionStage(text(instance.get("startupLog")));
+        if ("submitting".equals(status)) {
+            if ((!text(instance.get("jobId")).isEmpty() || !text(instance.get("yarnApplicationId")).isEmpty())
+                    && stage.index >= SUBMISSION_STAGES.get("submitting_flink").index) {
+                stage = SUBMISSION_STAGES.get("waiting_running");
+            }
+            applyProgressStage(result, "submitting", stage);
+            return;
+        }
+        if ("running".equals(status) || "debug_success_running".equals(status)) {
+            boolean debug = "DEBUG".equalsIgnoreCase(text(instance.get("executionMode")));
+            result.put("phase", debug ? ("debug_success_running".equals(status) ? "qualified" : "qualifying") : "running");
+            result.put("stage", "running");
+            result.put("stageIndex", 6);
+            result.put("stageCount", 6);
+            result.put("message", debug ? "调试任务运行中" : "启动完成，任务运行中");
+            return;
+        }
+        if ("stopping".equals(status) || "restarting".equals(status)) {
+            result.put("phase", status);
+            result.put("stage", status);
+            result.put("stageCount", 6);
+            result.put("message", "stopping".equals(status) ? "任务停止中" : "任务重启中");
+            return;
+        }
+        result.put("phase", "terminal");
+        result.put("stage", stage.code);
+        result.put("stageIndex", stage.index);
+        result.put("stageCount", 6);
+        if ("failed".equals(status)) result.put("message", "任务在“" + stage.label + "”阶段失败");
+        else if ("killed_success".equals(status)) result.put("message", "调试成功，实例已停止");
+        else if ("canceled".equals(status)) result.put("message", "实例已取消");
+        else if ("finished".equals(status)) result.put("message", "实例已完成");
+        else result.put("message", "实例状态：" + status);
+    }
+
+    private Map<String, Object> progressQualification(long taskId, String taskType,
+            Map<String, Object> instance) {
+        Map<String, Object> result = new LinkedHashMap<>();
+        boolean checkpointOnly = "export".equalsIgnoreCase(taskType);
+        long requiredSeconds = checkpointOnly ? 0L
+                : Math.max(1, properties.getDebugSuccessMinRunningMinutes()) * 60L;
+        String status = text(instance.get("status")).toLowerCase(Locale.ROOT);
+        boolean qualified = "debug_success_running".equals(status) || "killed_success".equals(status);
+        result.put("mode", checkpointOnly ? "CHECKPOINT_ONLY" : "DURATION_AND_CHECKPOINT");
+        result.put("requiredRunningSeconds", requiredSeconds);
+        result.put("checkpointRequired", true);
+        boolean currentVersion = java.util.Objects.equals(repository.latestVersionId(taskId),
+                instance.get("versionId") instanceof Number ? ((Number) instance.get("versionId")).longValue() : null);
+        result.put("currentVersion", currentVersion);
+        if (!currentVersion) result.put("configurationMessage", "任务配置已变化，请重新调试");
+        result.put("qualified", qualified);
+        if (qualified) {
+            result.put("runningSeconds", requiredSeconds);
+            result.put("runtimeSatisfied", true);
+            result.put("completedCheckpointCount", 1L);
+            result.put("checkpointSatisfied", true);
+            return result;
+        }
+        result.put("runningSeconds", 0L);
+        result.put("runtimeSatisfied", false);
+        result.put("completedCheckpointCount", 0L);
+        result.put("checkpointSatisfied", false);
+        if (!"running".equals(status) || text(instance.get("jobId")).isEmpty()) return result;
+        try {
+            Map<String, Object> runtime = objectMap(runtime(taskId, number(instance.get("id"))));
+            long runningMillis = number(runtime.get("runningDurationMs"));
+            result.put("runningSeconds", runningMillis / 1000L);
+            result.put("runtimeSatisfied", checkpointOnly || runningMillis > requiredSeconds * 1000L);
+            Map<String, Object> checkpoint = objectMap(checkpoints(taskId, number(instance.get("id"))));
+            Map<String, Object> counts = objectMap(checkpoint.get("counts"));
+            long completed = number(counts.get("completed"));
+            Map<String, Object> latest = objectMap(checkpoint.get("latest"));
+            Map<String, Object> latestCompleted = objectMap(latest.get("completed"));
+            long acknowledged = number(latestCompleted.get("latest_ack_timestamp"));
+            long runningSince = number(runtime.get("runningSinceMs"));
+            result.put("completedCheckpointCount", completed);
+            result.put("checkpointSatisfied", completed > 0 && acknowledged >= runningSince);
+        } catch (RuntimeException ex) {
+            result.put("unavailableReason", safe(ex));
+        }
+        return result;
+    }
+
+    private void applyProgressStage(Map<String, Object> result, String phase, SubmissionStage stage) {
+        result.put("phase", phase);
+        result.put("stage", stage.code);
+        result.put("stageIndex", stage.index);
+        result.put("stageCount", 6);
+        result.put("message", stage.message);
+    }
+
+    private SubmissionStage lastSubmissionStage(String startupLog) {
+        SubmissionStage result = SUBMISSION_STAGES.get("accepted");
+        Matcher matcher = SUBMIT_STAGE.matcher(startupLog);
+        while (matcher.find()) {
+            SubmissionStage matched = submissionStage(matcher.group(1).trim());
+            if (matched != null) result = matched;
+        }
+        matcher = SUBMIT_ERROR_STAGE.matcher(startupLog);
+        while (matcher.find()) {
+            SubmissionStage matched = submissionStage(matcher.group(1).trim());
+            if (matched != null) result = matched;
+        }
+        return result;
+    }
+
+    private SubmissionStage submissionStage(String label) {
+        for (SubmissionStage stage : SUBMISSION_STAGES.values()) {
+            for (String value : stage.logValues) if (value.equals(label)) return stage;
+        }
+        return null;
     }
 
     public Object stateHistory(long taskId, String type) {
@@ -718,7 +1000,7 @@ public class RealtimeRuntimeService {
                 "STOP", "停止类型：savepoint，savepoint：" + savepoint);
     }
 
-    /** 调试通过必须持续运行到最短时长，并至少完成一次当前运行窗口内的 Checkpoint。 */
+    /** 计算和同步要求运行窗口加 Checkpoint，出仓完成一次当前运行窗口内的 Checkpoint 即可。 */
     private boolean hasDebugSuccessEvidence(Map<String, Object> instance) {
         String jobId = text(instance.get("jobId"));
         if (jobId.isEmpty() || text(instance.get("trackingUrl")).isEmpty()) return false;
@@ -728,9 +1010,12 @@ public class RealtimeRuntimeService {
             long runningTimestamp = number(timestamps.get("RUNNING"));
             long now = number(job.get("now"));
             if (now <= 0) now = System.currentTimeMillis();
+            if (runningTimestamp <= 0) return false;
+            boolean checkpointOnly = "export".equalsIgnoreCase(
+                    repository.taskType(number(instance.get("taskId"))));
             int configured = properties.getDebugSuccessMinRunningMinutes();
             long minimum = Math.max(1, configured) * 60_000L;
-            if (runningTimestamp <= 0 || now - runningTimestamp <= minimum) return false;
+            if (!checkpointOnly && now - runningTimestamp <= minimum) return false;
             Map<String, Object> checkpoint = objectMap(fetch(instance, "/jobs/" + jobId + "/checkpoints"));
             Map<String, Object> counts = objectMap(checkpoint.get("counts"));
             if (number(counts.get("completed")) < 1) return false;
@@ -838,8 +1123,8 @@ public class RealtimeRuntimeService {
     }
 
     private Map<String, Object> preview(SubmissionSpec spec) {
-        List<String> submitCommand = flinkCommand(spec,
-                new StoredSpec(previewSubmissionFile(spec), "<config-sha256>"), false);
+        StoredSpec previewStored = new StoredSpec(previewSubmissionFile(spec), "<config-sha256>");
+        List<String> submitCommand = flinkCommand(spec, previewStored, false, "");
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("command", shell(submitCommand));
         if ("sync".equalsIgnoreCase(spec.getTask().getTaskType())) {
@@ -865,7 +1150,10 @@ public class RealtimeRuntimeService {
         spec.setJobName(text(task.get("name"))); spec.setStartType(text(action.getStartType(), "direct"));
         spec.setStatePath(text(action.getStatePath())); spec.setExecutionMode(mode);
         SubmissionSpec.TaskSpec taskSpec = new SubmissionSpec.TaskSpec();
-        taskSpec.setId(number(task.get("id"))); taskSpec.setTaskConfig(objectMap(task.get("taskConfig")));
+        Map<String, Object> submittedTaskConfig = new LinkedHashMap<>(objectMap(task.get("taskConfig")));
+        List<Object> tableReferences = objectList(task.get("tableReferences"));
+        if (!tableReferences.isEmpty()) submittedTaskConfig.put("_tableReferences", tableReferences);
+        taskSpec.setId(number(task.get("id"))); taskSpec.setTaskConfig(submittedTaskConfig);
         taskSpec.setTaskType(text(task.get("taskType"), "sync"));
         taskSpec.setSourceType(text(task.get("sourceType"), "sync".equalsIgnoreCase(taskSpec.getTaskType()) ? "mysql-cdc" : "paimon"));
         taskSpec.setTargetType(text(task.get("targetType"), "export".equalsIgnoreCase(taskSpec.getTaskType()) ? "mysql" : "paimon"));
@@ -986,7 +1274,8 @@ public class RealtimeRuntimeService {
         }
     }
 
-    private List<String> flinkCommand(SubmissionSpec spec, StoredSpec stored, boolean dryRun) {
+    private List<String> flinkCommand(SubmissionSpec spec, StoredSpec stored, boolean dryRun,
+            String debugReportUri) {
         List<String> command = new ArrayList<>();
         command.add(properties.getFlinkBin()); command.add("run"); command.add("-t");
         command.add("yarn-application"); command.add("-d");
@@ -1011,8 +1300,43 @@ public class RealtimeRuntimeService {
         command.add("-c"); command.add("com.yjn.sqlagent.realtime.submit.TaskSubmitMain");
         command.add(properties.getSubmitJar()); command.add("--submission-file"); command.add(stored.uri);
         command.add("--config-sha256"); command.add(stored.sha256);
-        if (dryRun) command.add("--dry-run");
+        if (dryRun) {
+            command.add("--dry-run"); command.add("--debug-report-file"); command.add(debugReportUri);
+        }
         return command;
+    }
+
+    private String debugReportUri(String submissionUri) {
+        int slash = submissionUri.lastIndexOf('/');
+        return (slash < 0 ? submissionUri : submissionUri.substring(0, slash + 1)) + "debug-report.json";
+    }
+
+    private Map<String, Object> readDebugReport(String uri) {
+        RuntimeException last = null;
+        for (int attempt = 0; attempt < 20; attempt++) {
+            try {
+                String value;
+                URI parsed = URI.create(uri);
+                if (parsed.getScheme() == null || "file".equalsIgnoreCase(parsed.getScheme())) {
+                    Path path = parsed.getScheme() == null ? Path.of(uri) : Path.of(parsed);
+                    value = Files.readString(path);
+                } else {
+                    CommandResult result = execute(List.of("hdfs", "dfs", "-cat", uri), 30);
+                    if (result.exitCode != 0) throw new IllegalStateException(result.output);
+                    value = result.output;
+                }
+                return mapper.readValue(value,
+                        new com.fasterxml.jackson.core.type.TypeReference<Map<String, Object>>() {});
+            } catch (Exception ex) {
+                last = ex instanceof RuntimeException ? (RuntimeException) ex : new IllegalStateException(ex);
+                try { Thread.sleep(500L); }
+                catch (InterruptedException interrupted) {
+                    Thread.currentThread().interrupt();
+                    throw new IllegalStateException("读取调试报告被中断", interrupted);
+                }
+            }
+        }
+        throw new IllegalStateException("未读取到结构化调试报告：" + safe(last));
     }
 
     private String pipelineName(SubmissionSpec spec) {
@@ -1145,6 +1469,13 @@ public class RealtimeRuntimeService {
         row.put("snapshotSplitsFinished", aggregateSuffix(metrics, "numSnapshotSplitsFinished", "sum", false));
         row.put("snapshotSplitsRemaining", aggregateSuffix(metrics, "numSnapshotSplitsRemaining", "sum", false));
         row.put("dirtyRecords", aggregateSuffix(metrics, "numRecordsInErrors", "sum", false));
+        row.put("mysqlPendingRows", aggregateSuffix(metrics, "mysqlPendingRows", "sum", false));
+        row.put("mysqlCommittedRows", aggregateSuffix(metrics, "mysqlCommittedRows", "sum", false));
+        row.put("mysqlCommittedBatches", aggregateSuffix(metrics, "mysqlCommittedBatches", "sum", false));
+        row.put("mysqlRetryCount", aggregateSuffix(metrics, "mysqlRetryCount", "sum", false));
+        row.put("mysqlLastFlushDurationMs", aggregateSuffix(metrics, "mysqlLastFlushDurationMs", "max", true));
+        row.put("mysqlLastSuccessTimestamp", aggregateSuffix(metrics, "mysqlLastSuccessTimestamp", "max", true));
+        row.put("mysqlLastFailedBatchSize", aggregateSuffix(metrics, "mysqlLastFailedBatchSize", "max", true));
         row.put("busyMaxMsPerSecond", aggregateExact(metrics, "busyTimeMsPerSecond", "max"));
         row.put("backpressuredMaxMsPerSecond", aggregateExact(metrics, "backPressuredTimeMsPerSecond", "max"));
         return row;
@@ -1184,6 +1515,30 @@ public class RealtimeRuntimeService {
         result.put("unavailableReasons", reasons); return result;
     }
 
+    private Map<String, Object> exportSummary(List<Map<String, Object>> vertices, Topology topology) {
+        List<Map<String, Object>> sources = new ArrayList<>(); List<Map<String, Object>> sinks = new ArrayList<>();
+        for (Map<String, Object> row : vertices) {
+            String role = text(row.get("role"));
+            if ("source".equals(role) || "source_sink".equals(role)) sources.add(row);
+            if ("sink".equals(role) || "source_sink".equals(role)) sinks.add(row);
+        }
+        Map<String, String> reasons = new LinkedHashMap<>(); Map<String, Object> result = new LinkedHashMap<>();
+        result.put("sourceOutputRate", completeSum(sources, "outputRate", "sourceOutputRate",
+                "Flink 未提供 Paimon Source 输出速率", reasons));
+        result.put("sinkInputRate", completeSum(sinks, "inputRate", "sinkInputRate",
+                "Flink 未提供 MySQL Sink 输入速率", reasons));
+        result.put("pendingRows", optionalAggregate(sinks, "mysqlPendingRows", false, "pendingRows", "MySQL Sink 未提供待提交行数", reasons));
+        result.put("committedRows", optionalAggregate(sinks, "mysqlCommittedRows", false, "committedRows", "MySQL Sink 未提供累计提交行数", reasons));
+        result.put("committedBatches", optionalAggregate(sinks, "mysqlCommittedBatches", false, "committedBatches", "MySQL Sink 未提供累计提交批次", reasons));
+        result.put("retryCount", optionalAggregate(sinks, "mysqlRetryCount", false, "retryCount", "MySQL Sink 未提供重试次数", reasons));
+        result.put("lastFlushDurationMs", optionalAggregate(sinks, "mysqlLastFlushDurationMs", true, "lastFlushDurationMs", "MySQL Sink 未提供最近刷新耗时", reasons));
+        result.put("lastSuccessTimestamp", optionalAggregate(sinks, "mysqlLastSuccessTimestamp", true, "lastSuccessTimestamp", "MySQL Sink 未提供最近成功时间", reasons));
+        result.put("lastFailedBatchSize", optionalAggregate(sinks, "mysqlLastFailedBatchSize", true, "lastFailedBatchSize", "MySQL Sink 未提供最近失败批次大小", reasons));
+        result.put("busyMaxMsPerSecond", optionalAggregate(vertices, "busyMaxMsPerSecond", true, "busyMaxMsPerSecond", "Flink 未提供 Busy 指标", reasons));
+        result.put("backpressuredMaxMsPerSecond", optionalAggregate(vertices, "backpressuredMaxMsPerSecond", true, "backpressuredMaxMsPerSecond", "Flink 未提供反压指标", reasons));
+        result.put("unavailableReasons", reasons); return result;
+    }
+
     private Double completeSum(List<Map<String, Object>> rows, String field, String key, String reason,
             Map<String, String> reasons) {
         if (rows.isEmpty()) { reasons.put(key, reason); return null; }
@@ -1215,7 +1570,11 @@ public class RealtimeRuntimeService {
                 || id.endsWith("commit.lastCommitDuration") || id.endsWith("commit.lastCommitAttempts")
                 || id.endsWith("currentFetchEventTimeLag") || id.endsWith("currentEmitEventTimeLag")
                 || id.endsWith("sourceIdleTime") || id.endsWith("numSnapshotSplitsFinished")
-                || id.endsWith("numSnapshotSplitsRemaining") || id.endsWith("numRecordsInErrors");
+                || id.endsWith("numSnapshotSplitsRemaining") || id.endsWith("numRecordsInErrors")
+                || id.endsWith("mysqlPendingRows") || id.endsWith("mysqlCommittedRows")
+                || id.endsWith("mysqlCommittedBatches") || id.endsWith("mysqlRetryCount")
+                || id.endsWith("mysqlLastFlushDurationMs") || id.endsWith("mysqlLastSuccessTimestamp")
+                || id.endsWith("mysqlLastFailedBatchSize");
     }
 
     private Double aggregateExact(Map<String, Map<String, Double>> values, String id, String aggregate) {
@@ -1472,6 +1831,11 @@ public class RealtimeRuntimeService {
             if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
                 throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
             }
+            if (Boolean.TRUE.equals(policy.get("productionLocked"))
+                    && "direct".equalsIgnoreCase(text(action.getStartType()))) {
+                throw new IllegalArgumentException(
+                        "任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动");
+            }
             return;
         }
         if (!"savepoint".equalsIgnoreCase(text(action.getStartType()))) {
@@ -1564,6 +1928,31 @@ public class RealtimeRuntimeService {
         if ("compute".equalsIgnoreCase(type)) return "实时计算任务";
         if ("export".equalsIgnoreCase(type)) return "实时出仓任务";
         return "实时同步任务";
+    }
+
+    private static Map<String, SubmissionStage> submissionStages() {
+        Map<String, SubmissionStage> result = new LinkedHashMap<>();
+        result.put("accepted", new SubmissionStage("accepted", 1, "已创建实例", "提交请求已受理"));
+        result.put("preparing_config", new SubmissionStage("preparing_config", 2, "准备配置", "正在准备提交配置",
+                "准备正式提交配置", "准备调试提交配置"));
+        result.put("writing_hdfs", new SubmissionStage("writing_hdfs", 3, "写入 HDFS", "正在写入 HDFS 提交文件",
+                "写入 HDFS 提交文件"));
+        result.put("building_command", new SubmissionStage("building_command", 4, "生成命令", "正在生成启动命令",
+                "生成启动命令"));
+        result.put("submitting_flink", new SubmissionStage("submitting_flink", 5, "提交 Flink", "正在执行 Flink 启动命令",
+                "执行 Flink 启动命令"));
+        result.put("waiting_running", new SubmissionStage("waiting_running", 6, "等待运行", "正在等待作业进入 RUNNING",
+                "等待正式作业进入 RUNNING", "等待调试作业进入 RUNNING"));
+        return result;
+    }
+
+    private static final class SubmissionStage {
+        private final String code; private final int index; private final String label;
+        private final String message; private final String[] logValues;
+        private SubmissionStage(String code, int index, String label, String message, String... logValues) {
+            this.code = code; this.index = index; this.label = label;
+            this.message = message; this.logValues = logValues;
+        }
     }
 
     private static final class StoredSpec {

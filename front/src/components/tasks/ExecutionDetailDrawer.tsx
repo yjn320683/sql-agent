@@ -138,6 +138,7 @@ export function ExecutionDetailContent({ execution, onRefresh, onBack, onCancel,
         </Descriptions.Item>
         <Descriptions.Item label="状态"><TaskStatusTag status={execution.status} /></Descriptions.Item>
         <Descriptions.Item label="执行人">{execution.requestedBy}</Descriptions.Item>
+        {execution.sourceExecutionId ? <Descriptions.Item label="来源实例">{execution.sourceExecutionId} · {execution.replayStrategy}</Descriptions.Item> : null}
         <Descriptions.Item label="提交时间">{formatTime(execution.submittedAt)}</Descriptions.Item>
         <Descriptions.Item label="耗时">{formatDuration(execution.durationMs)}</Descriptions.Item>
         <Descriptions.Item label="开始时间">{formatTime(execution.startedAt)}</Descriptions.Item>
@@ -201,7 +202,7 @@ export function ExecutionDetailContent({ execution, onRefresh, onBack, onCancel,
             {onBack ? <Button type="text" icon={<ArrowLeftOutlined />} onClick={onBack}>返回实例列表</Button> : null}
             <strong>实例 {execution.id}</strong>
             <TaskStatusTag status={execution.status} />
-            <span>{execution.sourceType === 'VERSION' ? `版本 v${execution.taskVersionNo}` : '当前生效代码'}</span>
+            <span>{execution.sourceType === 'REPLAY' ? `来源实例 ${execution.sourceExecutionId}` : execution.sourceType === 'VERSION' ? `版本 v${execution.taskVersionNo}` : '当前生效代码'}</span>
           </div>
           <Space size={6}>
             {isActiveExecution(execution.status) && onCancel ? <Button danger icon={<StopOutlined />} onClick={onCancel}>取消</Button> : null}

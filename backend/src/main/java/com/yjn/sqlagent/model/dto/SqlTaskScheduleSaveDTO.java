@@ -17,6 +17,9 @@ public class SqlTaskScheduleSaveDTO {
     @NotBlank private String concurrencyPolicy = "FORBID";
     @NotNull @Min(0) @Max(10) private Integer maxRetries = 0;
     @NotNull @Min(10) @Max(86400) private Integer retryIntervalSeconds = 60;
+    @NotNull @Min(0) @Max(604800) private Integer executionTimeoutSeconds = 0;
+    @NotNull @Min(0) @Max(10080) private Integer slaDurationMinutes = 0;
+    @NotBlank private String timeoutPolicy = "ALERT_ONLY";
     private Map<String, Object> parameters = new LinkedHashMap<>();
     private Long revision;
 }

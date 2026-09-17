@@ -18,6 +18,8 @@ import static org.mockito.Mockito.when;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.mapper.SqlTaskBackfillBatchMapper;
+import com.yjn.sqlagent.mapper.SqlTaskBackfillItemMapper;
+import com.yjn.sqlagent.mapper.SqlTaskMapper;
 import com.yjn.sqlagent.mapper.SqlTaskDependencyMapper;
 import com.yjn.sqlagent.mapper.SqlTaskScheduleMapper;
 import com.yjn.sqlagent.mapper.SqlTaskScheduleRunMapper;
@@ -39,6 +41,7 @@ import java.time.LocalDateTime;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
@@ -48,6 +51,8 @@ class OfflineSchedulingServiceImplTest {
     private final SqlTaskDependencyMapper dependencies = mock(SqlTaskDependencyMapper.class);
     private final SqlTaskScheduleRunMapper runs = mock(SqlTaskScheduleRunMapper.class);
     private final SqlTaskBackfillBatchMapper backfills = mock(SqlTaskBackfillBatchMapper.class);
+    private final SqlTaskBackfillItemMapper backfillItems = mock(SqlTaskBackfillItemMapper.class);
+    private final SqlTaskMapper taskMapper = mock(SqlTaskMapper.class);
     private final SqlTaskService tasks = mock(SqlTaskService.class);
     private final TaskExecutionService executions = mock(TaskExecutionService.class);
     private OfflineSchedulingServiceImpl service;
@@ -56,7 +61,7 @@ class OfflineSchedulingServiceImplTest {
     void setUp() {
         SqlTask task = new SqlTask(); task.setId(1L); task.setArchived(false); task.setEnabled(true); task.setRevision(5L);
         when(tasks.require(anyLong())).thenReturn(task);
-        service = new OfflineSchedulingServiceImpl(schedules, dependencies, runs, backfills, tasks, executions, new ObjectMapper());
+        service = new OfflineSchedulingServiceImpl(schedules, dependencies, runs, backfills, backfillItems, tasks, executions, new ObjectMapper(), taskMapper);
     }
 
     @Test
@@ -174,7 +179,7 @@ class OfflineSchedulingServiceImplTest {
     }
 
     @Test
-    void backfillCreatesOneExecutionForEveryInclusiveBusinessDate() {
+    void backfillCreatesOneUniquePendingItemForEveryInclusiveBusinessDate() {
         SqlTaskBackfillCreateDTO request = new SqlTaskBackfillCreateDTO();
         request.setStartDate(LocalDate.of(2026, 9, 5));
         request.setEndDate(LocalDate.of(2026, 9, 7));
@@ -184,11 +189,6 @@ class OfflineSchedulingServiceImplTest {
             batch.setId(41L);
             return 1;
         }).when(backfills).insert(org.mockito.ArgumentMatchers.<SqlTaskBackfillBatch>any());
-        when(executions.create(eq("admin"), eq(1L), any())).thenAnswer(invocation -> {
-            TaskExecutionVO value = new TaskExecutionVO();
-            value.setId(100L);
-            return value;
-        });
         SqlTaskBackfillBatch stored = new SqlTaskBackfillBatch();
         stored.setId(41L);
         stored.setTotalCount(3);
@@ -197,10 +197,10 @@ class OfflineSchedulingServiceImplTest {
         SqlTaskBackfillBatch result = service.createBackfill("admin", 1L, request);
 
         assertEquals(3, result.getTotalCount());
-        ArgumentCaptor<TaskExecutionCreateDTO> executionsCaptor = ArgumentCaptor.forClass(TaskExecutionCreateDTO.class);
-        verify(executions, times(3)).create(eq("admin"), eq(1L), executionsCaptor.capture());
+        ArgumentCaptor<com.yjn.sqlagent.model.entity.SqlTaskBackfillItem> items = ArgumentCaptor.forClass(com.yjn.sqlagent.model.entity.SqlTaskBackfillItem.class);
+        verify(backfillItems, times(3)).insert(items.capture());
         assertEquals(List.of(LocalDate.of(2026, 9, 5), LocalDate.of(2026, 9, 6), LocalDate.of(2026, 9, 7)),
-                executionsCaptor.getAllValues().stream().map(TaskExecutionCreateDTO::getBusinessDate)
+                items.getAllValues().stream().map(com.yjn.sqlagent.model.entity.SqlTaskBackfillItem::getBusinessDate)
                         .collect(java.util.stream.Collectors.toList()));
         verify(backfills).updateProgress(41L);
     }
@@ -240,6 +240,75 @@ class OfflineSchedulingServiceImplTest {
         verify(runs).recoverStaleRetryClaims(any());
     }
 
+    @Test
+    void dagUsesBatchedQueriesAndMarksTheEstimatedCriticalPath() {
+        Map<String, Object> extract = new LinkedHashMap<>();
+        extract.put("id", 1L); extract.put("name", "extract");
+        Map<String, Object> transform = new LinkedHashMap<>();
+        transform.put("id", 2L); transform.put("name", "transform");
+        Map<String, Object> isolated = new LinkedHashMap<>();
+        isolated.put("id", 3L); isolated.put("name", "isolated");
+        when(taskMapper.listScheduleDagNodes()).thenReturn(List.of(extract, transform, isolated));
+        when(taskMapper.listRecentSuccessfulDurations()).thenReturn(List.of(
+                duration(1L, 100L), duration(1L, 300L), duration(2L, 500L)));
+        when(dependencies.listAll()).thenReturn(List.of(edge(2L, 1L, "SUCCESS")));
+
+        Map<String, Object> result = service.dag();
+
+        assertEquals(List.of(1L, 2L), new java.util.ArrayList<>((Set<Long>) result.get("criticalPathTaskIds")));
+        assertEquals(200L, extract.get("medianDurationMs"));
+        assertEquals(2, extract.get("durationSampleCount"));
+        assertEquals(1, extract.get("downstreamCount"));
+        assertEquals(1, transform.get("upstreamCount"));
+        assertEquals(null, isolated.get("medianDurationMs"));
+        verify(taskMapper, times(1)).listScheduleDagNodes();
+        verify(taskMapper, times(1)).listRecentSuccessfulDurations();
+    }
+
+    @Test
+    void dagDoesNotInventCriticalPathWithoutDurationSamples() {
+        Map<String, Object> node = new LinkedHashMap<>();
+        node.put("id", 1L); node.put("name", "no-sample");
+        when(taskMapper.listScheduleDagNodes()).thenReturn(List.of(node));
+        when(taskMapper.listRecentSuccessfulDurations()).thenReturn(List.of());
+        when(dependencies.listAll()).thenReturn(List.of());
+
+        Map<String, Object> result = service.dag();
+
+        assertEquals(Set.of(), result.get("criticalPathTaskIds"));
+        assertEquals(false, node.get("criticalPath"));
+    }
+
+    @Test
+    void pausingBackfillDoesNotCancelAlreadyRunningExecutions() {
+        SqlTaskBackfillBatch running = backfill(41L, "RUNNING", 3);
+        SqlTaskBackfillBatch paused = backfill(41L, "PAUSED", 3);
+        when(backfills.selectById(41L)).thenReturn(running, paused);
+        when(backfills.changeStatus(41L, "RUNNING", "PAUSED")).thenReturn(1);
+
+        SqlTaskBackfillBatch result = service.pauseBackfill(1L, 41L);
+
+        assertEquals("PAUSED", result.getStatus());
+        verify(executions, never()).cancel(anyLong());
+        verify(backfillItems, never()).retryFailed(anyLong());
+    }
+
+    @Test
+    void deadlinePolicyOnlyCancelsWhenExplicitlyConfigured() {
+        when(backfills.listActive()).thenReturn(List.of());
+        when(runs.listRetryable(any(), anyInt())).thenReturn(List.of());
+        when(runs.listDeadlineBreaches(any(), eq(100))).thenReturn(List.of(
+                breach(51L, 901L, "ALERT_ONLY", 180L),
+                breach(52L, 902L, "CANCEL", 240L)));
+        when(runs.markBreach(anyLong(), any())).thenReturn(1);
+
+        service.reconcileAndRetry();
+
+        verify(executions, never()).cancel(901L);
+        verify(executions).cancel(902L);
+        verify(runs, times(2)).markBreach(anyLong(), org.mockito.ArgumentMatchers.contains("[DEADLINE]"));
+    }
+
     private SqlTaskScheduleSaveDTO cronRequest() {
         SqlTaskScheduleSaveDTO request = new SqlTaskScheduleSaveDTO();
         request.setScheduleType("CRON"); request.setCronExpression("0 0 7 * * *");
@@ -264,5 +333,22 @@ class OfflineSchedulingServiceImplTest {
     private SqlTaskDependency edge(long taskId, long upstreamTaskId, String type) {
         SqlTaskDependency value = new SqlTaskDependency(); value.setTaskId(taskId);
         value.setUpstreamTaskId(upstreamTaskId); value.setDependencyType(type); return value;
+    }
+
+    private Map<String, Object> duration(long taskId, long durationMs) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("task_id", taskId); value.put("duration_ms", durationMs); return value;
+    }
+
+    private Map<String, Object> breach(long id, long executionId, String policy, long elapsedSeconds) {
+        Map<String, Object> value = new LinkedHashMap<>();
+        value.put("id", id); value.put("execution_id", executionId);
+        value.put("timeout_policy", policy); value.put("elapsed_seconds", elapsedSeconds); return value;
+    }
+
+    private SqlTaskBackfillBatch backfill(long id, String status, int maxConcurrency) {
+        SqlTaskBackfillBatch value = new SqlTaskBackfillBatch();
+        value.setId(id); value.setTaskId(1L); value.setStatus(status); value.setMaxConcurrency(maxConcurrency);
+        value.setParameterValues("{}"); value.setRequestedBy("admin"); return value;
     }
 }

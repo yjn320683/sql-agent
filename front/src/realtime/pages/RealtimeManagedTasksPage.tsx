@@ -16,6 +16,8 @@ interface Props { taskType: ManagedTaskType; workspace?: boolean }
 export default function RealtimeManagedTasksPage({ taskType, workspace = false }: Props) {
   const navigate = useNavigate(); const location = useLocation(); const [searchParams, setSearchParams] = useSearchParams();
   const label = taskType === 'compute' ? '计算' : '出仓';
+  const requestedTaskId = positive(searchParams.get('taskId'), 0);
+  const requestedTab = (searchParams.get('tab') || 'instances') as 'instances' | 'detail' | 'runtime' | 'alerts' | 'changes' | 'versions';
   const [query, setQuery] = useState(() => ({ keyword: searchParams.get('q') ?? '', status: searchParams.get('status') ?? 'all', tableKeyword: searchParams.get('table') ?? '', owner: searchParams.get('owner') ?? '', lastOperator: searchParams.get('operator') ?? '' }));
   const [submitted, setSubmitted] = useState(query); const [expanded, setExpanded] = useState(Boolean(query.owner || query.lastOperator));
   const [page, setPage] = useState(() => positive(searchParams.get('page'), 1)); const [pageSize, setPageSize] = useState(() => positive(searchParams.get('pageSize'), 20));
@@ -33,10 +35,15 @@ export default function RealtimeManagedTasksPage({ taskType, workspace = false }
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
+    if (!requestedTaskId || detail?.id === requestedTaskId) return;
+    void getManagedTask(requestedTaskId).then(setDetail).catch((error) => message.error((error as Error).message));
+  }, [detail?.id, requestedTaskId]);
+  useEffect(() => {
     const next = new URLSearchParams({ page: String(page), pageSize: String(pageSize) });
     if (submitted.keyword) next.set('q', submitted.keyword); if (submitted.status !== 'all') next.set('status', submitted.status); if (submitted.tableKeyword) next.set('table', submitted.tableKeyword); if (submitted.owner) next.set('owner', submitted.owner); if (submitted.lastOperator) next.set('operator', submitted.lastOperator);
+    if (requestedTaskId) next.set('taskId', String(requestedTaskId)); if (requestedTab !== 'instances') next.set('tab', requestedTab);
     setSearchParams(next, { replace: true });
-  }, [page, pageSize, setSearchParams, submitted]);
+  }, [page, pageSize, requestedTab, requestedTaskId, setSearchParams, submitted]);
   useEffect(() => { if (!rows.some((row) => ACTIVE.includes(row.status) || ACTIVE.includes(row.latestInstanceStatus ?? ''))) return undefined; const timer = window.setInterval(() => void load(), 10000); return () => window.clearInterval(timer); }, [load, rows]);
 
   const path = `/realtime/${taskType}`;
@@ -63,5 +70,5 @@ export default function RealtimeManagedTasksPage({ taskType, workspace = false }
       { title: '负责人', dataIndex: 'owner', width: 110 }, { title: '最近操作人', dataIndex: 'lastOperator', width: 120, render: (value) => value || '-' }, { title: '最近操作时间', dataIndex: 'lastOperationTime', width: 175, render: (value) => value || '-' },
       { title: '操作', fixed: 'right', width: 270, render: (_, row) => { const state = row.latestInstanceStatus || row.status; const active = ACTIVE.includes(state); return <Space size={12} onClick={(event) => event.stopPropagation()}>{state === 'running' ? <Typography.Link onClick={() => void action('停止', () => stopManagedTask(row.id))}>停止</Typography.Link> : <Typography.Link disabled={active} onClick={() => !active && void action('启动', () => enableManagedTask(row.id))}>启动</Typography.Link>}<Typography.Link onClick={() => void action('调试', () => debugManagedTask(row.id))}>调试</Typography.Link><Typography.Link disabled={active} onClick={() => !active && openEdit(row)}>编辑</Typography.Link><Typography.Link type="danger" disabled={active} onClick={() => !active && Modal.confirm({ title: `确认删除任务 ${row.name}？`, content: '历史版本和实例记录保留，实时表不会删除。', okText: '删除', cancelText: '取消', okButtonProps: { danger: true }, onOk: () => action('删除', () => deleteManagedTask(row.id)) })}><DeleteOutlined /> 删除</Typography.Link></Space>; } },
     ]} /></div>
-  </section><RealtimeManagedTaskDetailModal task={detail} onClose={() => setDetail(undefined)} /></div>;
+  </section><RealtimeManagedTaskDetailModal task={detail} initialTab={requestedTab} onClose={() => setDetail(undefined)} /></div>;
 }

@@ -10,6 +10,7 @@ import {
 describe('实时/离线路由切换', () => {
   it('识别实时深链接并使用独立记忆键', () => {
     expect(modeOf('/realtime/sync-tasks/12')).toBe('realtime');
+    expect(modeOf('/overview')).toBe('workspace');
     expect(storageKeyOf('realtime')).toBe(LAST_REALTIME_PATH_KEY);
     expect(storageKeyOf('offline')).toBe(LAST_OFFLINE_PATH_KEY);
   });

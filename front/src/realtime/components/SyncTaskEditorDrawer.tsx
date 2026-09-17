@@ -28,7 +28,7 @@ import {
   previewSyncTask,
   updateSyncTask,
 } from '../api';
-import type {
+import { MYSQL_METADATA_COLUMN_PREFIX, type
   PaimonTablePrefixOption,
   MysqlTableSchema,
   RealtimeServer,
@@ -183,6 +183,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
       if ((kind === 'FORM' || kind === 'CONFIG')
         && ['sync-task-form', 'sync-mapping', 'sync-config'].includes(proposal.target) && proposal.patch) {
         form.setFieldsValue(proposal.patch);
+        setPreview('');
         event.preventDefault();
       }
     };
@@ -622,6 +623,7 @@ export default function SyncTaskEditorDrawer({ open, task, onSaved }: Props) {
         <Descriptions.Item label={fieldLabel('目标Paimon表前缀', true)}><Form.Item name={['taskConfig', 'cdcConfig', 'tablePrefix']} rules={[{ required: true, message: '请选择业务域以生成目标Paimon表前缀' }]} noStyle><Input disabled placeholder="目标Paimon库_[库前缀_]库名_业务域_" /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={(selectedTables ?? []).map((table) => `${form.getFieldValue(['taskConfig', 'cdcConfig', 'tablePrefix']) || ''}${table}`).join('\n')} autoSize={{ minRows: 2, maxRows: 6 }} /></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表同步元数据列" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'metadataColumns']} noStyle><Select disabled mode="multiple" options={metadataColumnOptions} placeholder="固定同步元数据列" /></Form.Item></Descriptions.Item>
+        <Descriptions.Item label="目标Paimon表同步元数据列前缀" span={2}><Input value={MYSQL_METADATA_COLUMN_PREFIX} disabled /></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表类型映射" span={2}><Form.Item name={['taskConfig', 'cdcConfig', 'typeMappings']} noStyle><Select disabled={structureLocked} mode="multiple" options={['to-nullable', 'to-string', 'char-to-string', 'tinyint1-not-bool', 'longtext-to-bytes', 'bigint-unsigned-to-bigint'].map((value) => ({ label: value, value }))} /></Form.Item></Descriptions.Item>
         <Descriptions.Item label="目标Paimon表配置" span={2}>
           <div className="realtime-dynamic-param-grid">

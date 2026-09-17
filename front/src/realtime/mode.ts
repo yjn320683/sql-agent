@@ -4,8 +4,10 @@ export const OFFLINE_FALLBACK = '/chat';
 export const REALTIME_FALLBACK = '/realtime/sync-tasks';
 
 export type DevelopmentMode = 'offline' | 'realtime';
+export type ApplicationMode = 'workspace' | DevelopmentMode;
 
-export function modeOf(pathname: string): DevelopmentMode {
+export function modeOf(pathname: string): ApplicationMode {
+  if (pathname === '/overview' || pathname.startsWith('/overview?')) return 'workspace';
   return pathname.startsWith('/realtime') ? 'realtime' : 'offline';
 }
 

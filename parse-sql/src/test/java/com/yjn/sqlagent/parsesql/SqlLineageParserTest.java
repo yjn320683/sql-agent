@@ -18,6 +18,28 @@ class SqlLineageParserTest {
     private final SqlLineageParser parser = new SqlLineageParser();
 
     @Test
+    void buildsServerLimitedPreviewForSelectAndInsertQuery() {
+        String select = parser.toReadOnlyPreviewQuery(
+                ParseRequest.builder("select id from ods.orders").build(), 25);
+        String insert = parser.toReadOnlyPreviewQuery(ParseRequest.builder(
+                "with src as (select id from ods.orders) insert overwrite table dw.orders "
+                        + "select id from src").build(), 100);
+
+        assertEquals("SELECT * FROM (\nselect id from ods.orders\n) sql_agent_preview LIMIT 25", select);
+        assertTrue(insert.contains("with src as (select id from ods.orders)"));
+        assertTrue(insert.contains("select id from src"));
+        assertFalse(insert.toLowerCase().contains("insert overwrite"));
+    }
+
+    @Test
+    void rejectsMutatingPreviewStatementsAndInvalidLimits() {
+        assertThrows(IllegalArgumentException.class, () -> parser.toReadOnlyPreviewQuery(
+                ParseRequest.builder("delete from ods.orders where id=1").build(), 100));
+        assertThrows(IllegalArgumentException.class, () -> parser.toReadOnlyPreviewQuery(
+                ParseRequest.builder("select 1").build(), 201));
+    }
+
+    @Test
     void expandsWildcardAndMapsInsertTargetByMetadataOrder() {
         CountingMetadata metadata = new CountingMetadata()
                 .table("ods.orders", "id", "buyer_id", "amount")

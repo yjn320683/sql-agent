@@ -108,4 +108,27 @@
         revision = revision + 1, update_time = NOW()
     WHERE id = #{task.id} AND revision = #{expectedRevision} AND archived = 0
   </update>
+
+  <select id="listScheduleDagNodes" resultType="map">
+    SELECT t.id,t.name,t.enabled,s.schedule_type,s.last_run_status,s.next_trigger_time,
+           e.id AS last_execution_id,e.status AS last_execution_status,e.submitted_at AS last_execution_at,
+           b.id AS last_backfill_id,b.status AS last_backfill_status
+    FROM sql_task t
+    LEFT JOIN sql_task_schedule s ON s.task_id=t.id
+    LEFT JOIN sql_task_execution e ON e.id=(SELECT MAX(x.id) FROM sql_task_execution x WHERE x.task_id=t.id)
+    LEFT JOIN sql_task_backfill_batch b ON b.id=(SELECT MAX(x.id) FROM sql_task_backfill_batch x WHERE x.task_id=t.id)
+    WHERE t.archived=0 AND t.enabled=1
+    ORDER BY t.id
+  </select>
+  <select id="listRecentSuccessfulDurations" resultType="map">
+    SELECT e.task_id,
+           TIMESTAMPDIFF(MICROSECOND,COALESCE(e.started_at,e.submitted_at),e.finished_at) DIV 1000 AS duration_ms
+    FROM sql_task_execution e
+    WHERE e.status='SUCCEEDED' AND e.finished_at IS NOT NULL
+      AND (SELECT COUNT(*)
+           FROM sql_task_execution newer
+           WHERE newer.task_id=e.task_id AND newer.status='SUCCEEDED'
+             AND newer.finished_at IS NOT NULL AND newer.id&gt;e.id) &lt; 20
+    ORDER BY e.task_id,e.id DESC
+  </select>
 </mapper>

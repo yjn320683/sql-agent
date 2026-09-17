@@ -8,12 +8,15 @@ import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import { createRealtimeTableDdl } from '../utils/realtimeTableDdl';
 import { toRealtimeTableDraft, type RealtimeTableFormValue } from '../utils/realtimeTableDdl';
 import RealtimeTableCreateModal, { normalizeRealtimeTableColumns } from '../components/RealtimeTableCreateModal';
+import { useSearchParams } from 'react-router-dom';
 
 const typeOptions = ['BOOLEAN', 'TINYINT', 'SMALLINT', 'INT', 'BIGINT', 'FLOAT', 'DOUBLE', 'STRING', 'BYTES', 'DATE', 'TIMESTAMP(3)', 'DECIMAL(18,2)'].map((value) => ({ value, label: value }));
 const statusLabel: Record<string, string> = { declared: '待创建', active: '可用', error: '异常' };
 const statusColor: Record<string, string> = { declared: 'processing', active: 'success', error: 'error' };
 
 export default function RealtimeTablesPage() {
+  const [searchParams] = useSearchParams();
+  const requestedTableId = Number(searchParams.get('tableId') || 0);
   const { actionColumnWidth, actionRef } = useAutoTableActionWidth({ initialWidth: 190, minWidth: 150 });
   const [rows, setRows] = useState<RealtimeTable[]>([]); const [total, setTotal] = useState(0); const [loading, setLoading] = useState(false);
   const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState('all'); const [source, setSource] = useState('all'); const [producer, setProducer] = useState(''); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(20);
@@ -60,6 +63,7 @@ export default function RealtimeTablesPage() {
     return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
   }, [addColumn, columnForm, detail]);
   const openDetail = async (id: number) => { setDetailLoading(true); try { setDetail(await getRealtimeTable(id)); } catch (error) { message.error((error as Error).message); } finally { setDetailLoading(false); } };
+  useEffect(() => { if (requestedTableId > 0 && detail?.id !== requestedTableId) void openDetail(requestedTableId); }, [detail?.id, requestedTableId]);
   const openSafeUpdate = async (id: number) => { try { const table = await getRealtimeTable(id); setDetail(table); columnForm.setFieldsValue({ comment: table.tableComment, options: { 'snapshot.time-retained': table.options?.['snapshot.time-retained'], 'compaction.min.file-num': table.options?.['compaction.min.file-num'] }, addColumns: [], columnComments: [] }); setAddColumn(true); } catch (error) { message.error((error as Error).message); } };
   const submit = async () => { try {
     const value = await form.validateFields(); const draft = toRealtimeTableDraft(value); const columns = normalizeRealtimeTableColumns(draft.columns);

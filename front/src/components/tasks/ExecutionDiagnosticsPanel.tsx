@@ -1,9 +1,10 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Empty, Skeleton, Table, Tag, Tooltip, Typography } from 'antd';
+import { Alert, Button, Empty, Skeleton, Table, Tabs, Tag, Tooltip, Typography } from 'antd';
 import { ReloadOutlined } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
-import { getTaskExecutionDiagnostics } from '../../api/tasks';
-import type { TaskExecutionDiagnosticsVO } from '../../types';
+import { getTaskExecutionDiagnosticReport, getTaskExecutionDiagnostics } from '../../api/tasks';
+import type { DiagnosticReport, TaskExecutionDiagnosticsVO } from '../../types';
+import DiagnosticReportView from '../diagnostics/DiagnosticReportView';
 
 interface Props {
   executionId: number;
@@ -76,6 +77,7 @@ function stateColor(state?: string): string | undefined {
 
 export default function ExecutionDiagnosticsPanel({ executionId }: Props) {
   const [data, setData] = useState<TaskExecutionDiagnosticsVO>();
+  const [report, setReport] = useState<DiagnosticReport>();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -83,10 +85,12 @@ export default function ExecutionDiagnosticsPanel({ executionId }: Props) {
     setLoading(true);
     setError('');
     try {
-      setData(await getTaskExecutionDiagnostics(executionId));
-    } catch (requestError) {
-      setData(undefined);
-      setError((requestError as Error).message);
+      const [facts, diagnosis] = await Promise.allSettled([
+        getTaskExecutionDiagnostics(executionId), getTaskExecutionDiagnosticReport(executionId),
+      ]);
+      if (facts.status === 'fulfilled') setData(facts.value); else setData(undefined);
+      if (diagnosis.status === 'fulfilled') setReport(diagnosis.value); else setReport(undefined);
+      if (facts.status === 'rejected' && diagnosis.status === 'rejected') setError((diagnosis.reason as Error).message);
     } finally {
       setLoading(false);
     }
@@ -122,50 +126,34 @@ export default function ExecutionDiagnosticsPanel({ executionId }: Props) {
     },
   ];
 
-  if (loading && !data) return <Skeleton active paragraph={{ rows: 8 }} />;
-  if (error) return <Alert type="error" showIcon message="加载运行诊断失败" description={error} action={<Button onClick={() => void load()}>重试</Button>} />;
-  if (!data) return null;
+  const refreshReport = async () => {
+    setLoading(true);
+    try { setReport(await getTaskExecutionDiagnosticReport(executionId, true)); }
+    catch (requestError) { setError((requestError as Error).message); }
+    finally { setLoading(false); }
+  };
 
-  const metrics = Object.entries({
+  if (loading && !data && !report) return <Skeleton active paragraph={{ rows: 8 }} />;
+  if (error) return <Alert type="error" showIcon message="加载运行诊断失败" description={error} action={<Button onClick={() => void load()}>重试</Button>} />;
+  const metrics = data ? Object.entries({
     jobCount: data.aggregate.jobCount,
     retainedJobCount: data.aggregate.retainedJobCount ?? data.jobs.length,
     expiredJobCount: data.aggregate.expiredJobCount ?? 0,
     ...(data.aggregate.metrics || {}),
-  });
-  return (
-    <div className="execution-diagnostics">
-      <div className="execution-diagnostics-toolbar">
-        <div>
-          <Typography.Title level={5}>JobHistory / YARN 运行事实</Typography.Title>
-          <Typography.Text type="secondary">数据获取于 {data.fetchedAt.replace('T', ' ').slice(0, 19)}</Typography.Text>
-        </div>
-        <Tooltip title="重新采集"><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} /></Tooltip>
-      </div>
-      {!data.complete || data.warnings.length ? (
-        <Alert
-          type="warning"
-          showIcon
-          message="诊断数据不完整"
-          description={(data.warnings.length ? data.warnings : data.missingReasons).join('；')}
-        />
-      ) : null}
-      {metrics.length ? (
-        <div className="execution-diagnostics-metrics">
-          {metrics.map(([name, value]) => (
-            <div key={name} title={name}><span>{METRIC_LABELS[name] || name}</span><strong>{formatMetric(name, value)}</strong></div>
-          ))}
-        </div>
-      ) : null}
-      <Table
-        rowKey={(row) => String(row.job.id)}
-        size="small"
-        pagination={false}
-        loading={loading}
-        dataSource={data.jobs}
-        columns={columns}
-        scroll={{ x: 1490 }}
-        locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该实例没有可诊断的 MapReduce Job" /> }}
-      />
+  }) : [];
+  const facts = data ? <div className="execution-diagnostics">
+    <div className="execution-diagnostics-toolbar">
+      <div><Typography.Title level={5}>JobHistory / YARN 运行事实</Typography.Title><Typography.Text type="secondary">数据获取于 {data.fetchedAt.replace('T', ' ').slice(0, 19)}</Typography.Text></div>
+      <Tooltip title="重新采集"><Button icon={<ReloadOutlined />} loading={loading} onClick={() => void load()} /></Tooltip>
     </div>
+    {!data.complete || data.warnings.length ? <Alert type="warning" showIcon message="诊断数据不完整" description={(data.warnings.length ? data.warnings : data.missingReasons).join('；')} /> : null}
+    {metrics.length ? <div className="execution-diagnostics-metrics">{metrics.map(([name, value]) => <div key={name} title={name}><span>{METRIC_LABELS[name] || name}</span><strong>{formatMetric(name, value)}</strong></div>)}</div> : null}
+    <Table rowKey={(row) => String(row.job.id)} size="small" pagination={false} loading={loading} dataSource={data.jobs} columns={columns} scroll={{ x: 1490 }} locale={{ emptyText: <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="该实例没有可诊断的 MapReduce Job" /> }} />
+  </div> : <Alert showIcon type="warning" message="JobHistory / YARN 原始事实暂不可用" />;
+  return (
+    <Tabs className="ui-flat-tabs" items={[
+      { key: 'report', label: '诊断结论', children: <DiagnosticReportView report={report} loading={loading} onRefresh={() => void refreshReport()} /> },
+      { key: 'facts', label: '原始运行事实', children: facts },
+    ]} />
   );
 }

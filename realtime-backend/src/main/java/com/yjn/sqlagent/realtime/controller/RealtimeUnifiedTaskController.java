@@ -7,6 +7,7 @@ import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.repository.RealtimeTaskDefinitionRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
+import com.yjn.sqlagent.realtime.service.RealtimeDiagnosticReportService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncTargetValidationService;
 import com.yjn.sqlagent.realtime.service.RealtimeTaskDefinitionService;
@@ -39,6 +40,7 @@ public class RealtimeUnifiedTaskController {
     private final RealtimeActorProvider actors;
     @Autowired private RealtimeTaskDefinitionService definitions;
     @Autowired private RealtimeTaskDefinitionRepository definitionRepository;
+    @Autowired private RealtimeDiagnosticReportService diagnosticReports;
 
     public RealtimeUnifiedTaskController(RealtimeSyncRepository repository, RealtimeRuntimeService runtime,
             RealtimeSyncConfigValidator validator, RealtimeSyncTargetValidationService targetValidator,
@@ -142,6 +144,19 @@ public class RealtimeUnifiedTaskController {
         actors.requireActor(); return RealtimeResponse.success(definitions.analyze(input));
     }
 
+    /** Agent 与编辑页共用的无持久化校验入口；只校验，不创建版本或实例。 */
+    @PostMapping("/validate")
+    public RealtimeResponse<Map<String, Object>> validate(@Valid @RequestBody UnifiedTaskRequest input) {
+        actors.requireActor();
+        RealtimeTaskDefinitionService.References refs = definitions.validate(input, input.getTaskId());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("valid", true);
+        result.put("taskType", text(input.getTaskType()).toLowerCase());
+        result.put("inputTableIds", refs.getInputs());
+        result.put("outputTableIds", refs.getOutputs());
+        return RealtimeResponse.success(result);
+    }
+
     @PostMapping("/command-preview")
     public RealtimeResponse<Map<String, Object>> preview(@Valid @RequestBody UnifiedTaskRequest input,
             @RequestParam(required = false) Long excludeTaskId) {
@@ -210,8 +225,9 @@ public class RealtimeUnifiedTaskController {
     public RealtimeResponse<Map<String, Object>> stop(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest input) {
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
-        if (!"savepoint".equalsIgnoreCase(text(action.getStopType()))) {
-            throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
+        if (text(action.getStopType()).isEmpty()) action.setStopType("savepoint");
+        if (!List.of("savepoint", "direct").contains(text(action.getStopType()).toLowerCase())) {
+            throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
         }
         long instanceId = latestManagedActive(id, "PRODUCTION");
         return RealtimeResponse.success(runtime.stop(id, instanceId, action, actors.requireActor()));
@@ -237,6 +253,7 @@ public class RealtimeUnifiedTaskController {
     @GetMapping("/{id}/instances/{instanceId}/runtime") public RealtimeResponse<Object> runtime(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.runtime(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/resources") public RealtimeResponse<Object> resources(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.resources(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/checkpoints") public RealtimeResponse<Object> checkpoints(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.checkpoints(id, instanceId)); }
+    @GetMapping("/{id}/instances/{instanceId}/progress") public RealtimeResponse<Object> progress(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.progress(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/log-components") public RealtimeResponse<Object> logComponents(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.logComponents(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/logs") public RealtimeResponse<Object> logs(
             @PathVariable long id, @PathVariable long instanceId,
@@ -247,11 +264,53 @@ public class RealtimeUnifiedTaskController {
         actors.requireActor();
         return RealtimeResponse.success(runtime.logPage(id, instanceId, component, containerId, cursor, limit));
     }
+    @GetMapping("/{id}/instances/{instanceId}/diagnostic-report")
+    public RealtimeResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> diagnosticReport(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(diagnosticReports.get(id, instanceId, false));
+    }
+    @PostMapping("/{id}/instances/{instanceId}/diagnostic-report/refresh")
+    public RealtimeResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> refreshDiagnosticReport(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(diagnosticReports.get(id, instanceId, true));
+    }
+    @GetMapping("/{id}/instances/{instanceId}/debug-report")
+    public RealtimeResponse<Object> debugReport(@PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        Map<String, Object> instance = repository.requiredInstance(id, instanceId);
+        if (!"DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
+            throw new IllegalArgumentException("该实例不是调试实例");
+        }
+        Object report = instance.get("debugReport");
+        if (report == null) throw new IllegalStateException("调试报告尚未生成");
+        return RealtimeResponse.success(report);
+    }
+    @GetMapping("/{id}/instances/{instanceId}/recovery-options")
+    public RealtimeResponse<Map<String, Object>> recoveryOptions(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(runtime.recoveryOptions(id, instanceId));
+    }
+    @PostMapping("/{id}/instances/{instanceId}/recover")
+    public RealtimeResponse<Map<String, Object>> recover(
+            @PathVariable long id, @PathVariable long instanceId,
+            @RequestBody(required = false) TaskActionRequest input) {
+        TaskActionRequest action = input == null ? new TaskActionRequest() : input;
+        taskType(id);
+        return RealtimeResponse.success(runtime.recover(id, instanceId, action, actors.requireActor()));
+    }
     @PostMapping("/{id}/instances/{instanceId}/stop") public RealtimeResponse<Map<String, Object>> stopInstance(@PathVariable long id, @PathVariable long instanceId, @RequestBody(required = false) TaskActionRequest input) {
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
         Map<String, Object> instance = repository.requiredInstance(id, instanceId);
         if ("DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) action.setStopType("direct");
-        else if (!"savepoint".equalsIgnoreCase(text(action.getStopType()))) throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
+        else {
+            if (text(action.getStopType()).isEmpty()) action.setStopType("savepoint");
+            if (!List.of("savepoint", "direct").contains(text(action.getStopType()).toLowerCase())) {
+                throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
+            }
+        }
         return RealtimeResponse.success(runtime.stop(id, instanceId, action, actors.requireActor()));
     }
 
@@ -358,8 +417,8 @@ public class RealtimeUnifiedTaskController {
             return;
         }
         if ("checkpoint".equalsIgnoreCase(text(action.getStartType()))) {
-            if (!isLatestFailedProductionCheckpoint(taskId, text(action.getStatePath()))) {
-                throw new IllegalArgumentException("Checkpoint 仅支持恢复最近一次异常失败的正式实例，请刷新恢复状态后重新选择");
+            if (!belongsToProductionCheckpoint(taskId, text(action.getStatePath()))) {
+                throw new IllegalArgumentException("请选择当前任务正式实例的有效 Checkpoint");
             }
             return;
         }
@@ -367,6 +426,11 @@ public class RealtimeUnifiedTaskController {
         if (requiredPath.isEmpty()) {
             if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
                 throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
+            }
+            if (Boolean.TRUE.equals(policy.get("productionLocked"))
+                    && "direct".equalsIgnoreCase(text(action.getStartType()))) {
+                throw new IllegalArgumentException(
+                        "任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动");
             }
             return;
         }
@@ -377,14 +441,13 @@ public class RealtimeUnifiedTaskController {
             throw new IllegalArgumentException("只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
         }
     }
-    private boolean isLatestFailedProductionCheckpoint(long taskId, String path) {
+    private boolean belongsToProductionCheckpoint(long taskId, String path) {
+        if (path.isEmpty()) return false;
         for (Map<String, Object> instance : repository.instances(taskId)) {
             if (!"PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode")))) continue;
-            if (!"failed".equalsIgnoreCase(text(instance.get("status")))) return false;
             String jobId = text(instance.get("jobId"));
-            if (jobId.isEmpty()) return false;
+            if (jobId.isEmpty()) continue;
             for (String part : path.replace('\\', '/').split("/")) if (jobId.equals(part)) return true;
-            return false;
         }
         return false;
     }

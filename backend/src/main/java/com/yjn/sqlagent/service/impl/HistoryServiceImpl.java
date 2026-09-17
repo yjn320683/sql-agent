@@ -203,6 +203,9 @@ public class HistoryServiceImpl implements HistoryService {
                 step.setId(block.path("id").asText());
                 step.setName(toolName);
                 step.setInput(block.has("input") ? block.get("input") : null);
+                if (toolName.endsWith("platform_proposal_present")) {
+                    step.setSemanticType("proposal");
+                }
                 ensureSteps(target).add(step);
             }
         }

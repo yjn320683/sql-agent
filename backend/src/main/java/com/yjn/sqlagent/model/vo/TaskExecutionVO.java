@@ -12,6 +12,8 @@ public class TaskExecutionVO {
     private String sourceType;
     private Integer taskVersionNo;
     private Long taskRevision;
+    private Long sourceExecutionId;
+    private String replayStrategy;
     private String status;
     private Integer currentStepNo;
     private Integer totalSteps;

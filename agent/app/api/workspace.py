@@ -24,6 +24,7 @@ from sql_agent_mcp_server.domains.hive_execution.schemas import (
     HiveExplainRequest,
     HiveFunctionDetailRequest,
     HiveFunctionSearchRequest,
+    HivePreviewRequest,
     HiveSqlRequest,
 )
 from sql_agent_mcp_server.domains.hive_execution.service import HiveExecutionService
@@ -100,6 +101,12 @@ class SqlStructureRequest(BaseModel):
     validate_parameter_values: bool = Field(default=True, alias="validateParameterValues")
 
 
+class SqlQueryPreviewRequest(BaseModel):
+    sql: str = Field(min_length=1, max_length=1_000_000)
+    default_db: str | None = Field(default=None, alias="defaultDb", max_length=256)
+    limit: int = Field(default=100, ge=1, le=200)
+
+
 @router.post("/sql/completions")
 async def complete_sql(request: SqlCompletionRequest) -> dict[str, Any]:
     return await _run(lambda: _completion_service().complete(
@@ -141,6 +148,17 @@ async def preview_sql_structure(request: SqlStructureRequest) -> dict[str, Any]:
         }
 
     return await _run(preview)
+
+
+@router.post("/sql/query-preview")
+async def preview_sql_query(request: SqlQueryPreviewRequest) -> dict[str, Any]:
+    """执行后端已通过语法树转换的服务端限量只读查询。"""
+    return await _run(lambda: dump_response(_execution_service().preview(HivePreviewRequest(
+        sql=request.sql,
+        defaultDb=request.default_db,
+        limit=request.limit,
+        timeoutSeconds=30,
+    ))))
 
 
 def _preview_parameter_values(definitions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -192,15 +210,14 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
         )))
         for step in steps
     ]
-    if len(results) == 1:
-        return results[0]
-
     errors: list[dict[str, str]] = []
     warnings: list[str] = []
     missing_reasons: list[str] = []
     for step, result in zip(steps, results):
         errors.extend({
             **error,
+            "stepNo": step.number,
+            "stepName": step.name,
             "message": f"Step {step.number}（{step.name}）：{error.get('message') or 'Hive 编译失败。'}",
         } for error in result.get("errors", []))
         warnings.extend(
@@ -208,7 +225,7 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
             for warning in result.get("warnings", [])
         )
         missing_reasons.extend(result.get("missingReasons", []))
-    return {
+    response = {
         "ok": True,
         "source": "hiveserver2",
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
@@ -216,10 +233,46 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
         "defaultDb": results[0].get("defaultDb") or default_db or "default",
         "compilationMs": sum(int(result.get("compilationMs") or 0) for result in results),
         "errors": errors,
+        "steps": [
+            {
+                "stepNo": step.number,
+                "stepName": step.name,
+                "valid": bool(result.get("valid")),
+                "errors": [{**error, "stepNo": step.number, "stepName": step.name}
+                           for error in result.get("errors", [])],
+                "warnings": list(result.get("warnings", [])),
+            }
+            for step, result in zip(steps, results)
+        ],
         "warnings": warnings,
         "complete": all(bool(result.get("complete", True)) for result in results),
         "missingReasons": list(dict.fromkeys(missing_reasons)),
     }
+    if len(results) == 1:
+        response.update({key: value for key, value in results[0].items()
+                         if key not in {"errors", "warnings", "missingReasons"}})
+        response["errors"] = errors
+        response["warnings"] = warnings
+        response["missingReasons"] = list(dict.fromkeys(missing_reasons))
+    return response
+
+
+def _explain_risks(plan_text: str) -> list[dict[str, str]]:
+    """只根据 Explain 原文中的明确证据生成风险，不从 SQL 文本推测。"""
+    rules = (
+        ("CARTESIAN_JOIN", "检测到笛卡尔连接", ("cartesian product", "cross product")),
+        ("GLOBAL_SORT", "检测到全局排序", ("global sort", "order by operator")),
+        ("PARTITION_NOT_PRUNED", "执行计划明确显示分区未裁剪", (
+            "partition pruning: false", "partition predicate: null", "pruned partition list: []",
+        )),
+    )
+    lines = [line.strip() for line in str(plan_text or "").splitlines() if line.strip()]
+    risks: list[dict[str, str]] = []
+    for code, message, markers in rules:
+        evidence = next((line for line in lines if any(marker in line.lower() for marker in markers)), None)
+        if evidence:
+            risks.append({"code": code, "level": "warning", "message": message, "evidence": evidence[:500]})
+    return risks
 
 
 async def _run(operation) -> dict[str, Any]:
@@ -689,8 +742,21 @@ async def explain_task_sql(
             )))
             for step in steps
         ]
+        step_plans = [
+            {
+                "stepNo": step.number,
+                "stepName": step.name,
+                "planText": result.get("planText") or "",
+                "risks": _explain_risks(str(result.get("planText") or "")),
+            }
+            for step, result in zip(steps, results)
+        ]
+        all_risks = [
+            {**risk, "stepNo": step_plan["stepNo"], "stepName": step_plan["stepName"]}
+            for step_plan in step_plans for risk in step_plan["risks"]
+        ]
         if len(results) == 1:
-            return results[0]
+            return {**results[0], "risks": all_risks, "steps": step_plans}
         warnings = [warning for result in results for warning in result.get("warnings", [])]
         missing_reasons = [
             reason for result in results for reason in result.get("missingReasons", [])
@@ -707,6 +773,8 @@ async def explain_task_sql(
             "defaultDb": results[0].get("defaultDb") or default_db or "default",
             "compilationMs": sum(int(result.get("compilationMs") or 0) for result in results),
             "truncated": any(bool(result.get("truncated")) for result in results),
+            "risks": all_risks,
+            "steps": step_plans,
             "warnings": warnings,
             "complete": all(bool(result.get("complete", True)) for result in results),
             "missingReasons": list(dict.fromkeys(missing_reasons)),

@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yjn.sqlagent.model.entity.SqlTaskScheduleRun;
 import java.util.List;
 import java.time.LocalDateTime;
+import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -20,4 +21,6 @@ public interface SqlTaskScheduleRunMapper extends BaseMapper<SqlTaskScheduleRun>
     List<SqlTaskScheduleRun> listRetryable(@Param("now") LocalDateTime now, @Param("limit") int limit);
     int claimRetry(@Param("id") long id);
     void markRetried(@Param("id") long id);
+    List<Map<String, Object>> listDeadlineBreaches(@Param("now") LocalDateTime now, @Param("limit") int limit);
+    int markBreach(@Param("id") long id, @Param("message") String message);
 }

@@ -19,6 +19,9 @@ public class SqlTaskSchedule {
     private String concurrencyPolicy;
     private Integer maxRetries;
     private Integer retryIntervalSeconds;
+    private Integer executionTimeoutSeconds;
+    private Integer slaDurationMinutes;
+    private String timeoutPolicy;
     private String parameterValues;
     private LocalDateTime nextTriggerTime;
     private LocalDateTime lastTriggerTime;

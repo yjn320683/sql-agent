@@ -97,6 +97,21 @@ class RealtimeSyncConfigValidatorTest {
         assertEquals("Sequence Field 引用的目标字段不存在：missing",
                 assertThrows(IllegalArgumentException.class,
                         () -> validator.validate("mysql-cdc", 3L, invalid)).getMessage());
+
+        Map<String, Object> prefixed = validConfig();
+        cdc(prefixed).put("tableConfOverrides", Map.of("sequence.field", "__meta_op_ts"));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, prefixed));
+    }
+
+    @Test
+    void rejectsCollisionWithPrefixedMetadataColumn() {
+        when(servers.schemas(3L, List.of("orders"))).thenReturn(Map.of("orders", Map.of(
+                "table", "orders", "primaryKeys", List.of("id"), "columns", List.of(
+                Map.of("name", "id", "type", "BIGINT", "nullable", false),
+                Map.of("name", "__meta_op_ts", "type", "TIMESTAMP", "nullable", true)))));
+        assertEquals("源表 orders 的字段或计算列与同步元数据列重名：__meta_op_ts",
+                assertThrows(IllegalArgumentException.class,
+                        () -> validator.validate("mysql-cdc", 3L, validConfig())).getMessage());
     }
 
     @Test

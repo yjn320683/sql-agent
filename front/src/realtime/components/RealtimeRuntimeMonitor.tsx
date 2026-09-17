@@ -7,6 +7,7 @@ import type { TaskInstance, TaskManagerRuntimeResource, TaskRuntimeCheckpointDet
 
 interface Props {
   taskId: number;
+  taskType?: 'sync' | 'compute' | 'export';
   instance?: TaskInstance;
   active?: boolean;
   checkpointIntervalSeconds?: number;
@@ -73,7 +74,7 @@ const renderBackpressure = (value?: number | null, reason?: string) => {
   </Space>;
 };
 
-export default function RealtimeRuntimeMonitor({ taskId, instance, active = true, checkpointIntervalSeconds = 60 }: Props) {
+export default function RealtimeRuntimeMonitor({ taskId, taskType = 'sync', instance, active = true, checkpointIntervalSeconds = 60 }: Props) {
   const [runtime, setRuntime] = useState<TaskRuntimeSnapshot>();
   const [resources, setResources] = useState<TaskRuntimeResources>();
   const [checkpoints, setCheckpoints] = useState<TaskRuntimeCheckpoints>();
@@ -164,7 +165,9 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
   };
   const health = checkpointHealth(latestCompleted, latestFailed);
   const sync = runtime?.sync;
-  const unavailableReasons = sync?.unavailableReasons ?? {};
+  const exportMetrics = runtime?.export;
+  const isExport = taskType === 'export';
+  const unavailableReasons = (isExport ? exportMetrics?.unavailableReasons : sync?.unavailableReasons) ?? {};
   const unavailableReason = (key: string, fallback: string) => unavailableReasons[key] || fallback;
   const vertexRows = runtime?.vertices ?? [];
   const taskManagers = resources?.flink?.taskManagers ?? [];
@@ -195,16 +198,32 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
     <Spin spinning={loading && live}>
       <div className="sync-runtime-card-grid">
         <div><span>{metricTitle('Job 状态', 'Flink Job 当前执行状态')}</span><strong>{renderFlinkState(runtime?.status ?? instance.status)}</strong></div>
-        <div><span>{metricTitle('Source 输出', '所有 Source 顶点 numRecordsOutPerSecond 的 subtask 求和')}</span><strong>{metricValue(formatRate(sync?.sourceOutputRate), sync?.sourceOutputRate, unavailableReason('sourceOutputRate', 'Source 输出速率暂不可用'))}</strong></div>
-        <div><span>{metricTitle('源端延迟', 'MySQL CDC 当前抓取事件时间与处理时间之间的最大延迟')}</span><strong>{metricValue(formatDuration(sync?.sourceLagMs), sync?.sourceLagMs, unavailableReason('sourceLagMs', '源端延迟暂不可用'))}</strong></div>
-        <div><span>{metricTitle('全量快照', '已完成与剩余 snapshot split 计算的首次全量同步进度')}</span><strong>{metricValue(snapshotPercent == null ? '-' : `${snapshotPercent}%`, snapshotPercent, unavailableReason('snapshotSplitsFinished', '快照分片指标暂不可用'))}</strong></div>
-        <div><span>{metricTitle('异常记录', 'Flink 算子报告的异常输入记录累计值')}</span><strong>{metricValue(valueOrDash(sync?.dirtyRecords), sync?.dirtyRecords, unavailableReason('dirtyRecords', '异常记录指标暂不可用'))}</strong></div>
-        <div><span>{metricTitle('Paimon 提交', 'Paimon Committer 成功提交后的 sink.numRecordsOutPerSecond，按 subtask 求和')}</span><strong>{metricValue(formatRate(sync?.committedRate), sync?.committedRate, unavailableReason('committedRate', 'Paimon 提交速率暂不可用'))}</strong></div>
+        <div><span>{metricTitle('Source 输出', '所有 Source 顶点 numRecordsOutPerSecond 的 subtask 求和')}</span><strong>{metricValue(formatRate(isExport ? exportMetrics?.sourceOutputRate : sync?.sourceOutputRate), isExport ? exportMetrics?.sourceOutputRate : sync?.sourceOutputRate, unavailableReason('sourceOutputRate', 'Source 输出速率暂不可用'))}</strong></div>
+        {isExport ? <>
+          <div><span>{metricTitle('MySQL 待提交', '所有 MySQL Sink subtask 内存批次中的待提交行数')}</span><strong>{metricValue(valueOrDash(exportMetrics?.pendingRows), exportMetrics?.pendingRows, unavailableReason('pendingRows', '待提交行数暂不可用'))}</strong></div>
+          <div><span>{metricTitle('MySQL 已提交', 'MySQL Sink 成功提交的累计行数')}</span><strong>{metricValue(valueOrDash(exportMetrics?.committedRows), exportMetrics?.committedRows, unavailableReason('committedRows', '累计提交行数暂不可用'))}</strong></div>
+          <div><span>{metricTitle('MySQL 重试', 'MySQL Sink 批次提交失败后的累计重试次数')}</span><strong>{metricValue(valueOrDash(exportMetrics?.retryCount), exportMetrics?.retryCount, unavailableReason('retryCount', '重试次数暂不可用'))}</strong></div>
+          <div><span>{metricTitle('最近刷新耗时', 'MySQL Sink 最近一次批量事务从开始到提交的耗时')}</span><strong>{metricValue(formatDuration(exportMetrics?.lastFlushDurationMs), exportMetrics?.lastFlushDurationMs, unavailableReason('lastFlushDurationMs', '刷新耗时暂不可用'))}</strong></div>
+        </> : <>
+          <div><span>{metricTitle('源端延迟', 'MySQL CDC 当前抓取事件时间与处理时间之间的最大延迟')}</span><strong>{metricValue(formatDuration(sync?.sourceLagMs), sync?.sourceLagMs, unavailableReason('sourceLagMs', '源端延迟暂不可用'))}</strong></div>
+          <div><span>{metricTitle('全量快照', '已完成与剩余 snapshot split 计算的首次全量同步进度')}</span><strong>{metricValue(snapshotPercent == null ? '-' : `${snapshotPercent}%`, snapshotPercent, unavailableReason('snapshotSplitsFinished', '快照分片指标暂不可用'))}</strong></div>
+          <div><span>{metricTitle('异常记录', 'Flink 算子报告的异常输入记录累计值')}</span><strong>{metricValue(valueOrDash(sync?.dirtyRecords), sync?.dirtyRecords, unavailableReason('dirtyRecords', '异常记录指标暂不可用'))}</strong></div>
+          <div><span>{metricTitle('Paimon 提交', 'Paimon Committer 成功提交后的 sink.numRecordsOutPerSecond，按 subtask 求和')}</span><strong>{metricValue(formatRate(sync?.committedRate), sync?.committedRate, unavailableReason('committedRate', 'Paimon 提交速率暂不可用'))}</strong></div>
+        </>}
         <div><span>{metricTitle('Checkpoint 健康', '结合最近成功、最近失败、配置周期和运行时长判断')}</span><strong><Tooltip title={health.reason}><Tag color={health.color}>{health.text}</Tag></Tooltip></strong></div>
       </div>
       <div className="sync-runtime-section">
         <div className="sync-runtime-section-title"><Typography.Text strong>数据流</Typography.Text><Typography.Text type="secondary">Flink Subtask 聚合 / Paimon Committer</Typography.Text></div>
-        <div className="runtime-stat-grid sync-runtime-stat-grid">
+        {isExport ? <div className="runtime-stat-grid sync-runtime-stat-grid">
+          <div><Statistic title={metricTitle('Sink 接收', '所有 MySQL Sink 顶点 numRecordsInPerSecond 的 subtask 求和')} value={valueOrDash(exportMetrics?.sinkInputRate)} suffix={exportMetrics?.sinkInputRate == null ? undefined : 'records/s'} valueRender={(node) => metricValue(node, exportMetrics?.sinkInputRate, unavailableReason('sinkInputRate', 'Sink 接收速率暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('提交批次', 'MySQL Sink 成功提交的累计事务批次数')} value={valueOrDash(exportMetrics?.committedBatches)} valueRender={(node) => metricValue(node, exportMetrics?.committedBatches, unavailableReason('committedBatches', '提交批次暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('最近成功', 'MySQL Sink 最近一次成功提交事务的时间')} value={formatTimestamp(exportMetrics?.lastSuccessTimestamp)} valueRender={(node) => metricValue(node, exportMetrics?.lastSuccessTimestamp, unavailableReason('lastSuccessTimestamp', '最近成功时间暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('最近失败批次', '最近一次提交失败时批次中的行数')} value={valueOrDash(exportMetrics?.lastFailedBatchSize)} valueRender={(node) => metricValue(node, exportMetrics?.lastFailedBatchSize, unavailableReason('lastFailedBatchSize', '失败批次大小暂不可用'))} /></div>
+          <div><Statistic title={metricTitle('重启次数', 'Flink Job 指标 numRestarts')} value={valueOrDash(runtime?.restartCount)} valueRender={(node) => metricValue(node, runtime?.restartCount, runtime?.restartCountUnavailableReason || 'Flink Job 未提供 numRestarts')} /></div>
+          <div><Statistic title={metricTitle('运行时长', 'Flink Job REST 返回的 duration')} value={formatDuration(runtime?.uptimeMs)} valueRender={(node) => metricValue(node, runtime?.uptimeMs, 'Flink Job 未提供 duration')} /></div>
+          <div><Statistic title={metricTitle('最大 Busy', '所有算子 subtask 的 busyTimeMsPerSecond 最大值')} value={exportMetrics?.busyMaxMsPerSecond == null ? '-' : Math.round(msPerSecondToPercent(exportMetrics.busyMaxMsPerSecond))} suffix={exportMetrics?.busyMaxMsPerSecond == null ? undefined : '%'} /></div>
+          <div><Statistic title={metricTitle('最大 Backpressure', '所有算子 subtask 的 backPressuredTimeMsPerSecond 最大值')} value={exportMetrics?.backpressuredMaxMsPerSecond == null ? '-' : Math.round(msPerSecondToPercent(exportMetrics.backpressuredMaxMsPerSecond))} suffix={exportMetrics?.backpressuredMaxMsPerSecond == null ? undefined : '%'} /></div>
+        </div> : <div className="runtime-stat-grid sync-runtime-stat-grid">
           <div><Statistic title={metricTitle('Sink 接收', '所有终端 Sink 顶点 numRecordsInPerSecond 的 subtask 求和')} value={valueOrDash(sync?.sinkInputRate)} suffix={sync?.sinkInputRate == null ? undefined : 'records/s'} valueRender={(node) => metricValue(node, sync?.sinkInputRate, unavailableReason('sinkInputRate', 'Sink 接收速率暂不可用'))} /></div>
           <div><Statistic title={metricTitle('Source 发送延迟', 'MySQL CDC 当前发送事件时间与处理时间之间的最大延迟')} value={formatDuration(sync?.sourceEmitLagMs)} valueRender={(node) => metricValue(node, sync?.sourceEmitLagMs, unavailableReason('sourceEmitLagMs', 'Source 发送延迟暂不可用'))} /></div>
           <div><Statistic title={metricTitle('Source 空闲时间', 'MySQL CDC Source 距离最近一次活动的时间')} value={formatDuration(sync?.sourceIdleMs)} valueRender={(node) => metricValue(node, sync?.sourceIdleMs, unavailableReason('sourceIdleMs', 'Source 空闲指标暂不可用'))} /></div>
@@ -216,7 +235,7 @@ export default function RealtimeRuntimeMonitor({ taskId, instance, active = true
           <div><Statistic title={metricTitle('运行时长', 'Flink Job REST 返回的 duration')} value={formatDuration(runtime?.uptimeMs)} valueRender={(node) => metricValue(node, runtime?.uptimeMs, 'Flink Job 未提供 duration')} /></div>
           <div><Statistic title={metricTitle('最大 Busy', '所有算子 subtask 的 busyTimeMsPerSecond 最大值，1000ms/s 为 100%')} value={sync?.busyMaxMsPerSecond == null ? '-' : Math.round(msPerSecondToPercent(sync.busyMaxMsPerSecond))} suffix={sync?.busyMaxMsPerSecond == null ? undefined : '%'} valueRender={(node) => metricValue(node, sync?.busyMaxMsPerSecond, unavailableReason('busyMaxMsPerSecond', 'Busy 指标暂不可用'))} /></div>
           <div><Statistic title={metricTitle('最大 Backpressure', '所有算子 subtask 的 backPressuredTimeMsPerSecond 最大值，1000ms/s 为 100%')} value={sync?.backpressuredMaxMsPerSecond == null ? '-' : Math.round(msPerSecondToPercent(sync.backpressuredMaxMsPerSecond))} suffix={sync?.backpressuredMaxMsPerSecond == null ? undefined : '%'} valueRender={(node) => metricValue(node, sync?.backpressuredMaxMsPerSecond, unavailableReason('backpressuredMaxMsPerSecond', 'Backpressure 指标暂不可用'))} /></div>
-        </div>
+        </div>}
       </div>
       <div className="sync-runtime-two-columns">
         <div className="sync-runtime-section">

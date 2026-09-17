@@ -20,6 +20,7 @@ public class SqlTaskBackfillBatch {
     private Integer submittedCount;
     private Integer succeededCount;
     private Integer failedCount;
+    private Integer maxConcurrency;
     private String parameterValues;
     private String requestedBy;
     private LocalDateTime createTime;

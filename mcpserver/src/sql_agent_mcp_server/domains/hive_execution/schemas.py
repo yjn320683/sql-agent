@@ -16,6 +16,11 @@ class HiveExplainRequest(HiveSqlRequest):
     extended: bool = False
 
 
+class HivePreviewRequest(HiveSqlRequest):
+    limit: int = Field(default=100, ge=1, le=200)
+    timeout_seconds: int = Field(default=30, alias="timeoutSeconds", ge=1, le=30)
+
+
 class HiveValidationResponse(DiagnosticFactResponse):
     valid: bool
     default_db: str = Field(alias="defaultDb")
@@ -29,6 +34,15 @@ class HiveExplainResponse(DiagnosticFactResponse):
     default_db: str = Field(alias="defaultDb")
     compilation_ms: int = Field(alias="compilationMs")
     truncated: bool = False
+
+
+class HivePreviewResponse(DiagnosticFactResponse):
+    default_db: str = Field(alias="defaultDb")
+    columns: list[dict[str, str | None]]
+    rows: list[list[object | None]]
+    row_count: int = Field(alias="rowCount")
+    truncated: bool = False
+    elapsed_ms: int = Field(alias="elapsedMs")
 
 
 class HiveFunctionSearchRequest(BaseModel):

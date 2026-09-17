@@ -9,6 +9,7 @@ import com.yjn.sqlagent.model.vo.TaskExecutionVO;
 
 public interface TaskExecutionService {
     TaskExecutionVO create(String obId, long taskId, TaskExecutionCreateDTO request);
+    TaskExecutionVO rerun(String obId, long executionId);
     TaskExecutionPageVO list(long taskId, ExecutionQueryDTO query);
     TaskExecutionPageVO listAll(ExecutionCenterQueryDTO query);
     ExecutionSummaryVO summary();

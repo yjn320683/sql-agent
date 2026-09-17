@@ -6,17 +6,17 @@
     <result column="schedule_type" property="scheduleType"/><result column="cron_expression" property="cronExpression"/>
     <result column="timezone" property="timezone"/><result column="enabled" property="enabled"/>
     <result column="concurrency_policy" property="concurrencyPolicy"/><result column="max_retries" property="maxRetries"/>
-    <result column="retry_interval_seconds" property="retryIntervalSeconds"/><result column="parameter_values" property="parameterValues"/>
+    <result column="retry_interval_seconds" property="retryIntervalSeconds"/><result column="execution_timeout_seconds" property="executionTimeoutSeconds"/><result column="sla_duration_minutes" property="slaDurationMinutes"/><result column="timeout_policy" property="timeoutPolicy"/><result column="parameter_values" property="parameterValues"/>
     <result column="next_trigger_time" property="nextTriggerTime"/><result column="last_trigger_time" property="lastTriggerTime"/>
     <result column="last_run_status" property="lastRunStatus"/><result column="revision" property="revision"/>
     <result column="created_by" property="createdBy"/><result column="updated_by" property="updatedBy"/>
     <result column="create_time" property="createTime"/><result column="update_time" property="updateTime"/>
   </resultMap>
-  <sql id="columns">id,task_id,schedule_type,cron_expression,timezone,enabled,concurrency_policy,max_retries,retry_interval_seconds,parameter_values,next_trigger_time,last_trigger_time,last_run_status,revision,created_by,updated_by,create_time,update_time</sql>
+  <sql id="columns">id,task_id,schedule_type,cron_expression,timezone,enabled,concurrency_policy,max_retries,retry_interval_seconds,execution_timeout_seconds,sla_duration_minutes,timeout_policy,parameter_values,next_trigger_time,last_trigger_time,last_run_status,revision,created_by,updated_by,create_time,update_time</sql>
   <select id="selectByTaskId" resultMap="scheduleMap">SELECT <include refid="columns"/> FROM sql_task_schedule WHERE task_id=#{taskId}</select>
   <select id="selectByTaskIdForUpdate" resultMap="scheduleMap">SELECT <include refid="columns"/> FROM sql_task_schedule WHERE task_id=#{taskId} FOR UPDATE</select>
   <select id="listDue" resultMap="scheduleMap">SELECT <include refid="columns"/> FROM sql_task_schedule WHERE enabled=1 AND schedule_type='CRON' AND next_trigger_time IS NOT NULL AND next_trigger_time&lt;=#{now} ORDER BY next_trigger_time LIMIT #{limit}</select>
-  <update id="updateOptimistically">UPDATE sql_task_schedule SET schedule_type=#{schedule.scheduleType},cron_expression=#{schedule.cronExpression},timezone=#{schedule.timezone},enabled=#{schedule.enabled},concurrency_policy=#{schedule.concurrencyPolicy},max_retries=#{schedule.maxRetries},retry_interval_seconds=#{schedule.retryIntervalSeconds},parameter_values=#{schedule.parameterValues},next_trigger_time=#{schedule.nextTriggerTime},updated_by=#{schedule.updatedBy},revision=revision+1,update_time=NOW() WHERE task_id=#{schedule.taskId} AND revision=#{expectedRevision}</update>
+  <update id="updateOptimistically">UPDATE sql_task_schedule SET schedule_type=#{schedule.scheduleType},cron_expression=#{schedule.cronExpression},timezone=#{schedule.timezone},enabled=#{schedule.enabled},concurrency_policy=#{schedule.concurrencyPolicy},max_retries=#{schedule.maxRetries},retry_interval_seconds=#{schedule.retryIntervalSeconds},execution_timeout_seconds=#{schedule.executionTimeoutSeconds},sla_duration_minutes=#{schedule.slaDurationMinutes},timeout_policy=#{schedule.timeoutPolicy},parameter_values=#{schedule.parameterValues},next_trigger_time=#{schedule.nextTriggerTime},updated_by=#{schedule.updatedBy},revision=revision+1,update_time=NOW() WHERE task_id=#{schedule.taskId} AND revision=#{expectedRevision}</update>
   <update id="claim">UPDATE sql_task_schedule SET last_trigger_time=#{expectedTrigger},next_trigger_time=#{nextTrigger},update_time=NOW() WHERE id=#{id} AND enabled=1 AND next_trigger_time=#{expectedTrigger}</update>
   <update id="updateLastRunStatus">UPDATE sql_task_schedule SET last_run_status=#{status},update_time=NOW() WHERE id=#{id}</update>
 </mapper>

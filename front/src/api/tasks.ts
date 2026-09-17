@@ -11,6 +11,7 @@ import type {
   SqlTaskVersionVO,
   TaskExecutionPageVO,
   TaskExecutionDiagnosticsVO,
+  DiagnosticReport,
   TaskExecutionStatus,
   TaskExecutionVO,
   TaskExecutionCreateRequest,
@@ -87,13 +88,19 @@ export const saveTaskDependencies = (taskId: number, items: Array<Pick<SqlTaskDe
     method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items }),
   });
 
-export const createTaskBackfill = (taskId: number, body: { startDate: string; endDate: string; parameters: Record<string, unknown> }) =>
+export const createTaskBackfill = (taskId: number, body: { startDate: string; endDate: string; parameters: Record<string, unknown>; maxConcurrency?: number }) =>
   requestJson<Record<string, unknown>>(`/api/tasks/${taskId}/backfills`, {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
   });
 
 export const listTaskBackfills = (taskId: number, page = 1, pageSize = 20): Promise<SqlTaskBackfillBatchPageVO> =>
   requestJson<SqlTaskBackfillBatchPageVO>(`/api/tasks/${taskId}/backfills?page=${page}&pageSize=${pageSize}`);
+
+export const getScheduleDag = (): Promise<import('../types').ScheduleDagVO> => requestJson('/api/schedules/dag');
+export const getTaskBackfill = (taskId: number, batchId: number): Promise<{ batch: import('../types').SqlTaskBackfillBatchVO; items: import('../types').SqlTaskBackfillItemVO[] }> => requestJson(`/api/tasks/${taskId}/backfills/${batchId}`);
+export const pauseTaskBackfill = (taskId: number, batchId: number) => requestJson(`/api/tasks/${taskId}/backfills/${batchId}/pause`, { method: 'POST' });
+export const resumeTaskBackfill = (taskId: number, batchId: number) => requestJson(`/api/tasks/${taskId}/backfills/${batchId}/resume`, { method: 'POST' });
+export const retryFailedTaskBackfill = (taskId: number, batchId: number) => requestJson(`/api/tasks/${taskId}/backfills/${batchId}/retry-failed`, { method: 'POST' });
 
 export const listTaskScheduleRuns = (taskId: number, page = 1, pageSize = 20): Promise<SqlTaskScheduleRunPageVO> =>
   requestJson<SqlTaskScheduleRunPageVO>(`/api/tasks/${taskId}/schedule-runs?page=${page}&pageSize=${pageSize}`);
@@ -131,6 +138,11 @@ export const getTaskExecution = (executionId: number): Promise<TaskExecutionVO> 
 export const getTaskExecutionDiagnostics = (executionId: number): Promise<TaskExecutionDiagnosticsVO> =>
   requestJson<TaskExecutionDiagnosticsVO>(`/api/workspace/task-executions/${executionId}/diagnostics`);
 
+export const getTaskExecutionDiagnosticReport = (executionId: number, refresh = false): Promise<DiagnosticReport> =>
+  requestJson<DiagnosticReport>(`/api/task-executions/${executionId}/diagnostic-report${refresh ? '/refresh' : ''}`, {
+    method: refresh ? 'POST' : 'GET',
+  });
+
 export function listExecutions(
   status: ExecutionCenterStatus = 'all',
   keyword = '',
@@ -151,6 +163,9 @@ export const getExecutionSummary = (): Promise<ExecutionSummaryVO> =>
 
 export const cancelTaskExecution = (executionId: number): Promise<void> =>
   requestJson<void>(`/api/task-executions/${executionId}/cancel`, { method: 'POST' });
+
+export const rerunTaskExecution = (executionId: number): Promise<TaskExecutionVO> =>
+  requestJson<TaskExecutionVO>(`/api/task-executions/${executionId}/rerun`, { method: 'POST' });
 
 export const getExecutionLogs = (
   executionId: number,

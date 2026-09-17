@@ -9,6 +9,7 @@ import com.yjn.sqlagent.model.vo.ExecutionSummaryVO;
 import com.yjn.sqlagent.model.vo.TaskExecutionPageVO;
 import com.yjn.sqlagent.model.vo.TaskExecutionVO;
 import com.yjn.sqlagent.service.CurrentUserService;
+import com.yjn.sqlagent.service.OfflineDiagnosticReportService;
 import com.yjn.sqlagent.service.TaskExecutionLogService;
 import com.yjn.sqlagent.service.TaskExecutionService;
 import java.nio.file.Path;
@@ -33,13 +34,30 @@ public class TaskExecutionController {
     private final TaskExecutionService executionService;
     private final TaskExecutionLogService logService;
     private final CurrentUserService currentUserService;
+    private final OfflineDiagnosticReportService diagnosticReports;
 
     public TaskExecutionController(TaskExecutionService executionService,
                                    TaskExecutionLogService logService,
-                                   CurrentUserService currentUserService) {
+                                   CurrentUserService currentUserService,
+                                   OfflineDiagnosticReportService diagnosticReports) {
         this.executionService = executionService;
         this.logService = logService;
         this.currentUserService = currentUserService;
+        this.diagnosticReports = diagnosticReports;
+    }
+
+    @GetMapping("/{executionId}/diagnostic-report")
+    public BaseResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> diagnosticReport(
+            @PathVariable long executionId, HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(diagnosticReports.get(executionId, false));
+    }
+
+    @PostMapping("/{executionId}/diagnostic-report/refresh")
+    public BaseResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> refreshDiagnosticReport(
+            @PathVariable long executionId, HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(diagnosticReports.get(executionId, true));
     }
 
     @GetMapping
@@ -67,6 +85,11 @@ public class TaskExecutionController {
         currentUserService.requireObId(request);
         executionService.cancel(executionId);
         return BaseResponse.success(null);
+    }
+
+    @PostMapping("/{executionId}/rerun")
+    public BaseResponse<TaskExecutionVO> rerun(@PathVariable long executionId, HttpServletRequest request) {
+        return BaseResponse.success(executionService.rerun(currentUserService.requireObId(request), executionId));
     }
 
     @GetMapping("/{executionId}/logs")

@@ -23,6 +23,8 @@ class PaimonSyncCommandBuilderTest {
         assertEquals("/data/paimon-action.jar", command.getJarPath());
         assertOption(command.getArguments(), "--including_tables", "orders|order_item");
         assertOption(command.getArguments(), "--mode", "combined");
+        assertOption(command.getArguments(), "--metadata_column", "database_name,table_name,op_ts");
+        assertOption(command.getArguments(), "--metadata_column_prefix", "__meta_");
         assertOption(command.getArguments(), "--multiple_table_primary_keys", "orders=id");
         assertOption(command.getArguments(), "--multiple_table_partition_keys", "orders=dt");
         assertOption(command.getArguments(), "--multiple_table_computed_column", "orders=dt=date_format(created_at,yyyy-MM-dd)");

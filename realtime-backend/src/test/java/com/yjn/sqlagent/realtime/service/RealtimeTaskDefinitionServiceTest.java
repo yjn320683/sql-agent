@@ -4,6 +4,7 @@ import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
@@ -82,18 +83,23 @@ class RealtimeTaskDefinitionServiceTest {
         when(paimon.describe("ods", "orders")).thenReturn(source);
         when(sync.requiredServer(7L, false)).thenReturn(Map.of("databaseName", "sink_db"));
         when(servers.tables(7L)).thenReturn(List.of("orders_sink"));
-        when(servers.schema(7L, "orders_sink")).thenReturn(Map.of(
+        Map<String, Object> sinkSchema = Map.of(
                 "primaryKeys", List.of("id"),
                 "columns", List.of(
                         Map.of("name", "id", "type", "bigint", "nullable", false),
-                        Map.of("name", "payload", "type", "varchar", "nullable", true))));
+                        Map.of("name", "payload", "type", "varchar", "nullable", true)));
+        when(servers.schemas(7L, List.of("orders_sink"))).thenReturn(Map.of("orders_sink", sinkSchema));
 
-        RealtimeTaskDefinitionService.References references = service.validate(export(List.of(
+        UnifiedTaskRequest request = export(List.of(
                 new LinkedHashMap<>(Map.of("realtimeTableId", 1L, "targetTable", "orders_sink",
                         "columnMappings", List.of(
                                 Map.of("sourceColumn", "id", "targetColumn", "id"),
-                                Map.of("sourceColumn", "payload", "targetColumn", "payload")))))), null);
+                                Map.of("sourceColumn", "payload", "targetColumn", "payload"))))));
+        RealtimeTaskDefinitionService.References references = service.validate(request, null);
         assertEquals(List.of(1L), references.getInputs());
+        @SuppressWarnings("unchecked") Map<String, Object> exportConfig = (Map<String, Object>) request.getTaskConfig().get("exportConfig");
+        assertEquals(1, ((List<?>) exportConfig.get("schemaContracts")).size());
+        verify(servers).schemas(7L, List.of("orders_sink"));
 
         UnifiedTaskRequest missingKey = export(List.of(new LinkedHashMap<>(Map.of(
                 "realtimeTableId", 1L, "targetTable", "orders_sink",

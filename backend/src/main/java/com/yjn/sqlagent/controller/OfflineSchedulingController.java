@@ -90,6 +90,34 @@ public class OfflineSchedulingController {
         return BaseResponse.success(schedulingService.listBackfills(taskId, page, pageSize));
     }
 
+    @GetMapping("/tasks/{taskId}/backfills/{batchId}")
+    public BaseResponse<Map<String, Object>> getBackfill(@PathVariable long taskId, @PathVariable long batchId,
+                                                         HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(schedulingService.getBackfill(taskId, batchId));
+    }
+
+    @PostMapping("/tasks/{taskId}/backfills/{batchId}/pause")
+    public BaseResponse<SqlTaskBackfillBatch> pauseBackfill(@PathVariable long taskId, @PathVariable long batchId,
+                                                            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(schedulingService.pauseBackfill(taskId, batchId));
+    }
+
+    @PostMapping("/tasks/{taskId}/backfills/{batchId}/resume")
+    public BaseResponse<SqlTaskBackfillBatch> resumeBackfill(@PathVariable long taskId, @PathVariable long batchId,
+                                                             HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(schedulingService.resumeBackfill(taskId, batchId));
+    }
+
+    @PostMapping("/tasks/{taskId}/backfills/{batchId}/retry-failed")
+    public BaseResponse<SqlTaskBackfillBatch> retryFailedBackfill(@PathVariable long taskId, @PathVariable long batchId,
+                                                                  HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(schedulingService.retryFailedBackfill(taskId, batchId));
+    }
+
     @GetMapping("/tasks/{taskId}/schedule-runs")
     public BaseResponse<Map<String, Object>> listRuns(
             @PathVariable long taskId,

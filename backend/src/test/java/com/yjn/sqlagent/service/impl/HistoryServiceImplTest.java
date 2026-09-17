@@ -107,4 +107,25 @@ class HistoryServiceImplTest {
         assertEquals("重点关注渠道维度", messages.get(1).getSteps().get(1).getAnswers().get(0).path("customAnswer").asText());
         assertEquals("好的，我继续分析。", messages.get(1).getContent());
     }
+
+    @Test
+    void loadMessagesMarksProposalToolForCardRecovery() throws Exception {
+        AgentProperties properties = new AgentProperties();
+        Path historyDir = tempDir.resolve("proposal-history");
+        properties.setHistoryDir(historyDir.toString());
+        String sessionId = "44444444-4444-4444-8444-444444444444";
+        Path jsonl = historyDir.resolve(sessionId + ".jsonl");
+        Files.createDirectories(jsonl.getParent());
+        Files.write(jsonl, Arrays.asList(
+                "{\"type\":\"user\",\"message\":{\"content\":\"优化 SQL\"}}",
+                "{\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"id\":\"toolu_proposal\",\"name\":\"mcp__sql_agent__platform_proposal_present\",\"input\":{\"target\":\"offline-sql\",\"kind\":\"SQL\",\"before\":\"select 1\",\"after\":\"select 2\"}}]}}"
+        ), StandardCharsets.UTF_8);
+
+        List<MessageVO> messages = new HistoryServiceImpl(properties).loadMessages(sessionId);
+
+        assertEquals("proposal", messages.get(1).getSteps().get(0).getSemanticType());
+        assertEquals("toolu_proposal", messages.get(1).getSteps().get(0).getId());
+        assertEquals("offline-sql", ((com.fasterxml.jackson.databind.JsonNode)
+                messages.get(1).getSteps().get(0).getInput()).path("target").asText());
+    }
 }

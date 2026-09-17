@@ -132,7 +132,8 @@ public class RealtimeServerService {
         for (int offset = 0; offset < tableNames.size(); offset += 500) {
             List<String> batch = tableNames.subList(offset, Math.min(tableNames.size(), offset + 500));
             String placeholders = String.join(",", java.util.Collections.nCopies(batch.size(), "?"));
-            String columnSql = "SELECT TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,DATA_TYPE,IS_NULLABLE,"
+            String columnSql = "SELECT TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,DATA_TYPE,COLUMN_TYPE,IS_NULLABLE,"
+                    + "CHARACTER_MAXIMUM_LENGTH,NUMERIC_PRECISION,NUMERIC_SCALE,DATETIME_PRECISION,"
                     + "COLUMN_COMMENT,COLUMN_DEFAULT,EXTRA FROM information_schema.COLUMNS "
                     + "WHERE TABLE_SCHEMA=? AND TABLE_NAME IN (" + placeholders + ") "
                     + "ORDER BY TABLE_NAME,ORDINAL_POSITION";
@@ -148,6 +149,13 @@ public class RealtimeServerService {
                         column.put("name", rows.getString("COLUMN_NAME"));
                         column.put("ordinalPosition", rows.getInt("ORDINAL_POSITION"));
                         column.put("type", rows.getString("DATA_TYPE"));
+                        String fullType = rows.getString("COLUMN_TYPE");
+                        column.put("fullType", fullType);
+                        column.put("characterMaximumLength", rows.getObject("CHARACTER_MAXIMUM_LENGTH"));
+                        column.put("numericPrecision", rows.getObject("NUMERIC_PRECISION"));
+                        column.put("numericScale", rows.getObject("NUMERIC_SCALE"));
+                        column.put("datetimePrecision", rows.getObject("DATETIME_PRECISION"));
+                        column.put("unsigned", fullType != null && fullType.toLowerCase(java.util.Locale.ROOT).contains("unsigned"));
                         column.put("nullable", "YES".equalsIgnoreCase(rows.getString("IS_NULLABLE")));
                         column.put("comment", rows.getString("COLUMN_COMMENT"));
                         column.put("defaultValue", rows.getObject("COLUMN_DEFAULT"));

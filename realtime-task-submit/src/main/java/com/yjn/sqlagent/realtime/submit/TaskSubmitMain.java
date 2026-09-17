@@ -3,6 +3,7 @@ package com.yjn.sqlagent.realtime.submit;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.realtime.common.PaimonSyncCommandBuilder;
 import com.yjn.sqlagent.realtime.common.SubmissionSpec;
+import com.yjn.sqlagent.realtime.common.DebugReport;
 import java.io.ByteArrayOutputStream;
 import java.io.InputStream;
 import java.io.PrintStream;
@@ -17,7 +18,6 @@ import java.util.Map;
 import java.util.Optional;
 import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.fs.FileSystem;
-import org.apache.flink.streaming.api.environment.StreamExecutionEnvironment;
 import org.apache.paimon.flink.action.Action;
 import org.apache.paimon.flink.action.ActionFactory;
 
@@ -28,14 +28,10 @@ public final class TaskSubmitMain {
     }
 
     public static void main(String[] args) throws Exception {
-        run(args, System.out, true);
+        run(args, System.out);
     }
 
     static void run(String[] args, PrintStream output) throws Exception {
-        run(args, output, false);
-    }
-
-    private static void run(String[] args, PrintStream output, boolean executeDryRunJob) throws Exception {
         Arguments parsed = Arguments.parse(args);
         byte[] bytes = read(parsed.submissionFile);
         if (!parsed.configSha256.isEmpty() && !parsed.configSha256.equals(sha256(bytes))) {
@@ -55,18 +51,26 @@ public final class TaskSubmitMain {
         output.println(new ObjectMapper().writeValueAsString(snapshot));
         TaskRunner runner = runner(spec);
         if (parsed.dryRun) {
-            runner.validate(spec);
-            if (executeDryRunJob) runDryRunJob(spec);
+            try {
+                writeDebugReport(parsed, output, runner.validate(spec));
+            } catch (Exception ex) {
+                DebugReport failed = new DebugReport(); failed.setTaskType(spec.getTask().getTaskType());
+                failed.setSummary(ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage());
+                failed.diagnostic("DEBUG_VALIDATION_FAILED", spec.getTask().getTaskType(), failed.getSummary());
+                writeDebugReport(parsed, output, failed);
+                throw ex;
+            }
             return;
         }
         runner.execute(spec);
     }
 
-    private static void runDryRunJob(SubmissionSpec spec) throws Exception {
-        StreamExecutionEnvironment environment = StreamExecutionEnvironment.getExecutionEnvironment();
-        environment.setParallelism(1);
-        environment.fromData("submission-spec-validated").print("realtime-sync-dry-run");
-        environment.execute("realtime-sync-dry-run-" + spec.getTaskId() + "-" + spec.getTaskInstanceId());
+    private static void writeDebugReport(Arguments parsed, PrintStream output, DebugReport report) throws Exception {
+        String reportJson = new ObjectMapper().writeValueAsString(report);
+        if (!parsed.debugReportFile.isEmpty()) {
+            write(parsed.debugReportFile, reportJson.getBytes(StandardCharsets.UTF_8));
+        }
+        output.println("DEBUG_REPORT=" + reportJson);
     }
 
     private static void validate(SubmissionSpec spec) {
@@ -91,7 +95,12 @@ public final class TaskSubmitMain {
         if ("compute".equals(type)) return new ComputeTaskRunner();
         if ("export".equals(type)) return new ExportTaskRunner();
         return new TaskRunner() {
-            @Override public void validate(SubmissionSpec value) { new PaimonSyncCommandBuilder().build(value); }
+            @Override public DebugReport validate(SubmissionSpec value) {
+                new PaimonSyncCommandBuilder().build(value);
+                DebugReport report = new DebugReport(); report.setTaskType("sync");
+                report.setSummary("同步任务提交快照与 Paimon Action 参数校验通过");
+                return report.check("SUBMISSION_SPEC", String.valueOf(value.getTaskId()), "提交快照可构建");
+            }
             @Override public void execute(SubmissionSpec value) throws Exception {
                 PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(value);
                 Optional<Action> action = ActionFactory.createAction(command.getArguments().toArray(new String[0]));
@@ -117,6 +126,21 @@ public final class TaskSubmitMain {
         }
     }
 
+    private static void write(String location, byte[] value) throws Exception {
+        URI uri = URI.create(location);
+        if (uri.getScheme() == null || "file".equalsIgnoreCase(uri.getScheme())) {
+            Path path = uri.getScheme() == null ? Path.of(location) : Path.of(uri);
+            if (path.getParent() != null) Files.createDirectories(path.getParent());
+            Files.write(path, value); return;
+        }
+        Configuration configuration = new Configuration();
+        org.apache.hadoop.fs.Path path = new org.apache.hadoop.fs.Path(uri);
+        try (FileSystem fs = path.getFileSystem(configuration)) {
+            if (path.getParent() != null) fs.mkdirs(path.getParent());
+            try (java.io.OutputStream output = fs.create(path, true)) { output.write(value); }
+        }
+    }
+
     private static String sha256(byte[] value) throws Exception {
         byte[] digest = MessageDigest.getInstance("SHA-256").digest(value);
         StringBuilder result = new StringBuilder();
@@ -130,11 +154,13 @@ public final class TaskSubmitMain {
         private final String submissionFile;
         private final String configSha256;
         private final boolean dryRun;
+        private final String debugReportFile;
 
-        private Arguments(String submissionFile, String configSha256, boolean dryRun) {
+        private Arguments(String submissionFile, String configSha256, boolean dryRun, String debugReportFile) {
             this.submissionFile = submissionFile;
             this.configSha256 = configSha256;
             this.dryRun = dryRun;
+            this.debugReportFile = debugReportFile;
         }
 
         static Arguments parse(String[] args) {
@@ -142,7 +168,8 @@ public final class TaskSubmitMain {
             for (int index = 0; index < args.length; index++) {
                 String name = args[index];
                 if ("--dry-run".equals(name)) { values.put(name, "true"); continue; }
-                if (!"--submission-file".equals(name) && !"--config-sha256".equals(name)) {
+                if (!"--submission-file".equals(name) && !"--config-sha256".equals(name)
+                        && !"--debug-report-file".equals(name)) {
                     throw new IllegalArgumentException("未知参数：" + name);
                 }
                 if (index + 1 >= args.length) throw new IllegalArgumentException("参数缺少值：" + name);
@@ -154,7 +181,8 @@ public final class TaskSubmitMain {
             if (!hash.isEmpty() && !hash.matches("[0-9a-f]{64}")) {
                 throw new IllegalArgumentException("--config-sha256 格式不正确");
             }
-            return new Arguments(file, hash, Boolean.parseBoolean(values.getOrDefault("--dry-run", "false")));
+            return new Arguments(file, hash, Boolean.parseBoolean(values.getOrDefault("--dry-run", "false")),
+                    text(values.get("--debug-report-file")));
         }
     }
 }

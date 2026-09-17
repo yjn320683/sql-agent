@@ -43,6 +43,8 @@ public interface AgentProxyService {
 
     Map<String, Object> previewSqlStructure(SqlStructurePreviewDTO request);
 
+    Map<String, Object> previewHiveQuery(String sql, String defaultDb, int limit);
+
     Map<String, Object> searchHiveFunctions(String keyword, int limit, int offset, String defaultDb);
 
     Map<String, Object> getHiveFunction(String name, String defaultDb);

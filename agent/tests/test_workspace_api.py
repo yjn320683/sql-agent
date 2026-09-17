@@ -372,7 +372,7 @@ def test_workspace_validate_and_explain_read_exact_saved_task_sql(monkeypatch) -
         def explain(self, request):
             captured.append(request.sql)
             return HiveExplainResponse(
-                source="hiveserver2", planText="Stage-1", defaultDb="dw", compilationMs=15,
+                source="hiveserver2", planText="Stage-1\n  Cartesian Product", defaultDb="dw", compilationMs=15,
             )
 
     monkeypatch.setattr(workspace, "_task_service", lambda: task_service)
@@ -382,7 +382,13 @@ def test_workspace_validate_and_explain_read_exact_saved_task_sql(monkeypatch) -
     explain = asyncio.run(workspace.explain_task_sql(7, default_db="dw", extended=False))
 
     assert validation["valid"] is True
-    assert explain["planText"] == "Stage-1"
+    assert validation["steps"] == [{
+        "stepNo": 1, "stepName": "read-orders", "valid": True, "errors": [], "warnings": [],
+    }]
+    assert explain["planText"] == "Stage-1\n  Cartesian Product"
+    assert explain["risks"][0]["code"] == "CARTESIAN_JOIN"
+    assert explain["risks"][0]["stepNo"] == 1
+    assert explain["risks"][0]["evidence"] == "Cartesian Product"
     assert captured == [
         "select 20 as n from dw.orders",
         "select 20 as n from dw.orders",

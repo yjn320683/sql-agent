@@ -93,6 +93,8 @@ export interface AiContext {
 }
 
 export interface AiProposal {
+  /** platform_proposal_present 的工具调用 ID；用于历史回放与状态去重。 */
+  proposalId?: string;
   target: string;
   kind: 'SQL' | 'DDL' | 'CONFIG' | 'FORM' | string;
   before?: string;
@@ -101,6 +103,14 @@ export interface AiProposal {
   baseRevision?: number | string;
   summary?: string;
   risks?: string[];
+}
+
+export type ProposalApplyStatus = 'APPLIED' | 'READ_ONLY' | 'STALE' | 'INVALID' | 'UNSUPPORTED';
+
+export interface ProposalActionResult {
+  status: ProposalApplyStatus;
+  message: string;
+  details?: string[];
 }
 
 export interface ChatRequest {
@@ -248,6 +258,9 @@ export interface SqlTaskScheduleVO {
   concurrencyPolicy: 'FORBID' | 'ALLOW';
   maxRetries: number;
   retryIntervalSeconds: number;
+  executionTimeoutSeconds?: number;
+  slaDurationMinutes?: number;
+  timeoutPolicy?: 'ALERT_ONLY' | 'CANCEL';
   parameters: Record<string, unknown>;
   nextTriggerTime?: string;
   lastTriggerTime?: string;
@@ -289,14 +302,26 @@ export interface SqlTaskBackfillBatchVO {
   taskId: number;
   startDate: string;
   endDate: string;
-  status: 'PENDING' | 'RUNNING' | 'SUCCEEDED' | 'PARTIAL_FAILED' | 'FAILED' | 'CANCELLED';
+  status: 'PENDING' | 'RUNNING' | 'PAUSED' | 'SUCCEEDED' | 'PARTIAL_FAILED' | 'FAILED' | 'CANCELLED';
   totalCount: number;
   submittedCount: number;
   succeededCount: number;
   failedCount: number;
+  maxConcurrency: number;
   requestedBy: string;
   createTime: string;
   updateTime: string;
+}
+
+export interface SqlTaskBackfillItemVO {
+  id: number; batchId: number; taskId: number; businessDate: string; status: string;
+  executionId?: number; attemptNo: number; message?: string; createTime: string; updateTime: string;
+}
+
+export interface ScheduleDagVO {
+  nodes: Array<{ id: number; name: string; enabled: boolean; schedule_type?: string; last_run_status?: string; last_execution_id?: number; last_execution_status?: string; last_backfill_id?: number; last_backfill_status?: string; medianDurationMs?: number; durationSampleCount: number; upstreamCount: number; downstreamCount: number; criticalPath: boolean }>;
+  edges: Array<{ id: number; taskId: number; upstreamTaskId: number; dependencyType: string }>;
+  criticalPathTaskIds: number[];
 }
 
 export interface SqlTaskBackfillBatchPageVO {
@@ -351,13 +376,35 @@ export interface SqlStructurePreviewVO {
   steps: SqlStructurePreviewStepVO[];
 }
 
+export interface SqlQueryPreviewVO {
+  ok: boolean;
+  source: string;
+  fetchedAt: string;
+  warnings: string[];
+  complete: boolean;
+  missingReasons: string[];
+  stepNo: number;
+  stepName: string;
+  renderedSql: string;
+  previewSql: string;
+  parameters: Record<string, unknown>;
+  defaultDb: string;
+  columns: Array<{ name: string; type?: string }>;
+  rows: unknown[][];
+  rowCount: number;
+  truncated: boolean;
+  elapsedMs: number;
+}
+
 export interface TaskExecutionVO {
   id: number;
   taskId: number;
   taskName: string;
-  sourceType: 'EFFECTIVE' | 'VERSION';
+  sourceType: 'EFFECTIVE' | 'VERSION' | 'REPLAY';
   taskVersionNo?: number;
   taskRevision?: number;
+  sourceExecutionId?: number;
+  replayStrategy?: string;
   status: TaskExecutionStatus;
   currentStepNo?: number;
   totalSteps: number;
@@ -435,6 +482,28 @@ export interface TaskExecutionDiagnosticsVO {
     yarnApplication?: Record<string, unknown>;
     missingReasons: string[];
   }>;
+}
+
+export interface DiagnosticReport {
+  targetKind: 'OFFLINE_EXECUTION' | 'REALTIME_INSTANCE';
+  targetId: number;
+  revision: number;
+  status: 'COMPLETE' | 'PARTIAL' | 'FAILED';
+  complete: boolean;
+  failureStage: string;
+  summary: string;
+  generatedAt: string;
+  findings: Array<{
+    code: string;
+    severity: 'INFO' | 'WARNING' | 'ERROR';
+    title: string;
+    cause: string;
+    impact: string;
+    evidenceRefs: string[];
+    actions: Array<{ type: string; label: string; description: string; link?: string }>;
+  }>;
+  evidence: Array<{ id: string; type: string; source: string; label: string; value: string; link?: string }>;
+  missingEvidence: string[];
 }
 
 export interface ExecutionSummaryVO {
@@ -712,6 +781,7 @@ export interface HiveFunctionSearchVO {
   keyword: string;
   defaultDb: string;
   elapsedMs: number;
+  cacheHit?: boolean;
 }
 
 export interface HiveFunctionDetailVO {
@@ -727,6 +797,13 @@ export interface HiveFunctionDetailVO {
   defaultDb: string;
   elapsedMs: number;
   truncated: boolean;
+  cacheHit?: boolean;
+  functionType: string;
+  signatures: string[];
+  arguments: Array<{ name: string; type: string; description: string }>;
+  returnType: string;
+  invocationTemplate: string;
+  examples: string[];
 }
 
 export interface HiveTableSearchVO {
@@ -956,7 +1033,14 @@ export interface HiveValidationVO {
   valid: boolean;
   defaultDb: string;
   compilationMs: number;
-  errors: Array<{ type: string; message: string }>;
+  errors: Array<{ type: string; message: string; stepNo?: number; stepName?: string }>;
+  steps?: Array<{
+    stepNo: number;
+    stepName: string;
+    valid: boolean;
+    errors: Array<{ type: string; message: string; stepNo?: number; stepName?: string }>;
+    warnings: string[];
+  }>;
 }
 
 export interface HiveExplainVO {
@@ -971,6 +1055,20 @@ export interface HiveExplainVO {
   defaultDb: string;
   compilationMs: number;
   truncated: boolean;
+  risks?: Array<{
+    code: 'CARTESIAN_JOIN' | 'GLOBAL_SORT' | 'PARTITION_NOT_PRUNED' | string;
+    level: 'warning';
+    message: string;
+    evidence: string;
+    stepNo: number;
+    stepName: string;
+  }>;
+  steps?: Array<{
+    stepNo: number;
+    stepName: string;
+    planText: string;
+    risks: Array<{ code: string; level: 'warning'; message: string; evidence: string }>;
+  }>;
 }
 
 export type TaskQualityStatus = 'PASSED' | 'PASSED_WITH_WARNINGS' | 'FAILED' | 'INCOMPLETE';
@@ -1073,7 +1171,7 @@ export type Step =
       input?: unknown;
       result?: string;
       isError?: boolean;
-      semanticType?: 'user_question_answer' | 'user_question_prompt';
+      semanticType?: 'user_question_answer' | 'user_question_prompt' | 'proposal';
     }
   | {
       kind: 'permission';
@@ -1101,7 +1199,7 @@ export interface ToolResultPayload {
   toolUseId: string;
   content: string;
   isError: boolean;
-  semanticType?: 'user_question_answer' | 'user_question_prompt';
+  semanticType?: 'user_question_answer' | 'user_question_prompt' | 'proposal';
 }
 
 export interface PermissionRequestPayload {

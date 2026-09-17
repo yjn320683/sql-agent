@@ -12,6 +12,7 @@ import java.util.Map;
 import org.apache.flink.api.connector.sink2.Sink;
 import org.apache.flink.api.connector.sink2.SinkWriter;
 import org.apache.flink.api.connector.sink2.WriterInitContext;
+import org.apache.flink.metrics.Counter;
 import org.apache.flink.types.Row;
 import org.apache.flink.types.RowKind;
 
@@ -19,7 +20,7 @@ import org.apache.flink.types.RowKind;
 final class MysqlRowSink implements Sink<Row> {
     private final Config config;
     MysqlRowSink(Config config){this.config=config;}
-    @Override public SinkWriter<Row> createWriter(WriterInitContext context) throws IOException{return new Writer(config);}
+    @Override public SinkWriter<Row> createWriter(WriterInitContext context) throws IOException{return new Writer(config,context);}
 
     static final class Config implements java.io.Serializable {
         final String url,user,password,table;final List<String>sourceColumns,targetColumns,primaryKeys;final int batchSize,maxRetries;final long flushIntervalMs;
@@ -27,9 +28,10 @@ final class MysqlRowSink implements Sink<Row> {
     }
     static final class Writer implements SinkWriter<Row>{
         private final Config config;private transient Connection connection;private transient PreparedStatement upsert,delete;private final List<Mutation> pending=new ArrayList<>();private long lastFlush=System.currentTimeMillis();
-        Writer(Config config)throws IOException{this.config=config;connect();}
+        private final Counter committedRows,committedBatches,retryCount;private volatile long lastFlushDurationMs,lastSuccessTimestamp,lastFailedBatchSize;
+        Writer(Config config,WriterInitContext context)throws IOException{this.config=config;committedRows=context.metricGroup().counter("mysqlCommittedRows");committedBatches=context.metricGroup().counter("mysqlCommittedBatches");retryCount=context.metricGroup().counter("mysqlRetryCount");context.metricGroup().gauge("mysqlPendingRows",pending::size);context.metricGroup().gauge("mysqlLastFlushDurationMs",()->lastFlushDurationMs);context.metricGroup().gauge("mysqlLastSuccessTimestamp",()->lastSuccessTimestamp);context.metricGroup().gauge("mysqlLastFailedBatchSize",()->lastFailedBatchSize);connect();}
         @Override public void write(Row row,Context context)throws IOException{if(row.getKind()==RowKind.UPDATE_BEFORE)return;boolean deleting=row.getKind()==RowKind.DELETE;if(deleting&&delete==null)throw new IOException("DELETE 需要完整主键");List<Object>values=new ArrayList<>();for(int i=0;i<config.sourceColumns.size();i++)values.add(row.getField(i));pending.add(new Mutation(deleting,values));if(pending.size()>=config.batchSize||System.currentTimeMillis()-lastFlush>=config.flushIntervalMs)flush(false);}
-        @Override public void flush(boolean endOfInput)throws IOException{if(pending.isEmpty())return;SQLException last=null;for(int attempt=0;attempt<=config.maxRetries;attempt++){try{replay();connection.commit();pending.clear();lastFlush=System.currentTimeMillis();return;}catch(SQLException ex){last=ex;rollback();if(attempt<config.maxRetries)reconnect();}}throw new IOException("批量提交 MySQL 失败："+safe(last),last);}
+        @Override public void flush(boolean endOfInput)throws IOException{if(pending.isEmpty())return;int batchRows=pending.size();long started=System.currentTimeMillis();SQLException last=null;for(int attempt=0;attempt<=config.maxRetries;attempt++){try{replay();connection.commit();pending.clear();lastFlush=System.currentTimeMillis();lastFlushDurationMs=Math.max(0,lastFlush-started);lastSuccessTimestamp=lastFlush;committedRows.inc(batchRows);committedBatches.inc();return;}catch(SQLException ex){last=ex;lastFailedBatchSize=batchRows;rollback();if(attempt<config.maxRetries){retryCount.inc();reconnect();}}}lastFlushDurationMs=Math.max(0,System.currentTimeMillis()-started);throw new IOException("批量提交 MySQL 失败："+safe(last),last);}
         @Override public void close()throws Exception{flush(true);closeQuietly(upsert);closeQuietly(delete);if(connection!=null)connection.close();}
         private void connect()throws IOException{try{connection=DriverManager.getConnection(config.url,config.user,config.password);connection.setAutoCommit(false);String columns=join(config.targetColumns);String values=String.join(",",java.util.Collections.nCopies(config.targetColumns.size(),"?"));List<String>updates=new ArrayList<>();for(String c:config.targetColumns)if(!config.primaryKeys.contains(c))updates.add(q(c)+"=VALUES("+q(c)+")");if(updates.isEmpty())updates.add(q(config.primaryKeys.get(0))+"="+q(config.primaryKeys.get(0)));upsert=connection.prepareStatement("INSERT INTO "+q(config.table)+" ("+columns+") VALUES ("+values+") ON DUPLICATE KEY UPDATE "+String.join(",",updates));if(!config.primaryKeys.isEmpty()){List<String>where=new ArrayList<>();for(String key:config.primaryKeys)where.add(q(key)+"=?");delete=connection.prepareStatement("DELETE FROM "+q(config.table)+" WHERE "+String.join(" AND ",where));}}catch(SQLException ex){throw new IOException("连接 MySQL 失败："+safe(ex),ex);}}
         private String sourceForTarget(String target){for(int i=0;i<config.targetColumns.size();i++)if(config.targetColumns.get(i).equalsIgnoreCase(target))return config.sourceColumns.get(i);return "";}

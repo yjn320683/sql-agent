@@ -1,9 +1,12 @@
 import { requestJson } from '../api/client';
+import type { DiagnosticReport } from '../types';
 import type {
   PaimonTablePrefixOption,
   MysqlColumn,
   MysqlTableSchema,
   RealtimeAlert,
+  RealtimeAlertPage,
+  RealtimeAlertRule,
   RealtimeServer,
   RealtimeServerSave,
   SyncTask,
@@ -11,6 +14,7 @@ import type {
   SyncTaskSave,
   TaskChangeLog,
   TaskInstance,
+  TaskInstanceProgress, RealtimeDebugReport,
   TaskMapping,
   TaskParam,
   SyncDirtyRecordPage,
@@ -116,6 +120,19 @@ export const listVersions = (id: number) => requestJson<Record<string, unknown>[
 export const getVersionConfig = (id: number, versionId: number) => requestJson<Record<string, unknown>>(`/v1/api/tasks/${id}/versions/${versionId}/config`);
 export const getStateHistory = (id: number, type: string) => requestJson<Record<string, unknown>[]>(`/v1/api/flink-common/${type === 'checkpoint' ? 'listcheckpoint' : 'listsavepoint'}?taskId=${id}`);
 export const getInstanceInfo = (taskId: number, instanceId: number, kind: 'config' | 'startup-log' | 'runtime-log' | 'runtime' | 'resources' | 'checkpoints' | 'log-components') => requestJson<unknown>(`/v1/api/tasks/${taskId}/instances/${instanceId}/${kind}`);
+export const getInstanceProgress = (taskId: number, instanceId: number) => requestJson<TaskInstanceProgress>(`/v1/api/tasks/${taskId}/instances/${instanceId}/progress`);
+export const getInstanceDiagnosticReport = (taskId: number, instanceId: number, refresh = false) => requestJson<DiagnosticReport>(`/v1/api/tasks/${taskId}/instances/${instanceId}/diagnostic-report${refresh ? '/refresh' : ''}`, { method: refresh ? 'POST' : 'GET' });
+export const getInstanceDebugReport = (taskId: number, instanceId: number) => requestJson<RealtimeDebugReport>(`/v1/api/tasks/${taskId}/instances/${instanceId}/debug-report`);
+export interface RecoveryOptions {
+  taskId: number;
+  taskType: string;
+  sourceInstance: TaskInstance & { config?: Record<string, unknown> };
+  versionId?: number;
+  config: Record<string, unknown>;
+  strategies: Array<{ type: 'direct' | 'checkpoint' | 'savepoint'; available: boolean; statePath?: string; reason?: string }>;
+}
+export const getRecoveryOptions = (taskId: number, instanceId: number) => requestJson<RecoveryOptions>(`/v1/api/tasks/${taskId}/instances/${instanceId}/recovery-options`);
+export const recoverInstance = (taskId: number, instanceId: number, value: { startType: string; statePath?: string; sourceStartupTimestampMillis?: number }) => requestJson<TaskInstance>(`/v1/api/tasks/${taskId}/instances/${instanceId}/recover`, json('POST', value));
 export const getInstanceLogs = (taskId: number, instanceId: number, component?: string, file?: string) => {
   const query = new URLSearchParams();
   if (component?.startsWith('taskmanager:')) {
@@ -158,6 +175,12 @@ export const listTaskParams = () => requestJson<TaskParam[]>('/v1/api/tasks/para
 export const getCdcOptions = () => requestJson<{ targetDatabase: string; tablePrefixes: PaimonTablePrefixOption[] }>('/api/paimon/cdc-options');
 export const listAlerts = (taskId?: number) => requestJson<RealtimeAlert[]>(`/api/alerts${taskId ? `?taskId=${taskId}` : ''}`);
 export const acknowledgeAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
+export const listAlertsPage = (query = new URLSearchParams()) => requestJson<RealtimeAlertPage>(`/api/alerts/page?${query.toString()}`);
+export const getAlert = (id: number) => requestJson<RealtimeAlert>(`/api/alerts/${id}`);
+export const muteAlert = (id: number, mutedUntil: string) => requestJson<boolean>(`/api/alerts/${id}/mute`, json('POST', { mutedUntil }));
+export const unmuteAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/unmute`, { method: 'POST' });
+export const listAlertRules = () => requestJson<RealtimeAlertRule[]>('/api/alert-rules');
+export const updateAlertRule = (id: number, value: Pick<RealtimeAlertRule, 'enabled' | 'severity' | 'thresholdValue' | 'consecutiveSamples' | 'windowSeconds'>) => requestJson<RealtimeAlertRule>(`/api/alert-rules/${id}`, json('POST', value));
 export const listChangeLogs = (taskId?: number) => requestJson<TaskChangeLog[]>(`/api/task-change-logs${taskId ? `?taskId=${taskId}` : ''}`);
 export const getChangeLogDetail = (id: number) => requestJson<Record<string, unknown>>(`/api/task-change-logs/${id}/detail`);
 
@@ -183,6 +206,9 @@ export const createManagedTask = (value: ManagedTaskSave) => requestJson<number>
 export const updateManagedTask = (id: number, value: ManagedTaskSave) => requestJson<number>(`/v1/api/tasks/${id}/update`, json('POST', value));
 export const deleteManagedTask = (id: number) => requestJson<void>(`/v1/api/tasks/${id}/delete`, json('POST'));
 export const analyzeManagedSql = (value: ManagedTaskSave) => requestJson<{ valid: boolean; inputs: string[]; outputs: string[]; inputTableIds: number[]; outputTableIds: number[]; plan: string }>('/v1/api/tasks/analyze-sql', json('POST', value));
+export const validateManagedTask = (value: ManagedTaskSave) => requestJson<{
+  valid: boolean; taskType: ManagedTaskType; inputTableIds: number[]; outputTableIds: number[];
+}>('/v1/api/tasks/validate', json('POST', value));
 export const debugManagedTask = async (id: number) => { const task = await getManagedTask(id); return requestJson<TaskInstance>('/v1/api/tasks/debug', json('POST', { ...task, taskId: id })); };
 export const enableManagedTask = (id: number) => requestJson<TaskInstance>(`/v1/api/tasks/${id}/enable`, json('POST', { startType: 'direct' }));
 export const stopManagedTask = (id: number) => requestJson<TaskInstance>(`/v1/api/tasks/${id}/stop`, json('POST', { stopType: 'savepoint' }));

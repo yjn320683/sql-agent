@@ -1,11 +1,16 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   createTaskBackfill,
+  getScheduleDag,
+  getTaskBackfill,
   getTaskDependencies,
   getTaskSchedule,
   getTaskVersionCheckSummary,
   listTaskBackfills,
   listTaskScheduleRuns,
+  pauseTaskBackfill,
+  resumeTaskBackfill,
+  retryFailedTaskBackfill,
   saveTaskDependencies,
   saveTaskSchedule,
 } from './tasks';
@@ -46,6 +51,7 @@ describe('离线版本检查与调度接口契约', () => {
     await saveTaskSchedule(21, {
       scheduleType: 'CRON', cronExpression: '0 0 7 * * *', timezone: 'Asia/Shanghai', enabled: true,
       concurrencyPolicy: 'FORBID', maxRetries: 2, retryIntervalSeconds: 60,
+      executionTimeoutSeconds: 3600, slaDurationMinutes: 90, timeoutPolicy: 'ALERT_ONLY',
       parameters: { region: 'cn' }, revision: 5,
     });
 
@@ -55,6 +61,7 @@ describe('离线版本检查与调度接口契约', () => {
     expect(JSON.parse(String(init.body))).toEqual({
       scheduleType: 'CRON', cronExpression: '0 0 7 * * *', timezone: 'Asia/Shanghai', enabled: true,
       concurrencyPolicy: 'FORBID', maxRetries: 2, retryIntervalSeconds: 60,
+      executionTimeoutSeconds: 3600, slaDurationMinutes: 90, timeoutPolicy: 'ALERT_ONLY',
       parameters: { region: 'cn' }, revision: 5,
     });
   });
@@ -68,7 +75,7 @@ describe('离线版本检查与调度接口契约', () => {
       { upstreamTaskId: 13, dependencyType: 'COMPLETED' },
     ]);
     await createTaskBackfill(21, {
-      startDate: '2026-09-01', endDate: '2026-09-03', parameters: { region: 'cn' },
+      startDate: '2026-09-01', endDate: '2026-09-03', parameters: { region: 'cn' }, maxConcurrency: 3,
     });
 
     const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
@@ -81,7 +88,28 @@ describe('离线版本检查与调度接口契约', () => {
     expect(calls[1][0]).toBe('/api/tasks/21/backfills');
     expect(calls[1][1].method).toBe('POST');
     expect(JSON.parse(String(calls[1][1].body))).toEqual({
-      startDate: '2026-09-01', endDate: '2026-09-03', parameters: { region: 'cn' },
+      startDate: '2026-09-01', endDate: '2026-09-03', parameters: { region: 'cn' }, maxConcurrency: 3,
     });
+  });
+
+  it('调度拓扑和补数控制接口使用批次级资源路径', async () => {
+    const fetchMock = vi.fn(() => response({}));
+    vi.stubGlobal('fetch', fetchMock);
+
+    await getScheduleDag();
+    await getTaskBackfill(21, 41);
+    await pauseTaskBackfill(21, 41);
+    await resumeTaskBackfill(21, 41);
+    await retryFailedTaskBackfill(21, 41);
+
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit?]>;
+    expect(calls.map(([url]) => url)).toEqual([
+      '/api/schedules/dag',
+      '/api/tasks/21/backfills/41',
+      '/api/tasks/21/backfills/41/pause',
+      '/api/tasks/21/backfills/41/resume',
+      '/api/tasks/21/backfills/41/retry-failed',
+    ]);
+    expect(calls.slice(2).map(([, init]) => init?.method)).toEqual(['POST', 'POST', 'POST']);
   });
 });

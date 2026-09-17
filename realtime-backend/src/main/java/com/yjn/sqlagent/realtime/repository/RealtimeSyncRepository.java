@@ -10,6 +10,8 @@ import java.sql.PreparedStatement;
 import java.sql.Statement;
 import java.sql.Timestamp;
 import java.math.BigDecimal;
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.Collections;
@@ -377,8 +379,9 @@ public class RealtimeSyncRepository {
 
     public List<Map<String, Object>> instances(long taskId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT id,task_id taskId,version_id versionId,job_id jobId,yarn_application_id yarnApplicationId,"
+                "SELECT id,task_id taskId,version_id versionId,source_instance_id sourceInstanceId,recovery_strategy recoveryStrategy,recovery_state_path recoveryStatePath,job_id jobId,yarn_application_id yarnApplicationId,"
                         + "status,execution_mode executionMode,managed_flag managed,savepoint_path savepointPath,"
+                        + "debug_report_status debugReportStatus,debug_report_summary debugReportSummary,"
                         + "tracking_url trackingUrl,failure_message failureMessage,started_at startedAt,ended_at endedAt,"
                         + "create_time createTime,update_time updateTime FROM rt_task_instance WHERE task_id=?"
                         + " ORDER BY create_time DESC,id DESC", taskId);
@@ -388,30 +391,38 @@ public class RealtimeSyncRepository {
 
     public Map<String, Object> requiredInstance(long taskId, long instanceId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
-                "SELECT id,task_id taskId,version_id versionId,job_id jobId,yarn_application_id yarnApplicationId,"
+                "SELECT id,task_id taskId,version_id versionId,source_instance_id sourceInstanceId,recovery_strategy recoveryStrategy,recovery_state_path recoveryStatePath,job_id jobId,yarn_application_id yarnApplicationId,"
                         + "status,execution_mode executionMode,managed_flag managed,startup_log startupLog,"
                         + "effective_config_snapshot_json configJson,savepoint_path savepointPath,tracking_url trackingUrl,"
-                        + "failure_message failureMessage,last_runtime_log lastRuntimeLog,started_at startedAt,ended_at endedAt,"
+                        + "failure_message failureMessage,last_runtime_log lastRuntimeLog,debug_report_status debugReportStatus,"
+                        + "debug_report_summary debugReportSummary,debug_report_json debugReportJson,started_at startedAt,ended_at endedAt,"
                         + "create_time createTime,update_time updateTime FROM rt_task_instance WHERE id=? AND task_id=?",
                 instanceId, taskId);
         if (rows.isEmpty()) throw new IllegalArgumentException("运行实例不存在");
         Map<String, Object> row = new LinkedHashMap<>(rows.get(0));
         normalizeBooleans(row);
         row.put("config", jsonMap(row.remove("configJson")));
+        row.put("debugReport", jsonValue(row.remove("debugReportJson")));
         return row;
     }
 
     public long insertInstance(long taskId, Long versionId, String mode, String configJson) {
+        return insertInstance(taskId, versionId, mode, configJson, null, null, null);
+    }
+
+    public long insertInstance(long taskId, Long versionId, String mode, String configJson,
+            Long sourceInstanceId, String recoveryStrategy, String recoveryStatePath) {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO rt_task_instance(task_id,version_id,status,execution_mode,managed_flag,"
-                            + "effective_config_snapshot_json,started_at) VALUES(?,?,'submitting',?,1,?,NOW())",
+                    "INSERT INTO rt_task_instance(task_id,version_id,source_instance_id,recovery_strategy,recovery_state_path,status,execution_mode,managed_flag,"
+                            + "effective_config_snapshot_json,started_at) VALUES(?,?,?,?,?,'submitting',?,1,?,NOW())",
                     Statement.RETURN_GENERATED_KEYS);
             ps.setLong(1, taskId);
             if (versionId == null) ps.setNull(2, java.sql.Types.BIGINT); else ps.setLong(2, versionId);
-            ps.setString(3, mode);
-            ps.setString(4, configJson);
+            if (sourceInstanceId == null) ps.setNull(3, java.sql.Types.BIGINT); else ps.setLong(3, sourceInstanceId);
+            ps.setString(4, recoveryStrategy); ps.setString(5, recoveryStatePath);
+            ps.setString(6, mode); ps.setString(7, configJson);
             return ps;
         }, holder);
         return requiredKey(holder);
@@ -432,6 +443,12 @@ public class RealtimeSyncRepository {
         jdbc.update("UPDATE rt_task_instance SET status=?,last_runtime_log=?,failure_message=?,ended_at="
                         + (terminal ? "COALESCE(ended_at,NOW())" : "NULL") + ",update_time=NOW()"
                         + " WHERE id=? AND managed_flag=1", status, runtimeLog, limited(failure, 2000), instanceId);
+    }
+
+    public void updateInstanceDebugReport(long instanceId, String status, String summary, String reportJson) {
+        jdbc.update("UPDATE rt_task_instance SET debug_report_status=?,debug_report_summary=?,debug_report_json=?,"
+                        + "update_time=NOW() WHERE id=? AND managed_flag=1",
+                status, limited(summary, 1024), reportJson, instanceId);
     }
 
     public void updateInstanceIdentifiers(long instanceId, String jobId, String applicationId, String trackingUrl) {
@@ -581,28 +598,43 @@ public class RealtimeSyncRepository {
     }
 
     public void addAlert(long taskId, String severity, String title, String detail) {
-        jdbc.update("INSERT INTO rt_alert(task_id,severity,status,title,detail) VALUES(?,?,'open',?,?)",
-                taskId, severity, title, detail);
+        upsertAlert(taskId, severity, title, detail);
     }
 
     public void addAlertIfOpenAbsent(long taskId, String severity, String title, String detail) {
-        jdbc.update("INSERT INTO rt_alert(task_id,severity,status,title,detail)"
-                        + " SELECT ?,?,'open',?,? WHERE NOT EXISTS (SELECT 1 FROM rt_alert"
-                        + " WHERE task_id=? AND status='open' AND title=?)",
-                taskId, severity, title, detail, taskId, title);
+        upsertAlert(taskId, severity, title, detail);
+    }
+
+    private void upsertAlert(long taskId, String severity, String title, String detail) {
+        String eventType = title != null && title.contains("失败") ? "TASK_FAILURE" : "RUNTIME_EVENT";
+        String fingerprint = "TASK_FAILURE".equals(eventType)
+                ? sha256(taskId + "|0|TASK_FAILURE")
+                : sha256(taskId + "|" + eventType + "|" + title);
+        jdbc.update("INSERT INTO rt_alert(task_id,rule_id,event_type,severity,status,title,detail,fingerprint,"
+                        + "active_fingerprint,occurrence_count,first_occurred_at,last_occurred_at,evidence_json) "
+                        + "VALUES(?,(SELECT id FROM rt_alert_rule WHERE event_type=? ORDER BY id LIMIT 1),?,?,"
+                        + "'OPEN',?,?,?, ?,1,NOW(),NOW(),JSON_OBJECT('source','runtime')) "
+                        + "ON DUPLICATE KEY UPDATE severity=VALUES(severity),detail=VALUES(detail),"
+                        + "occurrence_count=occurrence_count+1,last_occurred_at=NOW(),update_time=NOW()",
+                taskId, eventType, eventType, severity, title, detail, fingerprint, fingerprint);
     }
 
     public List<Map<String, Object>> alerts() { return alerts(null); }
 
     public List<Map<String, Object>> alerts(Long taskId) {
-        String sql = "SELECT a.id,a.task_id taskId,t.task_name taskName,a.severity,a.status,a.title,a.detail,"
-                + "a.create_time createTime,a.update_time updateTime FROM rt_alert a JOIN rt_task t ON t.id=a.task_id";
-        if (taskId == null) return jdbc.queryForList(sql + " ORDER BY (a.status='open') DESC,a.update_time DESC,a.id DESC");
-        return jdbc.queryForList(sql + " WHERE a.task_id=? ORDER BY (a.status='open') DESC,a.update_time DESC,a.id DESC", taskId);
+        String sql = "SELECT a.id,a.task_id taskId,t.task_name taskName,a.task_instance_id taskInstanceId,"
+                + "a.event_type eventType,a.severity,a.status,a.title,a.detail,a.occurrence_count occurrenceCount,"
+                + "a.first_occurred_at firstOccurredAt,a.last_occurred_at lastOccurredAt,a.muted_until mutedUntil,"
+                + "a.recovered_at recoveredAt,a.create_time createTime,a.update_time updateTime "
+                + "FROM rt_alert a JOIN rt_task t ON t.id=a.task_id";
+        String order = " ORDER BY (a.status IN ('OPEN','ACKNOWLEDGED','MUTED')) DESC,a.last_occurred_at DESC,a.id DESC LIMIT 1000";
+        if (taskId == null) return jdbc.queryForList(sql + order);
+        return jdbc.queryForList(sql + " WHERE a.task_id=?" + order, taskId);
     }
 
     public void acknowledgeAlert(long id) {
-        if (jdbc.update("UPDATE rt_alert SET status='acknowledged',update_time=NOW() WHERE id=?", id) == 0) {
+        if (jdbc.update("UPDATE rt_alert SET status='ACKNOWLEDGED',acknowledged_at=NOW(),update_time=NOW() "
+                + "WHERE id=? AND status='OPEN'", id) == 0) {
             throw new IllegalArgumentException("告警不存在");
         }
     }
@@ -1519,6 +1551,14 @@ public class RealtimeSyncRepository {
     private String limited(String value, int maxLength) {
         if (value == null || value.length() <= maxLength) return value;
         return value.substring(0, maxLength);
+    }
+    private String sha256(String value) {
+        try {
+            byte[] bytes = MessageDigest.getInstance("SHA-256").digest(value.getBytes(StandardCharsets.UTF_8));
+            StringBuilder result = new StringBuilder();
+            for (byte item : bytes) result.append(String.format("%02x", item));
+            return result.toString();
+        } catch (Exception ex) { throw new IllegalStateException("告警指纹生成失败", ex); }
     }
     private static String textValue(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
     private long elapsedMs(long startedAt) { return (System.nanoTime() - startedAt) / 1_000_000L; }

@@ -15,6 +15,7 @@ import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncTargetValidationService;
+import com.yjn.sqlagent.realtime.service.RealtimeTaskDefinitionService;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -26,6 +27,7 @@ class RealtimeUnifiedTaskControllerTest {
     private RealtimeSyncRepository repository;
     private RealtimeRuntimeService runtime;
     private RealtimeUnifiedTaskController controller;
+    private RealtimeTaskDefinitionService definitions;
 
     @BeforeEach
     void setUp() {
@@ -35,6 +37,27 @@ class RealtimeUnifiedTaskControllerTest {
         runtime = mock(RealtimeRuntimeService.class);
         controller = new RealtimeUnifiedTaskController(repository, runtime,
                 mock(RealtimeSyncConfigValidator.class), mock(RealtimeSyncTargetValidationService.class), actors);
+        definitions = mock(RealtimeTaskDefinitionService.class);
+        org.springframework.test.util.ReflectionTestUtils.setField(controller, "definitions", definitions);
+    }
+
+    @Test
+    void validateIsNonPersistingAndReturnsResolvedReferences() {
+        com.yjn.sqlagent.realtime.model.UnifiedTaskRequest request =
+                new com.yjn.sqlagent.realtime.model.UnifiedTaskRequest();
+        request.setTaskType("export"); request.setTaskId(8L); request.setName("export"); request.setOwner("owner");
+        request.setFlinkConf(new LinkedHashMap<>(Map.of("parallelism", 1)));
+        request.setTaskConfig(new LinkedHashMap<>());
+        when(definitions.validate(request, 8L)).thenReturn(
+                new RealtimeTaskDefinitionService.References(List.of(11L, 12L), List.of()));
+
+        Map<String, Object> result = controller.validate(request).getData();
+
+        assertTrue(Boolean.TRUE.equals(result.get("valid")));
+        assertEquals("export", result.get("taskType"));
+        assertEquals(List.of(11L, 12L), result.get("inputTableIds"));
+        verify(definitions).validate(request, 8L);
+        verify(repository, never()).createTask(org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString());
     }
 
     @Test
@@ -77,12 +100,31 @@ class RealtimeUnifiedTaskControllerTest {
     }
 
     @Test
-    void productionStopRejectsDirectCancellation() {
+    void productionStopAcceptsDirectCancellation() {
         TaskActionRequest request = new TaskActionRequest();
         request.setStopType("direct");
-        assertEquals("正式实例仅支持 savepoint 停止",
-                assertThrows(IllegalArgumentException.class,
-                        () -> controller.stop(8L, request)).getMessage());
+        when(repository.instances(8L)).thenReturn(List.of(Map.of(
+                "id", 30L, "managed", true, "executionMode", "PRODUCTION", "status", "restarting")));
+        when(runtime.stop(8L, 30L, request, "tester")).thenReturn(Map.of("operationId", 99L));
+
+        assertEquals(99L, controller.stop(8L, request).getData().get("operationId"));
+        verify(runtime).stop(8L, 30L, request, "tester");
+    }
+
+    @Test
+    void productionStopDefaultsToSavepoint() {
+        when(repository.instances(8L)).thenReturn(List.of(Map.of(
+                "id", 30L, "managed", true, "executionMode", "PRODUCTION", "status", "running")));
+        when(runtime.stop(org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.eq(30L),
+                org.mockito.ArgumentMatchers.any(TaskActionRequest.class), org.mockito.ArgumentMatchers.eq("tester")))
+                .thenReturn(Map.of("operationId", 100L));
+
+        controller.stop(8L, null);
+
+        ArgumentCaptor<TaskActionRequest> action = ArgumentCaptor.forClass(TaskActionRequest.class);
+        verify(runtime).stop(org.mockito.ArgumentMatchers.eq(8L), org.mockito.ArgumentMatchers.eq(30L),
+                action.capture(), org.mockito.ArgumentMatchers.eq("tester"));
+        assertEquals("savepoint", action.getValue().getStopType());
     }
 
     @Test
@@ -131,6 +173,43 @@ class RealtimeUnifiedTaskControllerTest {
         controller.enable(8L, request);
 
         verify(runtime).start(8L, request, "tester", false);
+    }
+
+    @Test
+    void productionLockedSyncTaskCanRecoverFromAnyOwnedProductionCheckpoint() {
+        when(repository.taskType(8L)).thenReturn("sync");
+        when(repository.latestVersionId(8L)).thenReturn(12L);
+        when(repository.instances(8L)).thenReturn(List.of(
+                Map.of("managed", true, "executionMode", "DEBUG", "versionId", 12L,
+                        "status", "killed_success"),
+                Map.of("managed", true, "executionMode", "PRODUCTION", "versionId", 11L,
+                        "status", "canceled", "jobId", "0123456789abcdef0123456789abcdef")));
+        when(repository.editPolicy(8L)).thenReturn(Map.of(
+                "productionLocked", true, "syncTableSetChanged", false));
+        TaskActionRequest request = new TaskActionRequest();
+        request.setStartType("checkpoint");
+        request.setStatePath("hdfs://checkpoints/task-8/0123456789abcdef0123456789abcdef/chk-42");
+
+        controller.enable(8L, request);
+
+        verify(runtime).start(8L, request, "tester", false);
+    }
+
+    @Test
+    void productionLockedSyncTaskCannotRepeatInitialFullStart() {
+        when(repository.taskType(8L)).thenReturn("sync");
+        when(repository.latestVersionId(8L)).thenReturn(12L);
+        when(repository.instances(8L)).thenReturn(List.of(Map.of(
+                "managed", true, "executionMode", "DEBUG", "versionId", 12L,
+                "status", "killed_success")));
+        when(repository.editPolicy(8L)).thenReturn(Map.of(
+                "productionLocked", true, "syncTableSetChanged", false));
+        TaskActionRequest request = new TaskActionRequest();
+
+        assertEquals("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动",
+                assertThrows(IllegalArgumentException.class,
+                        () -> controller.enable(8L, request)).getMessage());
+        verify(runtime, never()).start(8L, request, "tester", false);
     }
 
     @Test

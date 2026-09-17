@@ -21,10 +21,15 @@ import {
   RightOutlined,
   RocketOutlined,
   UserOutlined,
+  DashboardOutlined,
+  SearchOutlined,
+  AlertOutlined,
+  FunctionOutlined,
 } from '@ant-design/icons';
 import { Outlet, useLocation, useNavigate } from 'react-router-dom';
 import { modeOf, storageKeyOf, validRememberedPath } from '../realtime/mode';
 import RouteAiAssistant from './ai/RouteAiAssistant';
+import GlobalSearchPalette from './search/GlobalSearchPalette';
 
 interface Props {
   obId: string;
@@ -52,12 +57,14 @@ const offlineNavigation: NavigationGroup[] = [
     key: 'development', label: '离线研发', icon: <BranchesOutlined />, items: [
       { path: '/tasks', label: '任务管理', icon: <ProfileOutlined /> },
       { path: '/executions', label: '执行中心', icon: <MonitorOutlined /> },
+      { path: '/schedules/dag', label: '调度拓扑', icon: <NodeIndexOutlined /> },
       { path: '/data-compares', label: '数据验数', icon: <ExperimentOutlined /> },
     ],
   },
   {
     key: 'assets', label: '数据资产', icon: <DatabaseOutlined />, items: [
       { path: '/catalog', label: '数据目录', icon: <DatabaseOutlined /> },
+      { path: '/functions', label: '函数目录', icon: <FunctionOutlined /> },
     ],
   },
   {
@@ -81,7 +88,18 @@ const realtimeNavigation: NavigationGroup[] = [
       { path: '/realtime/paimon-tables', label: '实时表管理', icon: <DatabaseOutlined /> },
     ],
   },
+  {
+    key: 'operations', label: '运维中心', icon: <MonitorOutlined />, items: [
+      { path: '/realtime/alerts', label: '告警中心', icon: <AlertOutlined /> },
+    ],
+  },
 ];
+
+const workspaceNavigation: NavigationGroup[] = [{
+  key: 'workspace', label: '统一入口', icon: <DashboardOutlined />, items: [
+    { path: '/overview', label: '统一工作台', icon: <DashboardOutlined /> },
+  ],
+}];
 
 export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
   const location = useLocation();
@@ -91,16 +109,20 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
     () => window.localStorage.getItem(navigationCollapsedKey) === 'true',
   );
   const [collapsedRealtimeGroups, setCollapsedRealtimeGroups] = useState<Set<string>>(() => new Set());
+  const [searchOpen, setSearchOpen] = useState(false);
   const iconOnlyNavigation = navigationCollapsed || !screens.xl;
-  const realtime = modeOf(location.pathname) === 'realtime';
-  const navigation = realtime ? realtimeNavigation : offlineNavigation;
+  const applicationMode = modeOf(location.pathname);
+  const realtime = applicationMode === 'realtime';
+  const navigation = applicationMode === 'workspace' ? workspaceNavigation : realtime ? realtimeNavigation : offlineNavigation;
 
   useEffect(() => {
-    const key = storageKeyOf(realtime ? 'realtime' : 'offline');
+    if (applicationMode === 'workspace') return;
+    const key = storageKeyOf(applicationMode);
     window.localStorage.setItem(key, `${location.pathname}${location.search}`);
-  }, [location.pathname, location.search, realtime]);
+  }, [applicationMode, location.pathname, location.search]);
 
   const switchMode = (mode: string | number) => {
+    if (mode === 'workspace') { navigate('/overview'); return; }
     const targetMode = mode === 'realtime' ? 'realtime' : 'offline';
     const remembered = window.localStorage.getItem(storageKeyOf(targetMode));
     navigate(validRememberedPath(targetMode, remembered));
@@ -125,9 +147,20 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
 
   const navigationClassName = [
     'app-nav',
-    realtime ? 'realtime' : 'offline',
+    applicationMode,
     navigationCollapsed ? 'collapsed' : '',
   ].filter(Boolean).join(' ');
+
+  useEffect(() => {
+    const openSearch = (event: KeyboardEvent) => {
+      if ((event.metaKey || event.ctrlKey) && event.key.toLowerCase() === 'k') {
+        event.preventDefault();
+        setSearchOpen(true);
+      }
+    };
+    window.addEventListener('keydown', openSearch);
+    return () => window.removeEventListener('keydown', openSearch);
+  }, []);
 
   return (
     <div className="app-shell">
@@ -205,10 +238,15 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
         <header className="app-mode-header">
           <Segmented
             className="app-mode-switch ui-flat-segmented"
-            value={realtime ? 'realtime' : 'offline'}
+            value={applicationMode}
             onChange={switchMode}
-            options={[{ label: '离线', value: 'offline' }, { label: '实时', value: 'realtime' }]}
+            options={[{ label: '工作台', value: 'workspace' }, { label: '离线', value: 'offline' }, { label: '实时', value: 'realtime' }]}
           />
+          <button type="button" className="global-search-entry" onClick={() => setSearchOpen(true)}>
+            <SearchOutlined />
+            <span>搜索</span>
+            <kbd>⌘K</kbd>
+          </button>
           <Dropdown
             trigger={['click']}
             placement="bottomRight"
@@ -233,6 +271,7 @@ export default function AppShell({ obId, onSwitchAccount, onLogout }: Props) {
         </header>
         <div className="app-mode-content"><Outlet /></div>
         <RouteAiAssistant />
+        <GlobalSearchPalette open={searchOpen} onClose={() => setSearchOpen(false)} />
       </main>
     </div>
   );

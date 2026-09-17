@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applySyncSchemaChange, canEnableSyncTask, createSyncTask, getStateHistory, getSyncProgress, getSyncTask, listAlerts, listManagedTasks, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, resolveSyncDirtyRecord, startSyncTask } from './api';
+import { applySyncSchemaChange, canEnableSyncTask, createSyncTask, getInstanceDebugReport, getInstanceProgress, getRecoveryOptions, getStateHistory, getSyncProgress, getSyncTask, listAlertRules, listAlerts, listAlertsPage, listManagedTasks, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, muteAlert, recoverInstance, resolveSyncDirtyRecord, startSyncTask, unmuteAlert } from './api';
 import type { SyncTaskSave } from './types';
 
 const response = (data: unknown) => Promise.resolve({
@@ -133,6 +133,20 @@ describe('实时同步统一接口契约', () => {
     ]);
   });
 
+  it('实例提交进度使用统一任务接口', async () => {
+    const fetchMock = vi.fn(() => response({
+      taskId: 31, instanceId: 99, taskType: 'sync', executionMode: 'PRODUCTION',
+      instanceStatus: 'submitting', phase: 'submitting', stage: 'building_command',
+      stageIndex: 4, stageCount: 6, message: '正在生成启动命令',
+    }));
+    vi.stubGlobal('fetch', fetchMock);
+
+    const result = await getInstanceProgress(31, 99);
+
+    expect(result.stage).toBe('building_command');
+    expect(fetchMock).toHaveBeenCalledWith('/v1/api/tasks/31/instances/99/progress', { credentials: 'include' });
+  });
+
   it('任务详情按任务查询告警，避免加载全平台告警', async () => {
     const fetchMock = vi.fn(() => response([]));
     vi.stubGlobal('fetch', fetchMock);
@@ -140,5 +154,35 @@ describe('实时同步统一接口契约', () => {
     await listAlerts(31);
 
     expect(fetchMock).toHaveBeenCalledWith('/api/alerts?taskId=31', { credentials: 'include' });
+  });
+
+  it('恢复与调试报告使用来源实例上下文', async () => {
+    const fetchMock = vi.fn(() => response({ strategies: [], status: 'PASSED' }));
+    vi.stubGlobal('fetch', fetchMock);
+    await getRecoveryOptions(31, 99);
+    await recoverInstance(31, 99, { startType: 'savepoint', statePath: 'hdfs:///sp-1' });
+    await getInstanceDebugReport(31, 100);
+    const calls = fetchMock.mock.calls as unknown as Array<[string, RequestInit?]>;
+    expect(calls[0]?.[0]).toBe('/v1/api/tasks/31/instances/99/recovery-options');
+    expect(calls[1]?.[0]).toBe('/v1/api/tasks/31/instances/99/recover');
+    expect(JSON.parse(String(calls[1]?.[1]?.body))).toEqual({ startType: 'savepoint', statePath: 'hdfs:///sp-1' });
+    expect(calls[2]?.[0]).toBe('/v1/api/tasks/31/instances/100/debug-report');
+  });
+
+  it('告警中心使用服务端分页和生命周期接口', async () => {
+    const fetchMock = vi.fn(() => response({ records: [], total: 0, page: 2, pageSize: 20 }));
+    vi.stubGlobal('fetch', fetchMock);
+    await listAlertsPage(new URLSearchParams({ view: 'RECOVERED', page: '2', pageSize: '20' }));
+    expect(fetchMock).toHaveBeenCalledWith('/api/alerts/page?view=RECOVERED&page=2&pageSize=20', { credentials: 'include' });
+
+    fetchMock.mockImplementation(() => response(true));
+    await muteAlert(8, '2026-09-16T12:00:00.000Z');
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/alerts/8/mute', expect.objectContaining({ method: 'POST', credentials: 'include' }));
+    await unmuteAlert(8);
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/alerts/8/unmute', { method: 'POST', credentials: 'include' });
+
+    fetchMock.mockImplementation(() => response([]));
+    await listAlertRules();
+    expect(fetchMock).toHaveBeenLastCalledWith('/api/alert-rules', { credentials: 'include' });
   });
 });

@@ -211,6 +211,12 @@ CREATE TABLE IF NOT EXISTS rt_task_instance (
   id BIGINT NOT NULL AUTO_INCREMENT,
   task_id BIGINT NOT NULL,
   version_id BIGINT NULL,
+  source_instance_id BIGINT NULL COMMENT '恢复来源实例',
+  recovery_strategy VARCHAR(32) NULL COMMENT 'DIRECT、CHECKPOINT、SAVEPOINT或TIMESTAMP',
+  recovery_state_path VARCHAR(1024) NULL COMMENT '实际使用的状态路径',
+  debug_report_status VARCHAR(16) NULL COMMENT 'PASSED或FAILED',
+  debug_report_summary VARCHAR(1024) NULL COMMENT '无写入调试摘要',
+  debug_report_json LONGTEXT NULL COMMENT '结构化无写入调试报告',
   job_id VARCHAR(128) NULL,
   yarn_application_id VARCHAR(128) NULL,
   status VARCHAR(32) NULL,
@@ -233,8 +239,26 @@ CREATE TABLE IF NOT EXISTS rt_task_instance (
   KEY idx_task_instance_status_task (status, task_id),
   KEY idx_task_instance_task_mode_create (task_id, execution_mode, create_time),
   KEY idx_task_instance_task_create (task_id, create_time),
-  KEY idx_task_instance_yarn_application (yarn_application_id)
+  KEY idx_task_instance_yarn_application (yarn_application_id),
+  KEY idx_task_instance_source (source_instance_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务运行实例';
+
+CREATE TABLE IF NOT EXISTS task_diagnostic_report (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  target_kind VARCHAR(32) NOT NULL COMMENT 'OFFLINE_EXECUTION或REALTIME_INSTANCE',
+  target_id BIGINT NOT NULL COMMENT '执行或实例ID',
+  revision INT NOT NULL COMMENT '报告修订号',
+  report_status VARCHAR(16) NOT NULL COMMENT 'COMPLETE、PARTIAL或FAILED',
+  complete_flag TINYINT(1) NOT NULL DEFAULT 0,
+  failure_stage VARCHAR(32) NULL,
+  summary VARCHAR(1024) NULL,
+  report_json LONGTEXT NOT NULL,
+  generated_at DATETIME NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_diagnostic_target_revision (target_kind,target_id,revision),
+  KEY idx_diagnostic_target_latest (target_kind,target_id,generated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='离线与实时共用的不可变诊断报告';
 
 CREATE TABLE IF NOT EXISTS rt_task_operation (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -283,16 +307,75 @@ CREATE TABLE IF NOT EXISTS rt_task_change_log (
 CREATE TABLE IF NOT EXISTS rt_alert (
   id BIGINT NOT NULL AUTO_INCREMENT,
   task_id BIGINT NOT NULL,
+  task_instance_id BIGINT NULL,
+  rule_id BIGINT NULL,
+  event_type VARCHAR(64) NOT NULL DEFAULT 'RUNTIME_EVENT',
   severity VARCHAR(32) NULL,
-  status VARCHAR(32) NULL,
+  status VARCHAR(32) NOT NULL DEFAULT 'OPEN' COMMENT 'OPEN/ACKNOWLEDGED/MUTED/RECOVERED',
   title VARCHAR(255) NULL,
   detail TEXT NULL,
+  fingerprint CHAR(64) NOT NULL,
+  active_fingerprint CHAR(64) NULL,
+  occurrence_count INT NOT NULL DEFAULT 1,
+  first_occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  last_occurred_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  acknowledged_by VARCHAR(64) NULL,
+  acknowledged_at DATETIME NULL,
+  muted_until DATETIME NULL,
+  recovered_at DATETIME NULL,
+  evidence_json LONGTEXT NULL,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
+  UNIQUE KEY uk_alert_active_fingerprint (active_fingerprint),
   KEY idx_alert_status (status, severity),
-  KEY idx_alert_task (task_id, status, update_time)
+  KEY idx_alert_task (task_id, status, update_time),
+  KEY idx_alert_rule_status (rule_id,status,last_occurred_at),
+  KEY idx_alert_instance (task_instance_id,last_occurred_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务告警';
+
+CREATE TABLE IF NOT EXISTS rt_alert_rule (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  rule_code VARCHAR(64) NOT NULL,
+  rule_name VARCHAR(128) NOT NULL,
+  event_type VARCHAR(64) NOT NULL,
+  severity VARCHAR(32) NOT NULL,
+  enabled_flag TINYINT(1) NOT NULL DEFAULT 1,
+  threshold_value BIGINT NULL,
+  consecutive_samples INT NOT NULL DEFAULT 1,
+  window_seconds INT NOT NULL DEFAULT 300,
+  description VARCHAR(512) NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_alert_rule_code (rule_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时告警内置规则';
+
+CREATE TABLE IF NOT EXISTS rt_alert_rule_state (
+  rule_id BIGINT NOT NULL,
+  task_id BIGINT NOT NULL,
+  task_instance_id BIGINT NOT NULL DEFAULT 0,
+  consecutive_count INT NOT NULL DEFAULT 0,
+  last_condition_met TINYINT(1) NOT NULL DEFAULT 0,
+  last_value VARCHAR(128) NULL,
+  evidence_json LONGTEXT NULL,
+  last_evaluated_at DATETIME NOT NULL,
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  PRIMARY KEY (rule_id,task_id,task_instance_id),
+  KEY idx_alert_rule_state_task (task_id,last_evaluated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时告警规则连续采样状态';
+
+INSERT INTO rt_alert_rule(rule_code,rule_name,event_type,severity,threshold_value,consecutive_samples,window_seconds,description)
+VALUES
+  ('TASK_FAILURE','任务运行失败','TASK_FAILURE','critical',1,1,300,'正式实例进入失败状态'),
+  ('FREQUENT_RESTART','频繁重启','FREQUENT_RESTART','warning',3,1,600,'Flink 作业重启次数达到阈值'),
+  ('CHECKPOINT_FAILURE','Checkpoint 连续失败','CHECKPOINT_FAILURE','critical',1,3,300,'最新 Checkpoint 失败且连续采样达到阈值'),
+  ('BACKPRESSURE','持续反压','BACKPRESSURE','warning',800,3,300,'最大反压毫秒/秒达到阈值'),
+  ('SOURCE_LAG','源端延迟','SOURCE_LAG','warning',300000,3,300,'源端读取延迟达到阈值'),
+  ('DIRTY_DATA','脏数据','DIRTY_DATA','warning',1,1,300,'存在未处理脏数据'),
+  ('SCHEMA_CHANGE','Schema 变化','SCHEMA_CHANGE','warning',1,1,300,'存在待处理或阻断的 Schema 变化')
+ON DUPLICATE KEY UPDATE rule_name=VALUES(rule_name),event_type=VALUES(event_type),description=VALUES(description);
 
 CREATE TABLE IF NOT EXISTS rt_paimon_business_domain (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -324,6 +407,7 @@ VALUES
   ('sync','table_conf','changelog-producer','目标 Paimon 表 Changelog Producer','[{"label":"none","value":"none"},{"label":"input（平台默认）","value":"input","default":true},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]','list','select',1,1,30),
   ('sync','table_conf','precommit-compact','Changelog 提交前压缩','[{"label":"false（官网默认）","value":"false","default":false},{"label":"true（推荐）","value":"true","default":true}]','list','select',0,1,65),
   ('sync','table_conf','dynamic-bucket.target-row-num','动态 Bucket 目标行数','2000000','number','input_number',0,1,42),
+  ('sync','table_conf','sequence.field','主键表 Sequence 字段','__meta_op_ts','string','input',1,1,51),
   ('sync','table_conf','consumer.expiration-time','Consumer 过期时间','1 d','string','input',1,1,104),
   ('sync','flink_conf','taskmanager.memory.managed.fraction','TaskManager Managed Memory 比例','0.4','number','input_number',1,1,10),
   ('sync','flink_conf','taskmanager.memory.network.fraction','TaskManager Network Memory 比例','0.1','number','input_number',1,1,20),

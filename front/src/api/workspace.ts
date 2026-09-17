@@ -19,6 +19,7 @@ import type {
   TaskQualityVO,
   SqlCompletionVO,
   SqlStructurePreviewVO,
+  SqlQueryPreviewVO,
   SqlTaskParameter,
   DataMapPrimaryKeysVO,
 } from '../types';
@@ -29,6 +30,12 @@ interface SqlStructurePreviewRequest {
   parameters?: Record<string, unknown>;
   businessDate?: string;
   validateParameterValues: boolean;
+}
+
+export interface SqlQueryPreviewRequest extends SqlStructurePreviewRequest {
+  stepNo: number;
+  limit?: number;
+  defaultDb?: string;
 }
 
 export function completeSql(
@@ -54,6 +61,20 @@ export function previewSqlStructure(
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     signal,
+  });
+}
+
+export function previewSqlQuery(body: SqlQueryPreviewRequest): Promise<SqlQueryPreviewVO> {
+  return requestJson<SqlQueryPreviewVO>('/api/workspace/sql/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function validateHiveDdl(ddl: string): Promise<{ valid: boolean; affectedTables: string[]; executed: boolean }> {
+  return requestJson('/api/workspace/sql/ddl/validate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ddl }),
   });
 }
 

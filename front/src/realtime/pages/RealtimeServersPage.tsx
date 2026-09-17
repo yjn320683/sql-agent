@@ -42,6 +42,7 @@ export default function RealtimeServersPage() {
         databasePrefix: safePatch.databasePrefix,
         description: safePatch.description,
       });
+      setTested(false);
       event.preventDefault();
     };
     const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {

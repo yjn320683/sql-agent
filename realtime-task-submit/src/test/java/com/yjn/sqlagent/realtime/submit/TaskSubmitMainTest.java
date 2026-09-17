@@ -38,17 +38,21 @@ class TaskSubmitMainTest {
     void dryRunValidatesSnapshotAndNeverPrintsPassword() throws Exception {
         byte[] bytes = new ObjectMapper().writeValueAsBytes(validSpec());
         Path file = tempDir.resolve("job-config.json");
+        Path report = tempDir.resolve("debug-report.json");
         Files.write(file, bytes);
         ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
 
         TaskSubmitMain.run(new String[] {"--submission-file", file.toUri().toString(),
-                "--config-sha256", sha256(bytes), "--dry-run"},
+                "--config-sha256", sha256(bytes), "--dry-run",
+                "--debug-report-file", report.toUri().toString()},
                 new PrintStream(bytesOut, true, StandardCharsets.UTF_8));
 
         String output = bytesOut.toString(StandardCharsets.UTF_8);
         assertTrue(output.contains("mysql_sync_database"));
         assertTrue(output.contains("password=******"));
         assertFalse(output.contains("不能泄露的密码"));
+        assertFalse(output.contains("realtime-sync-dry-run"));
+        assertTrue(Files.readString(report).contains("SUBMISSION_SPEC"));
     }
 
     @Test

@@ -11,6 +11,7 @@ const SessionManagementPage = lazy(() => import('./components/SessionManagementP
 const TaskWorkspacePage = lazy(() => import('./components/tasks/TaskWorkspacePage'));
 const ExecutionCenterPage = lazy(() => import('./components/tasks/ExecutionCenterPage'));
 const DataCatalogPage = lazy(() => import('./components/catalog/DataCatalogPage'));
+const HiveFunctionCatalogPage = lazy(() => import('./components/catalog/HiveFunctionCatalogPage'));
 const PlatformStatusPage = lazy(() => import('./components/platform/PlatformStatusPage'));
 const DataComparePage = lazy(() => import('./components/dataCompare/DataComparePage'));
 const VersionComparePage = lazy(() => import('./components/dataCompare/VersionComparePage'));
@@ -22,6 +23,8 @@ const RealtimeAlertsPage = lazy(() => import('./realtime/pages/RealtimeAlertsPag
 const RealtimeTablesPage = lazy(() => import('./realtime/pages/RealtimeTablesPage'));
 const RealtimeManagedTaskWorkspacePage = lazy(() => import('./realtime/pages/RealtimeManagedTaskWorkspacePage'));
 const RealtimeTodoPage = lazy(() => import('./realtime/pages/RealtimeTodoPage'));
+const OverviewPage = lazy(() => import('./components/overview/OverviewPage'));
+const ScheduleDagPage = lazy(() => import('./components/tasks/ScheduleDagPage'));
 
 export default function App() {
   const [loading, setLoading] = useState(true);
@@ -79,6 +82,7 @@ export default function App() {
             />
           )}
         >
+          <Route path="/overview" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><OverviewPage /></Suspense>} />
           <Route path="/chat" element={<ChatPage />} />
           <Route path="/chat/:sessionId" element={<ChatPage />} />
           <Route
@@ -96,8 +100,9 @@ export default function App() {
           <Route path="/tasks/:taskId/executions/:executionId" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><TaskWorkspacePage /></Suspense>} />
           <Route path="/tasks/unions" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><TaskVersionUnionPage /></Suspense>} />
           <Route path="/executions" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><ExecutionCenterPage /></Suspense>} />
+          <Route path="/schedules/dag" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><ScheduleDagPage /></Suspense>} />
           <Route path="/catalog" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><DataCatalogPage /></Suspense>} />
-          <Route path="/functions" element={<Navigate to="/tasks" replace />} />
+          <Route path="/functions" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><HiveFunctionCatalogPage /></Suspense>} />
           <Route path="/platform" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><PlatformStatusPage /></Suspense>} />
           <Route path="/data-compares" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><DataComparePage /></Suspense>} />
           <Route path="/data-compares/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><VersionComparePage /></Suspense>} />
@@ -116,7 +121,7 @@ export default function App() {
           <Route path="/realtime/export" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="/realtime/export/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="/realtime/export/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
-          <Route path="*" element={<Navigate to="/chat" replace />} />
+          <Route path="*" element={<Navigate to="/overview" replace />} />
         </Route>
       </Routes>
     </BrowserRouter>

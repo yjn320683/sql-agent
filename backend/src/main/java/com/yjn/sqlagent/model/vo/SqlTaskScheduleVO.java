@@ -16,6 +16,9 @@ public class SqlTaskScheduleVO {
     private String concurrencyPolicy;
     private Integer maxRetries;
     private Integer retryIntervalSeconds;
+    private Integer executionTimeoutSeconds;
+    private Integer slaDurationMinutes;
+    private String timeoutPolicy;
     private Map<String, Object> parameters = new LinkedHashMap<>();
     private LocalDateTime nextTriggerTime;
     private LocalDateTime lastTriggerTime;
