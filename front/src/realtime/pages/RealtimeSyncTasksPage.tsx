@@ -440,7 +440,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   };
 
   return (
-    <div className="realtime-page realtime-sync-tasks-page">
+    <div className="page-content realtime-page realtime-sync-tasks-page">
       <section className="realtime-sync-main-panel">
         {!workspace && <div className="realtime-page-header">
           <Typography.Title level={4}>实时同步任务</Typography.Title>

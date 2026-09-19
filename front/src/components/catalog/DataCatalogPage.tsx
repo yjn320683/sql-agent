@@ -516,7 +516,7 @@ export default function DataCatalogPage() {
   ];
 
   return (
-    <div className="data-page catalog-page">
+    <div className="page-content data-page catalog-page">
       <section className="data-panel catalog-workbench">
         <aside className="catalog-browser">
           <div className="catalog-browser-toolbar">

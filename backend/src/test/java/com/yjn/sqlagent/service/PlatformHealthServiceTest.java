@@ -19,6 +19,8 @@ import org.mockito.junit.jupiter.MockitoExtension;
 class PlatformHealthServiceTest {
     @Mock
     private AgentProxyService agentProxyService;
+    @Mock
+    private SchemaMigrationStatusService schemaMigrationStatusService;
 
     @Test
     void reportsAgentUnavailableWithoutASeparateDataCompareDependency() {
@@ -28,7 +30,7 @@ class PlatformHealthServiceTest {
 
         List<Map<String, Object>> dependencies = dependencies(result);
         assertFalse((Boolean) result.get("complete"));
-        assertEquals(1, dependencies.size());
+        assertEquals(2, dependencies.size());
         assertFalse((Boolean) dependencies.get(0).get("reachable"));
         assertEquals("agent", dependencies.get(0).get("name"));
     }
@@ -49,7 +51,7 @@ class PlatformHealthServiceTest {
 
         List<Map<String, Object>> dependencies = dependencies(result);
         assertTrue((Boolean) result.get("complete"));
-        assertEquals(2, dependencies.size());
+        assertEquals(3, dependencies.size());
         assertTrue((Boolean) dependencies.get(0).get("reachable"));
         assertEquals("hiveServer2", dependencies.get(1).get("name"));
     }
@@ -69,7 +71,14 @@ class PlatformHealthServiceTest {
     }
 
     private PlatformHealthService service() {
-        return new PlatformHealthService(agentProxyService);
+        when(schemaMigrationStatusService.status()).thenReturn(Map.of(
+                "compatible", true,
+                "currentVersion", SchemaMigrationStatusService.REQUIRED_VERSION,
+                "requiredVersion", SchemaMigrationStatusService.REQUIRED_VERSION,
+                "pendingMigrations", 0,
+                "tracked", true,
+                "message", "数据库结构版本兼容"));
+        return new PlatformHealthService(agentProxyService, schemaMigrationStatusService);
     }
 
     @SuppressWarnings("unchecked")

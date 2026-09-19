@@ -2,6 +2,7 @@ package com.yjn.sqlagent.controller;
 
 import com.yjn.sqlagent.common.BaseResponse;
 import com.yjn.sqlagent.datamap.graph.GraphStoreUnavailableException;
+import com.yjn.sqlagent.datamap.service.DataMapOperationConflictException;
 import com.yjn.sqlagent.datamap.service.DataMapService;
 import com.yjn.sqlagent.service.CurrentUserService;
 import java.util.Map;
@@ -23,6 +24,7 @@ public class DataMapController {
     public DataMapController(DataMapService service,CurrentUserService users){this.service=service;this.users=users;}
 
     @GetMapping("/overview") public BaseResponse<Map<String,Object>>overview(HttpServletRequest request){users.requireObId(request);return BaseResponse.success(service.overview());}
+    @GetMapping("/graph/readiness") public BaseResponse<Map<String,Object>>readiness(HttpServletRequest request){users.requireObId(request);return BaseResponse.success(service.readiness());}
     @GetMapping("/catalog/search") public BaseResponse<Map<String,Object>>search(@RequestParam(defaultValue="")String keyword,@RequestParam(defaultValue="all")String catalog,@RequestParam(defaultValue="1")int page,@RequestParam(defaultValue="20")int pageSize,HttpServletRequest request){users.requireObId(request);return BaseResponse.success(service.search(keyword,catalog,page,pageSize));}
     @GetMapping("/lineage/graph") public BaseResponse<Map<String,Object>>graph(@RequestParam(defaultValue="hive")String catalog,@RequestParam(defaultValue="")String database,@RequestParam String table,@RequestParam(defaultValue="")String column,@RequestParam(defaultValue="BOTH")String direction,@RequestParam(defaultValue="2")int depth,@RequestParam(defaultValue="TABLE")String view,HttpServletRequest request){users.requireObId(request);return BaseResponse.success(service.graph(catalog,database,table,column,direction,depth,view));}
     @PostMapping("/impact-analysis") public BaseResponse<Map<String,Object>>impact(@RequestBody Map<String,Object>body,HttpServletRequest request){users.requireObId(request);return BaseResponse.success(service.impact(body));}
@@ -35,4 +37,8 @@ public class DataMapController {
     @org.springframework.web.bind.annotation.ExceptionHandler(GraphStoreUnavailableException.class)
     @ResponseStatus(HttpStatus.SERVICE_UNAVAILABLE)
     public BaseResponse<Void> graphUnavailable(GraphStoreUnavailableException error){return BaseResponse.failure(503,error.getMessage());}
+
+    @org.springframework.web.bind.annotation.ExceptionHandler(DataMapOperationConflictException.class)
+    @ResponseStatus(HttpStatus.CONFLICT)
+    public BaseResponse<Void> graphConflict(DataMapOperationConflictException error){return BaseResponse.failure(409,error.getMessage());}
 }

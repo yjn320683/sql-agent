@@ -59,6 +59,7 @@ CREATE TABLE IF NOT EXISTS data_map_graph_outbox (
   PRIMARY KEY (id),
   UNIQUE KEY uk_data_map_outbox_snapshot (snapshot_id,event_type,generation_no),
   KEY idx_data_map_outbox_claim (status,available_at,id),
+  KEY idx_data_map_outbox_recovery (status,locked_at,available_at),
   KEY idx_data_map_outbox_generation (generation_no,status,id),
   KEY idx_data_map_outbox_task (task_scope,task_id,id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='MySQL血缘事实到Neo4j的可靠投影事件';

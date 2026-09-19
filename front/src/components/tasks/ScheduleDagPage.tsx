@@ -38,7 +38,7 @@ export default function ScheduleDagPage() {
   const load = useCallback(async () => { setLoading(true); setError(''); try { setData(await getScheduleDag()); } catch (e) { setError((e as Error).message); } finally { setLoading(false); } }, []);
   useEffect(() => { void load(); }, [load]);
   const graph = useMemo(() => data ? layout(data, status, navigate) : { nodes: [], edges: [] }, [data, navigate, status]);
-  return <div className="schedule-dag-page">
+  return <div className="page-content schedule-dag-page">
     <header><span className="schedule-dag-context">启用任务依赖、最近实例与关键路径</span><div><Select value={status} onChange={setStatus} options={['ALL','SUCCEEDED','FAILED','RUNNING','NONE'].map((value) => ({ value, label: value === 'ALL' ? '全部状态' : value }))} /><Button icon={<ReloadOutlined />} onClick={() => void load()}>刷新</Button></div></header>
     {error ? <Alert type="error" showIcon message="调度拓扑加载失败" description={error} /> : null}
     <section>{loading ? <Spin /> : <ReactFlow nodes={graph.nodes} edges={graph.edges} fitView onNodeDoubleClick={(_, node) => navigate(`/tasks/${node.id}/edit`)}><Background /><Controls /></ReactFlow>}</section>

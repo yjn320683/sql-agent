@@ -1,6 +1,8 @@
 spring:
   application:
     name: sql-agent-backend
+  flyway:
+    enabled: false
   profiles:
     active: local
   servlet:
@@ -23,6 +25,7 @@ app:
     full-cron: ${DATA_MAP_FULL_CRON:0 30 2 * * *}
     projection-batch-size: ${DATA_MAP_PROJECTION_BATCH_SIZE:50}
     max-attempts: ${DATA_MAP_MAX_ATTEMPTS:5}
+    processing-lease-seconds: ${DATA_MAP_PROCESSING_LEASE_SECONDS:600}
     neo4j:
       enabled: ${DATA_MAP_NEO4J_ENABLED:false}
       base-url: ${DATA_MAP_NEO4J_URL:http://127.0.0.1:7474}

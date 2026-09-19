@@ -45,7 +45,7 @@ export default function HiveFunctionCatalogPage() {
   }, []);
   const copy = async (text: string) => { await navigator.clipboard.writeText(text); message.success('调用模板已复制'); };
 
-  return <div className="function-catalog-page">
+  return <div className="page-content function-catalog-page">
     <section className="function-catalog-filter">
       <Input allowClear prefix={<SearchOutlined />} value={keyword} placeholder="搜索函数名称" onChange={(event) => { setKeyword(event.target.value); setPage(1); }} />
       <Select allowClear value={database} placeholder="默认数据库" options={databases.map((value) => ({ value, label: value }))} onChange={(value) => { setDatabase(value); setPage(1); }} />

@@ -235,7 +235,7 @@ export default function TaskListPage({
   ];
 
   return (
-    <div className={embedded ? 'data-page task-list-page embedded' : 'data-page task-list-page'}>
+    <div className={embedded ? 'page-content data-page task-list-page embedded' : 'page-content data-page task-list-page'}>
       {!embedded ? <header className="data-page-header">
         <Typography.Title level={2}>任务管理</Typography.Title>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => onCreateTask ? onCreateTask() : navigate('/tasks/new')}>新建任务</Button>

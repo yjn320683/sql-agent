@@ -53,7 +53,7 @@ export default function RealtimeManagedTasksPage({ taskType, workspace = false }
   const reset = () => { const empty = { keyword: '', status: 'all', tableKeyword: '', owner: '', lastOperator: '' }; setQuery(empty); setSubmitted(empty); setPage(1); };
   const ownerOptions = useMemo(() => Array.from(new Set(rows.map((row) => row.owner).filter(Boolean))).map((value) => ({ label: value, value })), [rows]);
 
-  return <div className="realtime-page realtime-sync-tasks-page"><section className="realtime-sync-main-panel">
+  return <div className="page-content realtime-page realtime-sync-tasks-page"><section className="realtime-sync-main-panel">
     {!workspace && <div className="realtime-page-header"><Typography.Title level={4}>实时{label}任务</Typography.Title><Space><Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip><Tooltip title={`新建${label}任务`}><Button aria-label={`新建${label}任务`} type="primary" icon={<PlusOutlined />} onClick={() => openEdit()} /></Tooltip></Space></div>}
     <div className="realtime-sync-filter-section"><div className="realtime-sync-query-filter">
       <div className="realtime-sync-filter-item"><label>任务关键字：</label><Input allowClear placeholder="任务ID / 名称 / 描述" value={query.keyword} onChange={(event) => setQuery({ ...query, keyword: event.target.value })} onPressEnter={() => { setSubmitted(query); setPage(1); }} /></div>

@@ -56,7 +56,7 @@ class GlobalSearchServiceTest {
 
         Map<?, ?> group = (Map<?, ?>) ((List<?>) result.get("groups")).get(0);
         Map<?, ?> item = (Map<?, ?>) ((List<?>) group.get("items")).get(0);
-        assertEquals("/catalog?db=dw&table=orders", item.get("route"));
+        assertEquals("/data-map/catalog?db=dw&table=orders", item.get("route"));
         assertTrue(((List<?>) result.get("partialFailures")).isEmpty());
     }
 }

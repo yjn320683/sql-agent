@@ -124,7 +124,7 @@ export default function OverviewPage() {
   const generatedAt = data?.generatedAt ? formatTime(data.generatedAt) : '';
 
   return (
-    <div className="overview-page">
+    <div className="page-content overview-page">
       <div className="overview-page-head">
         <Typography.Text type="secondary">离线与实时任务的运行概览、异常处置和开发入口</Typography.Text>
         <Space size={10}>

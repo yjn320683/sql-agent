@@ -365,7 +365,7 @@ export default function SessionManagementPage() {
   };
 
   return (
-    <section className="session-management">
+    <section className="page-content session-management">
       <div className="session-management-inner">
         <div className="session-data-surface">
           <div className="session-toolbar">

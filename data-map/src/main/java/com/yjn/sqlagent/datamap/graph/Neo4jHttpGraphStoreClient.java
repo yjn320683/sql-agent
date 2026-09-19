@@ -17,7 +17,7 @@ import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
 import org.springframework.web.client.RestTemplate;
 
-/** 通过 Neo4j 5.26 Query API 执行参数化 Cypher，不要求主工程升级到 Java 17。 */
+/** 通过 transactional HTTP API 执行参数化 Cypher，兼容本地 Neo4j 4.4 与容器 5.x。 */
 @Component
 public class Neo4jHttpGraphStoreClient implements GraphStoreClient {
     private final RestTemplate http;
@@ -41,16 +41,18 @@ public class Neo4jHttpGraphStoreClient implements GraphStoreClient {
     public List<Map<String, Object>> query(String cypher, Map<String, Object> parameters) {
         if (!isConfigured()) throw new GraphStoreUnavailableException("Neo4j 未配置或未启用");
         try {
-            Map<String, Object> body = new LinkedHashMap<>();
-            body.put("statement", cypher);
-            body.put("parameters", parameters == null ? Collections.emptyMap() : parameters);
+            Map<String, Object> statement = new LinkedHashMap<>();
+            statement.put("statement", cypher);
+            statement.put("parameters", parameters == null ? Collections.emptyMap() : parameters);
+            statement.put("resultDataContents", List.of("row"));
+            Map<String, Object> body = Map.of("statements", List.of(statement));
             HttpHeaders headers = new HttpHeaders();
             headers.setContentType(MediaType.APPLICATION_JSON);
             String credentials = properties.getNeo4j().getUsername() + ":" + properties.getNeo4j().getPassword();
             headers.set(HttpHeaders.AUTHORIZATION, "Basic " + Base64.getEncoder()
                     .encodeToString(credentials.getBytes(StandardCharsets.UTF_8)));
             String url = trimSlash(properties.getNeo4j().getBaseUrl()) + "/db/"
-                    + properties.getNeo4j().getDatabase() + "/query/v2";
+                    + properties.getNeo4j().getDatabase() + "/tx/commit";
             JsonNode root = http.postForObject(url, new HttpEntity<>(body, headers), JsonNode.class);
             return rows(root);
         } catch (GraphStoreUnavailableException error) {
@@ -62,14 +64,22 @@ public class Neo4jHttpGraphStoreClient implements GraphStoreClient {
 
     private List<Map<String, Object>> rows(JsonNode root) {
         if (root == null) return Collections.emptyList();
-        JsonNode data = root.path("data");
-        JsonNode fields = data.path("fields");
-        JsonNode values = data.path("values");
+        JsonNode errors = root.path("errors");
+        if (errors.isArray() && errors.size() > 0) {
+            throw new GraphStoreUnavailableException("Neo4j Cypher 执行失败："
+                    + errors.get(0).path("message").asText("unknown error"));
+        }
+        JsonNode results = root.path("results");
+        if (!results.isArray() || results.size() == 0) return Collections.emptyList();
+        JsonNode firstResult = results.get(0);
+        JsonNode fields = firstResult.path("columns");
+        JsonNode values = firstResult.path("data");
         if (!fields.isArray() || !values.isArray()) return Collections.emptyList();
         List<String> names = new ArrayList<>();
         fields.forEach(item -> names.add(item.asText()));
         List<Map<String, Object>> result = new ArrayList<>();
-        for (JsonNode row : values) {
+        for (JsonNode data : values) {
+            JsonNode row = data.path("row");
             Map<String, Object> value = new LinkedHashMap<>();
             for (int index = 0; index < names.size(); index++) {
                 value.put(names.get(index), index < row.size() ? mapper.convertValue(row.get(index), Object.class) : null);

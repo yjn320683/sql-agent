@@ -34,8 +34,10 @@ public class DataMapService {
 
     public Map<String, Object> overview() {
         long generation = outbox.activeGeneration();
+        Map<String,Object> readiness=readiness();
         Map<String,Object> result=new LinkedHashMap<>();
-        result.put("graphConfigured",graph.isConfigured()); result.put("graphAvailable",graph.ping());
+        result.put("graphConfigured",readiness.get("configured")); result.put("graphAvailable",readiness.get("available"));
+        result.put("graphSchemaReady",readiness.get("schemaReady")); result.put("projection",readiness.get("projection"));
         result.put("activeGeneration",generation);
         result.put("assetCount",scalar("MATCH (v:TaskVersion {generation:$generation})-[:READS|WRITES]->(a:Asset) RETURN count(DISTINCT a) AS value",generation));
         result.put("columnCount",scalar("MATCH (c:Column)-[r:DERIVES_TO|USED_BY]-() WHERE r.generation=$generation RETURN count(DISTINCT c) AS value",generation));
@@ -77,9 +79,19 @@ public class DataMapService {
 
     public Map<String,Object> runs(int page,int pageSize){int safePage=Math.max(1,page),safeSize=Math.max(1,Math.min(100,pageSize));List<Map<String,Object>>records=jdbc.queryForList("SELECT * FROM data_map_lineage_run ORDER BY id DESC LIMIT ? OFFSET ?",safeSize,(safePage-1)*safeSize);return Map.of("records",records,"total",count("SELECT COUNT(*) FROM data_map_lineage_run"),"page",safePage,"pageSize",safeSize);}
     public Map<String,Object> coverage(){return Map.of("complete",count("SELECT COUNT(*) FROM data_map_lineage_task_state WHERE parse_status='COMPLETE'"),"partial",count("SELECT COUNT(*) FROM data_map_lineage_task_state WHERE parse_status='PARTIAL'"),"failed",count("SELECT COUNT(*) FROM data_map_lineage_task_state WHERE parse_status='FAILED'"),"pendingProjection",count("SELECT COUNT(*) FROM data_map_graph_outbox WHERE status IN('PENDING','PROCESSING','FAILED')"));}
-    public Map<String,Object> retry(String scope,long taskId){int changed=jdbc.update("UPDATE data_map_graph_outbox SET status='PENDING',available_at=NOW(),last_error=NULL WHERE task_scope=? AND task_id=? AND status='FAILED'",scope.toUpperCase(Locale.ROOT),taskId);return Map.of("accepted",changed>0,"events",changed);}
-    public Map<String,Object> reproject(){outbox.enqueueMissing(1000);int count=scheduler.projectPendingNow();return Map.of("projected",count,"generation",outbox.activeGeneration());}
-    public Map<String,Object> rebuild(){long generation=outbox.beginFullGeneration();return Map.of("accepted",true,"generation",generation,"message","已创建全量图代次，后台投影完整后自动切换");}
+    public Map<String,Object> readiness(){
+        boolean configured=graph.isConfigured(),available=configured&&graph.ping(),schemaReady=false;
+        if(available){
+            try{List<Map<String,Object>>rows=graph.query("SHOW CONSTRAINTS YIELD name WHERE name STARTS WITH 'data_map_' RETURN count(*) AS value",Map.of());schemaReady=!rows.isEmpty()&&number(rows.get(0).get("value"))>=4;}
+            catch(RuntimeException ignored){schemaReady=false;}
+        }
+        Map<String,Object>result=new LinkedHashMap<>();result.put("configured",configured);result.put("available",available);result.put("schemaReady",schemaReady);result.put("activeGeneration",outbox.activeGeneration());result.put("buildingGenerations",outbox.buildingGenerations());result.put("projection",outbox.statusCounts());result.put("ready",configured&&available&&schemaReady);return result;
+    }
+    public Map<String,Object> retry(String scope,long taskId){int changed=jdbc.update("UPDATE data_map_graph_outbox SET status='PENDING',available_at=NOW(),last_error=NULL,locked_by=NULL,locked_at=NULL WHERE task_scope=? AND task_id=? AND status='FAILED'",scope.toUpperCase(Locale.ROOT),taskId);return Map.of("accepted",changed>0,"events",changed);}
+    public Map<String,Object> reproject(){requireGraphReady();outbox.enqueueMissing(1000);int count=scheduler.projectPendingNow();return Map.of("projected",count,"generation",outbox.activeGeneration());}
+    public Map<String,Object> rebuild(){requireGraphReady();if(!outbox.buildingGenerations().isEmpty())throw new DataMapOperationConflictException("已有全量图代次正在构建，请等待完成后再试");long generation=outbox.beginFullGeneration();return Map.of("accepted",true,"generation",generation,"message","已创建全量图代次，后台投影完整后自动切换");}
+
+    private void requireGraphReady(){Map<String,Object>state=readiness();if(!Boolean.TRUE.equals(state.get("ready")))throw new GraphStoreUnavailableException("Neo4j 未就绪，请检查连接和图约束初始化状态");}
 
     private Map<String,Object> tableGraph(String seedKey,String direction,int depth,long generation){
         Map<String,Object>params=Map.of("seed",seedKey,"generation",generation,"limit",EDGE_LIMIT);int relationDepth=depth*2;

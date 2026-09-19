@@ -11407,3 +11407,113 @@ body.managed-sql-is-fullscreen {
   .asset-lineage-content { grid-template-columns: 300px minmax(0, 1fr); }
   .data-map-action-grid { grid-template-columns: 1fr; }
 }
+
+/* 第 10 批：列表与概览页面统一内容边界。编辑器、抽屉和弹窗不套用该基座。 */
+.page-content {
+  width: 100%;
+  min-width: 0;
+  min-height: 100%;
+  box-sizing: border-box;
+  padding: 0 12px 20px;
+  overflow: auto;
+  background: #fff;
+}
+
+.list-toolbar,
+.page-content > .data-toolbar,
+.page-content .realtime-sync-filter-section,
+.page-content .data-map-page-toolbar {
+  min-height: 52px;
+  box-sizing: border-box;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 8px 0;
+  border: 0;
+  border-bottom: 1px solid #e6eaf0;
+  border-radius: 0;
+  background: #fff;
+}
+
+.list-table-section,
+.page-content > .data-panel,
+.page-content .realtime-sync-main-panel,
+.page-content .realtime-sync-table-section {
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  background: #fff;
+}
+
+.list-table-section > .ant-table-wrapper,
+.page-content .data-panel > .ant-table-wrapper,
+.page-content .realtime-sync-table-section > .ant-table-wrapper {
+  min-width: 0;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+}
+
+.page-content .ant-table-container,
+.page-content .ant-table-content,
+.page-content .ant-table-body {
+  border-inline: 0;
+  border-radius: 0;
+}
+
+.page-content.task-list-page.embedded,
+.page-content.realtime-sync-tasks-page,
+.page-content.data-compare-page,
+.page-content.catalog-page,
+.page-content.platform-status-page,
+.page-content.data-map-page {
+  padding-inline: 12px;
+}
+
+/* 覆盖旧工作区的贴边规则：留白只由页面基座提供，表格本身不再重复缩进或补边框。 */
+.app-nav.offline + .app-workspace .page-content.data-page:not(.task-list-page),
+.app-nav.offline + .app-workspace .page-content.task-list-page.embedded {
+  padding-right: 12px;
+  padding-left: 12px;
+}
+
+.app-nav.offline + .app-workspace .page-content.task-list-page.embedded .data-toolbar,
+.page-content.data-compare-page > .data-toolbar.data-compare-toolbar {
+  padding-right: 0;
+  padding-left: 0;
+}
+
+.app-nav.offline + .app-workspace .page-content.task-list-page.embedded .ant-table-wrapper,
+.page-content.data-compare-page > .data-panel > .ant-table-wrapper,
+.page-content .execution-center-panel > .ant-table-wrapper,
+.page-content.session-management .session-data-surface > .ant-table-wrapper,
+.page-content.task-list-page:not(.embedded) > .data-panel > .ant-table-wrapper,
+.page-content.execution-list-page > .data-panel .execution-panel > .ant-table-wrapper,
+.page-content.task-version-union-page > .compact-list-panel > .ant-table-wrapper,
+.page-content .platform-health-panel > .ant-table-wrapper {
+  width: 100%;
+  margin-right: 0;
+  margin-left: 0;
+  border-top: 0;
+}
+
+.page-content .data-page-header h2.ant-typography,
+.page-content .realtime-page-heading h2.ant-typography {
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.data-map-readiness-bar .ant-alert-message { font-size: 13px; }
+
+@media (max-width: 900px) {
+  .page-content { padding-inline: 8px; }
+  .list-toolbar,
+  .page-content > .data-toolbar,
+  .page-content .realtime-sync-filter-section,
+  .page-content .data-map-page-toolbar { align-items: flex-start; flex-wrap: wrap; }
+}

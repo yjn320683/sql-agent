@@ -89,7 +89,7 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const [structure, setStructure] = useState<SqlStructurePreviewVO>();
   const [structureError, setStructureError] = useState('');
   const [structureLoading, setStructureLoading] = useState(false);
-  const [selectedStepNo, setSelectedStepNo] = useState(1);
+  const [selectedStepNo, setSelectedStepNo] = useState(0);
   const [parameterJson, setParameterJson] = useState('{}');
   const [parameterError, setParameterError] = useState('');
   const [renderedStepSql, setRenderedStepSql] = useState('');
@@ -311,7 +311,11 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
     const timer = window.setTimeout(() => {
       setStructureLoading(true);
       void previewSqlStructure({ sql: sqlValue, parameterSchema: parameters, validateParameterValues: false }, controller.signal)
-        .then((result) => { setStructure(result); setStructureError(''); })
+        .then((result) => {
+          setStructure(result); setStructureError('');
+          setSelectedStepNo((current) => result.steps.some((step) => step.stepNo === current)
+            ? current : (result.steps[0]?.stepNo ?? 0));
+        })
         .catch((error) => {
           if ((error as Error).name !== 'AbortError') { setStructure(undefined); setStructureError((error as Error).message); }
         }).finally(() => setStructureLoading(false));

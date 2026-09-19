@@ -27,33 +27,44 @@ public class DataMapProjectionScheduler {
     private final GraphStoreClient graph;
     private final DataMapProperties properties;
     private final JdbcTemplate jdbc;
+    private final List<LineageSnapshotBootstrapper> bootstrappers;
     private final AtomicBoolean running = new AtomicBoolean();
+    private final AtomicBoolean graphAvailable = new AtomicBoolean();
+    private final AtomicBoolean schemaInitialized = new AtomicBoolean();
     private final String worker = ManagementFactory.getRuntimeMXBean().getName();
 
     public DataMapProjectionScheduler(LineageOutboxService outbox, DataMapGraphProjector projector,
-                                      GraphStoreClient graph, DataMapProperties properties, JdbcTemplate jdbc) {
+                                      GraphStoreClient graph, DataMapProperties properties, JdbcTemplate jdbc,
+                                      List<LineageSnapshotBootstrapper> bootstrappers) {
         this.outbox=outbox;this.projector=projector;this.graph=graph;this.properties=properties;this.jdbc=jdbc;
+        this.bootstrappers = bootstrappers == null ? List.of() : bootstrappers;
     }
 
     @PostConstruct
     void initialize() {
-        if (!properties.isEnabled() || !graph.isConfigured()) return;
-        try { projector.initializeSchema(); }
-        catch (RuntimeException error) { LOG.warn("数据地图 Neo4j Schema 初始化暂不可用：{}", safe(error)); }
+        if (!properties.isEnabled()) return;
+        try { outbox.recoverStaleProcessing(); }
+        catch (RuntimeException error) { LOG.warn("数据地图超时投影事件回收失败：{}", safe(error)); }
+        ensureGraphReady();
     }
 
     @Scheduled(initialDelayString="${app.data-map.initial-delay-ms:15000}",
             fixedDelayString="${app.data-map.incremental-delay-ms:60000}")
     public void incremental() {
         if (!properties.isEnabled() || !graph.isConfigured() || !running.compareAndSet(false, true)) return;
-        long runId = begin("INCREMENTAL", outbox.activeGeneration());
+        long runId = 0L;
         try {
+            if (!ensureGraphReady()) return;
+            runId = begin("INCREMENTAL", outbox.activeGeneration());
+            outbox.recoverStaleProcessing();
+            backfillSnapshots();
             outbox.enqueueMissing(1000);
             DrainStats stats = drain(null);
             activateCompletedGenerations();
             finish(runId, "SUCCEEDED", stats, null);
         } catch (RuntimeException error) {
-            finish(runId, "FAILED", new DrainStats(), safe(error));
+            if (!graphReachable()) { graphAvailable.set(false); schemaInitialized.set(false); }
+            if (runId > 0L) finish(runId, "FAILED", new DrainStats(), safe(error));
             LOG.warn("数据地图增量投影失败：{}", safe(error));
         } finally { running.set(false); }
     }
@@ -61,9 +72,13 @@ public class DataMapProjectionScheduler {
     @Scheduled(cron="${app.data-map.full-cron:0 30 2 * * *}", zone="Asia/Shanghai")
     public void full() {
         if (!properties.isEnabled() || !graph.isConfigured() || !running.compareAndSet(false, true)) return;
-        long generation = outbox.beginFullGeneration();
-        long runId = begin("FULL", generation);
+        long runId = 0L;
         try {
+            if (!ensureGraphReady()) return;
+            backfillSnapshots();
+            long generation = outbox.beginFullGeneration();
+            runId = begin("FULL", generation);
+            outbox.recoverStaleProcessing();
             DrainStats stats = drain(generation);
             boolean active = outbox.activateIfComplete(generation);
             if (active) {
@@ -73,15 +88,59 @@ public class DataMapProjectionScheduler {
             finish(runId, active ? "SUCCEEDED" : "PARTIAL", stats,
                     active ? null : "存在未成功投影的当前任务，未切换生效代次");
         } catch (RuntimeException error) {
-            finish(runId, "FAILED", new DrainStats(), safe(error));
+            if (!graphReachable()) { graphAvailable.set(false); schemaInitialized.set(false); }
+            if (runId > 0L) finish(runId, "FAILED", new DrainStats(), safe(error));
             LOG.warn("数据地图全量投影失败：{}", safe(error));
         } finally { running.set(false); }
     }
 
     public int projectPendingNow() {
+        if (!ensureGraphReady()) throw new IllegalStateException("Neo4j 图存储尚未就绪");
+        outbox.recoverStaleProcessing();
+        backfillSnapshots();
+        outbox.enqueueMissing(1000);
         DrainStats stats = drain(null);
         activateCompletedGenerations();
         return stats.projected;
+    }
+
+    private boolean ensureGraphReady() {
+        if (!properties.isEnabled() || !graph.isConfigured()) return false;
+        boolean available = graphReachable();
+        if (!available) {
+            graphAvailable.set(false);
+            schemaInitialized.set(false);
+            return false;
+        }
+        if (graphAvailable.get() && schemaInitialized.get()) return true;
+        try {
+            projector.initializeSchema();
+            graphAvailable.set(true);
+            schemaInitialized.set(true);
+            LOG.info("数据地图 Neo4j 已连接，图约束和索引已确认");
+            return true;
+        } catch (RuntimeException error) {
+            graphAvailable.set(false);
+            schemaInitialized.set(false);
+            LOG.warn("数据地图 Neo4j Schema 初始化暂不可用：{}", safe(error));
+            return false;
+        }
+    }
+
+    private boolean graphReachable() {
+        try { return graph.ping(); }
+        catch (RuntimeException ignored) { return false; }
+    }
+
+    private void backfillSnapshots() {
+        for (LineageSnapshotBootstrapper bootstrapper : bootstrappers) {
+            try {
+                int count = bootstrapper.backfill(20);
+                if (count > 0) LOG.info("历史任务血缘快照已补齐 {} 个", count);
+            } catch (RuntimeException error) {
+                LOG.warn("历史任务血缘快照回填失败，本轮继续处理已有快照：{}", safe(error));
+            }
+        }
     }
 
     private void activateCompletedGenerations() {

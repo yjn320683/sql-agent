@@ -1,5 +1,7 @@
 package com.yjn.sqlagent.datamap.store;
 
+import com.yjn.sqlagent.datamap.config.DataMapProperties;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -9,7 +11,11 @@ import org.springframework.stereotype.Service;
 @Service
 public class LineageOutboxService {
     private final JdbcTemplate jdbc;
-    public LineageOutboxService(JdbcTemplate jdbc) { this.jdbc = jdbc; }
+    private final DataMapProperties properties;
+    public LineageOutboxService(JdbcTemplate jdbc, DataMapProperties properties) {
+        this.jdbc = jdbc;
+        this.properties = properties;
+    }
 
     public void enqueue(long snapshotId, String scope, long taskId, Long versionId, int versionNo) {
         long generation = activeGeneration();
@@ -122,21 +128,78 @@ public class LineageOutboxService {
                 + "WHERE id=? AND status='PENDING' AND available_at<=NOW()", worker, id) == 1;
     }
 
+    /** 回收因进程退出而遗留的 PROCESSING 事件；租约内事件不会被重复领取。 */
+    public Map<String, Integer> recoverStaleProcessing() {
+        int leaseSeconds = Math.max(30, properties.getProcessingLeaseSeconds());
+        int maxAttempts = Math.max(1, properties.getMaxAttempts());
+        int failed = jdbc.update("UPDATE data_map_graph_outbox SET status='FAILED',locked_by=NULL,locked_at=NULL,"
+                        + "last_error=CONCAT('投影处理超过租约且已达到最大重试次数（',attempts,'/',?,'）') "
+                        + "WHERE status='PROCESSING' AND locked_at<TIMESTAMPADD(SECOND,-?,NOW()) AND attempts>=?",
+                maxAttempts, leaseSeconds, maxAttempts);
+        int requeued = jdbc.update("UPDATE data_map_graph_outbox SET status='PENDING',available_at=NOW(),locked_by=NULL,locked_at=NULL,"
+                        + "last_error=CONCAT('投影处理超过租约，已自动回收（第 ',attempts,' 次）') "
+                        + "WHERE status='PROCESSING' AND locked_at<TIMESTAMPADD(SECOND,-?,NOW()) AND attempts<?",
+                leaseSeconds, maxAttempts);
+        if (failed > 0) {
+            jdbc.update("UPDATE data_map_lineage_task_state s JOIN data_map_graph_outbox o "
+                    + "ON s.task_scope=o.task_scope AND s.task_id=o.task_id "
+                    + "AND s.snapshot_id=o.snapshot_id AND s.generation_no=o.generation_no "
+                    + "SET s.projection_status='FAILED',s.last_error=o.last_error WHERE o.status='FAILED' "
+                    + "AND o.last_error LIKE '投影处理超过租约%'");
+        }
+        Map<String, Integer> result = new LinkedHashMap<>();
+        result.put("requeued", requeued);
+        result.put("failed", failed);
+        return result;
+    }
+
+    public Map<String, Long> statusCounts() {
+        Map<String, Long> result = new LinkedHashMap<>();
+        result.put("pending", statusCount("PENDING"));
+        result.put("processing", statusCount("PROCESSING"));
+        result.put("stale", staleProcessingCount());
+        result.put("failed", statusCount("FAILED"));
+        result.put("succeeded", statusCount("SUCCEEDED"));
+        return result;
+    }
+
+    private long statusCount(String status) {
+        Long value = jdbc.queryForObject("SELECT COUNT(*) FROM data_map_graph_outbox WHERE status=?", Long.class, status);
+        return value == null ? 0L : value;
+    }
+
+    private long staleProcessingCount() {
+        Long value = jdbc.queryForObject("SELECT COUNT(*) FROM data_map_graph_outbox WHERE status='PROCESSING' "
+                        + "AND locked_at<TIMESTAMPADD(SECOND,-?,NOW())", Long.class,
+                Math.max(30, properties.getProcessingLeaseSeconds()));
+        return value == null ? 0L : value;
+    }
+
     public void succeeded(long id, String scope, long taskId, long revision) {
-        jdbc.update("UPDATE data_map_graph_outbox SET status='SUCCEEDED',projected_at=NOW(),last_error=NULL WHERE id=?", id);
+        int changed = jdbc.update("UPDATE data_map_graph_outbox SET status='SUCCEEDED',projected_at=NOW(),last_error=NULL,locked_by=NULL,locked_at=NULL "
+                + "WHERE id=? AND status='PROCESSING'", id);
+        if (changed != 1) return;
         jdbc.update("UPDATE data_map_projection_generation g JOIN data_map_graph_outbox o ON o.generation_no=g.generation_no "
                 + "SET g.projected_count=g.projected_count+1 WHERE o.id=?", id);
-        jdbc.update("UPDATE data_map_lineage_task_state SET projection_status='PROJECTED',graph_revision=?,"
-                + "last_projected_at=NOW(),last_error=NULL WHERE task_scope=? AND task_id=?", revision, scope, taskId);
+        jdbc.update("UPDATE data_map_lineage_task_state s JOIN data_map_graph_outbox o "
+                + "ON o.id=? AND s.task_scope=o.task_scope AND s.task_id=o.task_id "
+                + "AND s.snapshot_id=o.snapshot_id AND s.generation_no=o.generation_no "
+                + "SET s.projection_status='PROJECTED',s.graph_revision=?,s.last_projected_at=NOW(),s.last_error=NULL "
+                + "WHERE s.task_scope=? AND s.task_id=?", id, revision, scope, taskId);
     }
 
     public void failed(long id, String scope, long taskId, String error, int attempts, int maxAttempts) {
         String status = attempts >= maxAttempts ? "FAILED" : "PENDING";
         int delay = Math.min(300, Math.max(5, attempts * attempts * 5));
-        jdbc.update("UPDATE data_map_graph_outbox SET status=?,available_at=TIMESTAMPADD(SECOND,?,NOW()),last_error=? WHERE id=?",
+        int changed = jdbc.update("UPDATE data_map_graph_outbox SET status=?,available_at=TIMESTAMPADD(SECOND,?,NOW()),last_error=?,locked_by=NULL,locked_at=NULL "
+                        + "WHERE id=? AND status='PROCESSING'",
                 status, delay, limit(error), id);
-        jdbc.update("UPDATE data_map_lineage_task_state SET projection_status='FAILED',last_error=? "
-                + "WHERE task_scope=? AND task_id=?", limit(error), scope, taskId);
+        if (changed != 1) return;
+        jdbc.update("UPDATE data_map_lineage_task_state s JOIN data_map_graph_outbox o "
+                + "ON o.id=? AND s.task_scope=o.task_scope AND s.task_id=o.task_id "
+                + "AND s.snapshot_id=o.snapshot_id AND s.generation_no=o.generation_no "
+                + "SET s.projection_status='FAILED',s.last_error=? WHERE s.task_scope=? AND s.task_id=?",
+                id, limit(error), scope, taskId);
     }
 
     private String limit(String value) {

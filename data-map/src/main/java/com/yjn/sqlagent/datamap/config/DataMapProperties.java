@@ -8,6 +8,7 @@ public class DataMapProperties {
     private boolean enabled = true;
     private int projectionBatchSize = 50;
     private int maxAttempts = 5;
+    private int processingLeaseSeconds = 600;
     private final Neo4j neo4j = new Neo4j();
 
     public boolean isEnabled() { return enabled; }
@@ -16,6 +17,10 @@ public class DataMapProperties {
     public void setProjectionBatchSize(int projectionBatchSize) { this.projectionBatchSize = projectionBatchSize; }
     public int getMaxAttempts() { return maxAttempts; }
     public void setMaxAttempts(int maxAttempts) { this.maxAttempts = maxAttempts; }
+    public int getProcessingLeaseSeconds() { return processingLeaseSeconds; }
+    public void setProcessingLeaseSeconds(int processingLeaseSeconds) {
+        this.processingLeaseSeconds = Math.max(30, processingLeaseSeconds);
+    }
     public Neo4j getNeo4j() { return neo4j; }
 
     public static class Neo4j {

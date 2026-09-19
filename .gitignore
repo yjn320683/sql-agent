@@ -16,12 +16,15 @@ docs/
 !/docs/testing/results/
 /docs/testing/results/*
 !/docs/testing/results/2026-09-17-sql-table-lineage-comparison.txt
+!/docs/testing/results/2026-09-18-usability-batches-1-10-self-test.md
 
 node_modules/
 dist/
 target/
 build/
 *.tsbuildinfo
+front/test-results/
+front/playwright-report/
 
 .venv/
 venv/

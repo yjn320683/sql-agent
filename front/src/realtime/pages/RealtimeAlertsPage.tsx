@@ -80,7 +80,7 @@ export default function RealtimeAlertsPage() {
     setEditingRule(rule); ruleForm.setFieldsValue({ ...rule, enabled: Boolean(rule.enabled) });
   };
 
-  return <div className="realtime-page realtime-sync-tasks-page realtime-alerts-page">
+  return <div className="page-content realtime-page realtime-sync-tasks-page realtime-alerts-page">
     <section className="realtime-sync-main-panel">
       <div className="realtime-page-heading">
         <Typography.Text type="secondary">发现、确认、静默并跟踪恢复，不重复刷屏</Typography.Text>

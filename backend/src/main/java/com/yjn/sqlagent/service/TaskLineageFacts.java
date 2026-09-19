@@ -75,6 +75,19 @@ public final class TaskLineageFacts {
                 Boolean.TRUE.equals(payload.get("complete")));
     }
 
+    public static TaskLineageFacts failure(String code, String message) {
+        Map<String, Object> diagnostic = new LinkedHashMap<>();
+        diagnostic.put("code", code);
+        diagnostic.put("severity", "ERROR");
+        diagnostic.put("message", message);
+        diagnostic.put("line", 1);
+        diagnostic.put("column", 0);
+        diagnostic.put("startOffset", 0);
+        diagnostic.put("endOffset", 0);
+        return new TaskLineageFacts(Collections.emptyList(), Collections.emptyList(),
+                Collections.singletonList(diagnostic), Collections.emptyList(), 0, false);
+    }
+
     public Map<String, Object> toJson() {
         Map<String, Object> result = new LinkedHashMap<>();
         result.put("statementCount", statementCount);

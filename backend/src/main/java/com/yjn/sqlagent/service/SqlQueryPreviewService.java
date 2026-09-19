@@ -40,10 +40,17 @@ public class SqlQueryPreviewService {
     private Map<String, Object> selectStep(Map<String, Object> structure, int stepNo) {
         Object value = structure.get("steps");
         if (!(value instanceof List<?>)) throw new IllegalArgumentException("SQL中没有可预览的Step");
+        Map<String, Object> onlyStep = null;
         for (Object item : (List<?>) value) {
             if (!(item instanceof Map<?, ?>)) continue;
             Map<String, Object> step = (Map<String, Object>) item;
+            onlyStep = onlyStep == null ? step : Map.of();
             if (Integer.parseInt(String.valueOf(step.get("stepNo"))) == stepNo) return step;
+        }
+        // 兼容旧前端默认请求 Step 1 的单语句脚本；多 Step 脚本仍严格按编号选择。
+        if (stepNo == 1 && onlyStep != null && !onlyStep.isEmpty()
+                && Integer.parseInt(String.valueOf(onlyStep.get("stepNo"))) == 0) {
+            return onlyStep;
         }
         throw new IllegalArgumentException("未找到Step " + stepNo);
     }

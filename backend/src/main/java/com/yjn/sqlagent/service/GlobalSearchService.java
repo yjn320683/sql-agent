@@ -201,7 +201,7 @@ public class GlobalSearchService {
             item.put("subtitle", String.valueOf(hive.getOrDefault("comment", hive.getOrDefault("tableType", "Hive 表"))));
             item.put("status", hive.get("tableType"));
             item.put("mode", "offline");
-            item.put("route", "/catalog?db=" + encode(db) + "&table=" + encode(table));
+            item.put("route", "/data-map/catalog?db=" + encode(db) + "&table=" + encode(table));
             item.put("updatedAt", null);
             items.add(item);
         }
