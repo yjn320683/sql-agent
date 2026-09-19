@@ -11,9 +11,12 @@ import org.springframework.stereotype.Service;
 @Service
 public class PlatformHealthService {
     private final AgentProxyService agentProxyService;
+    private final SchemaMigrationStatusService schemaMigrationStatusService;
 
-    public PlatformHealthService(AgentProxyService agentProxyService) {
+    public PlatformHealthService(AgentProxyService agentProxyService,
+                                 SchemaMigrationStatusService schemaMigrationStatusService) {
         this.agentProxyService = agentProxyService;
+        this.schemaMigrationStatusService = schemaMigrationStatusService;
     }
 
     public Map<String, Object> health() {
@@ -42,6 +45,12 @@ public class PlatformHealthService {
             missingReasons.add("agent_unavailable");
         }
 
+        Map<String, Object> schema = schemaMigrationStatusService.status();
+        boolean schemaCompatible = Boolean.TRUE.equals(schema.get("compatible"));
+        dependencies.add(dependency("databaseSchema", true, schemaCompatible, 0,
+                schemaCompatible ? null : "database_schema_incompatible", String.valueOf(schema.get("message")), schema));
+        if (!schemaCompatible) missingReasons.add("database_schema_incompatible");
+
         boolean complete = nestedComplete && !dependencies.isEmpty()
                 && dependencies.stream().allMatch(item -> Boolean.TRUE.equals(item.get("reachable")));
         Map<String, Object> result = new LinkedHashMap<>();
@@ -65,6 +74,12 @@ public class PlatformHealthService {
 
     private Map<String, Object> dependency(String name, boolean configured, boolean reachable,
                                            long latencyMs, String errorCode, String message) {
+        return dependency(name, configured, reachable, latencyMs, errorCode, message, Collections.emptyMap());
+    }
+
+    private Map<String, Object> dependency(String name, boolean configured, boolean reachable,
+                                           long latencyMs, String errorCode, String message,
+                                           Map<String, Object> details) {
         Map<String, Object> item = new LinkedHashMap<>();
         item.put("name", name);
         item.put("configured", configured);
@@ -72,7 +87,7 @@ public class PlatformHealthService {
         item.put("latencyMs", latencyMs);
         if (errorCode != null) item.put("errorCode", errorCode);
         if (message != null) item.put("message", message);
-        item.put("details", Collections.emptyMap());
+        item.put("details", details == null ? Collections.emptyMap() : details);
         return item;
     }
 

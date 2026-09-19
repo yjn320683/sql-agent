@@ -19,6 +19,7 @@ class Settings:
     sql_agent_db_uri: str
     hive_server2_uri: str
     task_execution_log_dir: str
+    backend_base_url: str = ""
 
 
 @lru_cache
@@ -49,4 +50,5 @@ def get_settings() -> Settings:
         sql_agent_db_uri=os.environ.get("SQL_AGENT_DB_URI", "").strip(),
         hive_server2_uri=os.environ.get("HIVE_SERVER2_URI", "").strip(),
         task_execution_log_dir=task_execution_log_dir,
+        backend_base_url=os.environ.get("SQL_AGENT_BACKEND_URL", "http://127.0.0.1:8382").strip().rstrip("/"),
     )

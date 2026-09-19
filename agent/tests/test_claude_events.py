@@ -37,7 +37,9 @@ class ClaudeEventsTests(unittest.TestCase):
         )
         mapped = mapper.map_message_events(assistant_msg)
         self.assertEqual("proposal", mapped[0]["event"])
-        self.assertEqual("select 2", json.loads(mapped[0]["data"])["after"])
+        payload = json.loads(mapped[0]["data"])
+        self.assertEqual("select 2", payload["after"])
+        self.assertEqual("toolu_proposal", payload["proposalId"])
 
     def test_ask_user_question_result_is_not_exposed_as_error(self) -> None:
         mapper = events.EventMapper()

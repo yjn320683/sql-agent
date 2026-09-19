@@ -10,6 +10,8 @@ from sql_agent_mcp_server.domains.hive_execution.schemas import (
     HiveFunctionDetailResponse,
     HiveFunctionSearchRequest,
     HiveFunctionSearchResponse,
+    HivePreviewRequest,
+    HivePreviewResponse,
     HiveSqlRequest,
     HiveValidationResponse,
 )
@@ -67,6 +69,21 @@ class HiveExecutionService:
             complete=not result.truncated,
             missingReasons=["plan_text_compacted"] if result.truncated else [],
             warnings=warnings,
+        )
+
+    def preview(self, request: HivePreviewRequest) -> HivePreviewResponse:
+        result = self.adapter.preview_query(
+            request.sql, default_db=request.default_db, limit=request.limit,
+            timeout_seconds=request.timeout_seconds,
+        )
+        return HivePreviewResponse(
+            source=self.adapter.source,
+            defaultDb=result.default_db,
+            columns=result.columns,
+            rows=result.rows,
+            rowCount=len(result.rows),
+            truncated=result.truncated,
+            elapsedMs=result.elapsed_ms,
         )
 
     def search_functions(self, request: HiveFunctionSearchRequest) -> HiveFunctionSearchResponse:

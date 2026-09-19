@@ -18,9 +18,12 @@ class RealtimeSchemaContractTest {
             "rt_project", "rt_task", "rt_task_version", "rt_sync_task_config",
             "rt_sync_task_table_mapping", "rt_task_param", "rt_server", "rt_task_instance",
             "rt_task_operation", "rt_task_change_log", "rt_alert", "rt_paimon_business_domain",
+            "rt_asset_business_domain_relation",
+            "rt_alert_rule", "rt_alert_rule_state",
             "rt_realtime_table", "rt_realtime_table_column", "rt_task_table_reference",
             "rt_compute_task_config", "rt_export_task_config", "rt_export_task_table_mapping",
-            "rt_sync_progress_snapshot", "rt_sync_dirty_record", "rt_schema_change_event");
+            "rt_sync_progress_snapshot", "rt_sync_dirty_record", "rt_schema_change_event",
+            "rt_realtime_table_schema_version");
 
     @Test
     void schemaContainsUnifiedRealtimeTablesAndPrunedFields() throws Exception {
@@ -30,12 +33,18 @@ class RealtimeSchemaContractTest {
         while (matcher.find()) tables.add(matcher.group(1));
 
         assertEquals(REQUIRED_TABLES, tables.stream().collect(Collectors.toSet()));
-        assertEquals(21, tables.size());
+        assertEquals(25, tables.size());
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_lineage_snapshot"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_lineage_relation"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_realtime_table_schema_version"));
         assertTrue(schema.contains("managed_flag TINYINT(1) NOT NULL DEFAULT 1"));
         assertTrue(schema.contains("idx_task_instance_managed_status"));
         assertTrue(schema.contains("idx_task_instance_task_mode_create"));
         assertTrue(schema.contains("idx_task_instance_yarn_application"));
         assertTrue(schema.contains("idx_task_instance_task_mode_status"));
+        assertTrue(schema.contains("source_instance_id BIGINT NULL"));
+        assertTrue(schema.contains("debug_report_json LONGTEXT NULL"));
+        assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_diagnostic_report"));
         assertTrue(schema.contains("idx_task_operation_instance"));
         assertTrue(schema.contains("idx_task_change_log_instance"));
         assertFalse(schema.contains("CREATE TABLE IF NOT EXISTS rt_job_instance"));
@@ -52,11 +61,26 @@ class RealtimeSchemaContractTest {
         assertTrue(schema.contains("'sync','flink_conf','high-availability.type'"));
         assertTrue(schema.contains("INSERT IGNORE INTO rt_paimon_business_domain"));
         assertTrue(schema.contains("realtime_table_id BIGINT NULL"));
+        assertTrue(schema.contains("asset_key_hash CHAR(64) NOT NULL"));
+        assertTrue(schema.contains("UNIQUE KEY uk_asset_business_domain (asset_type,asset_key_hash)"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_compute_task_config"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_export_task_config"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_progress_snapshot"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_dirty_record"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_schema_change_event"));
+        assertTrue(schema.contains("uk_alert_active_fingerprint"));
+        assertTrue(schema.contains("'CHECKPOINT_FAILURE','Checkpoint 连续失败'"));
+    }
+
+    @Test
+    void diagnosticsRecoveryDebugUpgradeIsIdempotentBySchemaInspection() throws Exception {
+        String upgrade = resource("db/upgrade-20260916-diagnostics-recovery-debug.sql");
+        assertTrue(upgrade.contains("information_schema.columns"));
+        assertTrue(upgrade.contains("source_execution_id"));
+        assertTrue(upgrade.contains("source_instance_id"));
+        assertTrue(upgrade.contains("debug_report_json"));
+        assertTrue(upgrade.contains("idx_task_execution_parent"));
+        assertTrue(upgrade.contains("idx_task_instance_source"));
     }
 
     @Test
@@ -117,6 +141,14 @@ class RealtimeSchemaContractTest {
         assertFalse(upgrade.contains("UPDATE rt_sync_task_config"));
         assertFalse(upgrade.contains("UPDATE rt_task_instance"));
         assertTrue(resource("db/upgrade-20260911-add-sync-precommit-compact.sql").contains("'precommit-compact'"));
+        String metadataPrefixUpgrade = resource("db/upgrade-20260917-sync-metadata-prefix.sql");
+        assertTrue(metadataPrefixUpgrade.contains("'__meta_op_ts'"));
+        assertTrue(schemaContainsMetadataPrefixDefault());
+    }
+
+    private boolean schemaContainsMetadataPrefixDefault() throws Exception {
+        return resource("db/realtime_sync_schema.sql")
+                .contains("'sequence.field','主键表 Sequence 字段','__meta_op_ts'");
     }
 
     private String resource(String path) throws Exception {

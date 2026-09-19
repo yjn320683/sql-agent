@@ -246,28 +246,13 @@ def test_workspace_function_catalog_uses_hiveserver2_contract(monkeypatch) -> No
 
 
 def test_workspace_task_lineage_reads_saved_sql_and_validates_metastore(monkeypatch) -> None:
-    task_service = SimpleNamespace(get_task=lambda task_id: {
-        "task": {
-            "id": task_id,
-            "name": "订单汇总",
-            "sql": "insert overwrite table dw.summary select * from ods.orders",
-        }
+    monkeypatch.setattr(workspace, "get_java_task_lineage", lambda task_id, version_no, default_db: {
+        "ok": True, "taskId": task_id, "taskName": "订单汇总",
+        "source": "java-parse-sql+hive-metastore", "complete": True,
+        "inputs": [{"qualifiedName": "ods.orders", "validationStatus": "EXISTS"}],
+        "outputs": [{"qualifiedName": "dw.summary", "validationStatus": "EXISTS"}],
+        "warnings": [], "missingReasons": [], "ctes": [], "statementCount": 1,
     })
-
-    class MetadataService:
-        def get_table(self, request):
-            if request.table == "orders":
-                return TableResponse(
-                    source="hive-metastore",
-                    table=TableMetadata(db="ods", table="orders", tableType="EXTERNAL_TABLE"),
-                )
-            return TableResponse(
-                source="hive-metastore",
-                table=TableMetadata(db="dw", table="summary", tableType="MANAGED_TABLE"),
-            )
-
-    monkeypatch.setattr(workspace, "_task_service", lambda: task_service)
-    monkeypatch.setattr(workspace, "_metadata_service", lambda: MetadataService())
 
     result = asyncio.run(workspace.get_task_lineage(9, default_db="default"))
 
@@ -275,7 +260,7 @@ def test_workspace_task_lineage_reads_saved_sql_and_validates_metastore(monkeypa
     assert result["inputs"][0]["qualifiedName"] == "ods.orders"
     assert result["inputs"][0]["validationStatus"] == "EXISTS"
     assert result["outputs"][0]["qualifiedName"] == "dw.summary"
-    assert result["source"] == "sqlglot+hive-metastore"
+    assert result["source"] == "java-parse-sql+hive-metastore"
     assert result["complete"] is True
 
 
@@ -311,13 +296,19 @@ def test_workspace_task_quality_combines_real_service_contracts(monkeypatch) -> 
             )
 
     monkeypatch.setattr(workspace, "_task_service", lambda: task_service)
-    monkeypatch.setattr(workspace, "_metadata_service", lambda: MetadataService())
     monkeypatch.setattr(workspace, "_execution_service", lambda: ExecutionService())
+    monkeypatch.setattr(workspace, "get_java_task_lineage", lambda task_id, version_no, default_db: {
+        "ok": True, "taskId": task_id, "taskName": "订单质量检查",
+        "source": "java-parse-sql+hive-metastore", "complete": True,
+        "inputs": [{"qualifiedName": "ods.orders", "validationStatus": "EXISTS", "partitionKeys": ["dt"]}],
+        "outputs": [{"qualifiedName": "dw.summary", "validationStatus": "EXISTS", "partitionKeys": []}],
+        "warnings": [], "missingReasons": [], "ctes": [], "statementCount": 1,
+    })
 
     result = asyncio.run(workspace.check_task_quality(11, default_db="default"))
 
     assert result["taskId"] == 11
-    assert result["source"] == "sqlglot+hive-metastore+hiveserver2"
+    assert result["source"] == "java-parse-sql+hive-metastore+hiveserver2"
     assert result["status"] == "PASSED_WITH_WARNINGS"
     assert result["checks"]["metadata"] == {
         "source": "hive-metastore", "checked": 2, "exists": 2, "missing": 0, "unknown": 0,
@@ -328,22 +319,15 @@ def test_workspace_task_quality_combines_real_service_contracts(monkeypatch) -> 
 
 
 def test_workspace_task_dependencies_scan_saved_tasks(monkeypatch) -> None:
-    tasks = [
-        {"id": 1, "name": "上游", "sql": "insert overwrite table dwd.orders select * from ods.orders"},
-        {"id": 2, "name": "目标", "sql": "insert overwrite table dw.summary select * from dwd.orders"},
-        {"id": 3, "name": "下游", "sql": "insert overwrite table ads.report select * from dw.summary"},
-    ]
-    task_service = SimpleNamespace(
-        get_task=lambda task_id: {"task": next(item for item in tasks if item["id"] == task_id)},
-        list_tasks=lambda limit, offset: {
-            "items": tasks[:limit], "total": len(tasks), "limit": limit, "offset": offset,
-        },
-    )
-    monkeypatch.setattr(workspace, "_task_service", lambda: task_service)
+    monkeypatch.setattr(workspace, "get_java_task_dependencies", lambda task_id, version_no, default_db: {
+        "source": "sql-agent-db+java-parse-sql", "complete": True,
+        "directUpstream": [{"taskId": 1}], "directDownstream": [{"taskId": 3}],
+        "scannedTaskCount": 3,
+    })
 
     result = asyncio.run(workspace.get_task_dependencies(2, default_db="default", limit=500))
 
-    assert result["source"] == "sql-agent-db+sqlglot"
+    assert result["source"] == "sql-agent-db+java-parse-sql"
     assert result["complete"] is True
     assert result["directUpstream"][0]["taskId"] == 1
     assert result["directDownstream"][0]["taskId"] == 3
@@ -372,7 +356,7 @@ def test_workspace_validate_and_explain_read_exact_saved_task_sql(monkeypatch) -
         def explain(self, request):
             captured.append(request.sql)
             return HiveExplainResponse(
-                source="hiveserver2", planText="Stage-1", defaultDb="dw", compilationMs=15,
+                source="hiveserver2", planText="Stage-1\n  Cartesian Product", defaultDb="dw", compilationMs=15,
             )
 
     monkeypatch.setattr(workspace, "_task_service", lambda: task_service)
@@ -382,7 +366,13 @@ def test_workspace_validate_and_explain_read_exact_saved_task_sql(monkeypatch) -
     explain = asyncio.run(workspace.explain_task_sql(7, default_db="dw", extended=False))
 
     assert validation["valid"] is True
-    assert explain["planText"] == "Stage-1"
+    assert validation["steps"] == [{
+        "stepNo": 1, "stepName": "read-orders", "valid": True, "errors": [], "warnings": [],
+    }]
+    assert explain["planText"] == "Stage-1\n  Cartesian Product"
+    assert explain["risks"][0]["code"] == "CARTESIAN_JOIN"
+    assert explain["risks"][0]["stepNo"] == 1
+    assert explain["risks"][0]["evidence"] == "Cartesian Product"
     assert captured == [
         "select 20 as n from dw.orders",
         "select 20 as n from dw.orders",

@@ -176,6 +176,7 @@ export function dispatchFrame(frame: string, cb: StreamCallbacks): string | unde
       message?: string;
       semanticType?: ToolResultPayload['semanticType'];
       target?: string;
+      proposalId?: string;
       kind?: string;
       before?: string;
       after?: string;
@@ -228,6 +229,7 @@ export function dispatchFrame(frame: string, cb: StreamCallbacks): string | unde
       break;
     case 'proposal':
       cb.onProposal?.({
+        proposalId: payload.proposalId,
         target: payload.target ?? '当前页面',
         kind: payload.kind ?? 'FORM',
         before: payload.before,

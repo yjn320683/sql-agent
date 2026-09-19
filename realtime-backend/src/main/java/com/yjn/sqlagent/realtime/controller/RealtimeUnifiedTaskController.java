@@ -7,6 +7,7 @@ import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.repository.RealtimeTaskDefinitionRepository;
 import com.yjn.sqlagent.realtime.service.RealtimeRuntimeService;
+import com.yjn.sqlagent.realtime.service.RealtimeDiagnosticReportService;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncConfigValidator;
 import com.yjn.sqlagent.realtime.service.RealtimeSyncTargetValidationService;
 import com.yjn.sqlagent.realtime.service.RealtimeTaskDefinitionService;
@@ -23,11 +24,14 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 /** 实时同步、计算和出仓任务的统一入口。 */
 @RestController
 @RequestMapping("/v1/api/tasks")
 public class RealtimeUnifiedTaskController {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeUnifiedTaskController.class);
     private static final int MAX_FILTER_KEYWORD_LENGTH = 200;
     private final RealtimeSyncRepository repository;
     private final RealtimeRuntimeService runtime;
@@ -36,6 +40,7 @@ public class RealtimeUnifiedTaskController {
     private final RealtimeActorProvider actors;
     @Autowired private RealtimeTaskDefinitionService definitions;
     @Autowired private RealtimeTaskDefinitionRepository definitionRepository;
+    @Autowired private RealtimeDiagnosticReportService diagnosticReports;
 
     public RealtimeUnifiedTaskController(RealtimeSyncRepository repository, RealtimeRuntimeService runtime,
             RealtimeSyncConfigValidator validator, RealtimeSyncTargetValidationService targetValidator,
@@ -85,8 +90,14 @@ public class RealtimeUnifiedTaskController {
         String actor = actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) return RealtimeResponse.success(definitions.create(input, actor));
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, null);
-        return RealtimeResponse.success(repository.createTask(request, actor));
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
+        long taskId = repository.createTask(request, actor);
+        LOG.info("sync_save_total operation=create taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                taskId, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
+        return RealtimeResponse.success(taskId);
     }
 
     @PostMapping("/{id}/update")
@@ -94,8 +105,14 @@ public class RealtimeUnifiedTaskController {
         String actor = actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.update(id,input,actor); return RealtimeResponse.success(id); }
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, id);
-        repository.updateTask(id, request, actor); return RealtimeResponse.success(id);
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
+        repository.updateTask(id, request, actor);
+        LOG.info("sync_save_total operation=update taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                id, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
+        return RealtimeResponse.success(id);
     }
 
     @PostMapping("/{id}/delete")
@@ -127,14 +144,33 @@ public class RealtimeUnifiedTaskController {
         actors.requireActor(); return RealtimeResponse.success(definitions.analyze(input));
     }
 
+    /** Agent 与编辑页共用的无持久化校验入口；只校验，不创建版本或实例。 */
+    @PostMapping("/validate")
+    public RealtimeResponse<Map<String, Object>> validate(@Valid @RequestBody UnifiedTaskRequest input) {
+        actors.requireActor();
+        RealtimeTaskDefinitionService.References refs = definitions.validate(input, input.getTaskId());
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("valid", true);
+        result.put("taskType", text(input.getTaskType()).toLowerCase());
+        result.put("inputTableIds", refs.getInputs());
+        result.put("outputTableIds", refs.getOutputs());
+        return RealtimeResponse.success(result);
+    }
+
     @PostMapping("/command-preview")
     public RealtimeResponse<Map<String, Object>> preview(@Valid @RequestBody UnifiedTaskRequest input,
             @RequestParam(required = false) Long excludeTaskId) {
         actors.requireActor();
         if (!"sync".equalsIgnoreCase(input.getTaskType())) { definitions.validate(input, excludeTaskId); return RealtimeResponse.success(runtime.previewUnifiedRequest(input,excludeTaskId)); }
         com.yjn.sqlagent.realtime.model.SyncTaskRequest request = input.toSyncTaskRequest();
+        long started = System.nanoTime();
         validateSyncSubmission(request, excludeTaskId);
-        return RealtimeResponse.success(runtime.previewRequest(request, excludeTaskId));
+        long validationMs = elapsedMs(started);
+        long previewStarted = System.nanoTime();
+        Map<String, Object> preview = runtime.previewRequest(request, excludeTaskId);
+        LOG.info("sync_save_total operation=preview taskId={} tableCount={} validationMs={} previewBuildMs={} totalMs={}",
+                excludeTaskId, selectedTableCount(request), validationMs, elapsedMs(previewStarted), elapsedMs(started));
+        return RealtimeResponse.success(preview);
     }
 
     @GetMapping("/{id}/command-preview")
@@ -189,8 +225,9 @@ public class RealtimeUnifiedTaskController {
     public RealtimeResponse<Map<String, Object>> stop(@PathVariable long id,
             @RequestBody(required = false) TaskActionRequest input) {
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
-        if (!"savepoint".equalsIgnoreCase(text(action.getStopType()))) {
-            throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
+        if (text(action.getStopType()).isEmpty()) action.setStopType("savepoint");
+        if (!List.of("savepoint", "direct").contains(text(action.getStopType()).toLowerCase())) {
+            throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
         }
         long instanceId = latestManagedActive(id, "PRODUCTION");
         return RealtimeResponse.success(runtime.stop(id, instanceId, action, actors.requireActor()));
@@ -216,6 +253,7 @@ public class RealtimeUnifiedTaskController {
     @GetMapping("/{id}/instances/{instanceId}/runtime") public RealtimeResponse<Object> runtime(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.runtime(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/resources") public RealtimeResponse<Object> resources(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.resources(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/checkpoints") public RealtimeResponse<Object> checkpoints(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.checkpoints(id, instanceId)); }
+    @GetMapping("/{id}/instances/{instanceId}/progress") public RealtimeResponse<Object> progress(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.progress(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/log-components") public RealtimeResponse<Object> logComponents(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(runtime.logComponents(id, instanceId)); }
     @GetMapping("/{id}/instances/{instanceId}/logs") public RealtimeResponse<Object> logs(
             @PathVariable long id, @PathVariable long instanceId,
@@ -226,19 +264,67 @@ public class RealtimeUnifiedTaskController {
         actors.requireActor();
         return RealtimeResponse.success(runtime.logPage(id, instanceId, component, containerId, cursor, limit));
     }
+    @GetMapping("/{id}/instances/{instanceId}/diagnostic-report")
+    public RealtimeResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> diagnosticReport(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(diagnosticReports.get(id, instanceId, false));
+    }
+    @PostMapping("/{id}/instances/{instanceId}/diagnostic-report/refresh")
+    public RealtimeResponse<com.yjn.sqlagent.diagnostics.DiagnosticReport> refreshDiagnosticReport(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(diagnosticReports.get(id, instanceId, true));
+    }
+    @GetMapping("/{id}/instances/{instanceId}/debug-report")
+    public RealtimeResponse<Object> debugReport(@PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        Map<String, Object> instance = repository.requiredInstance(id, instanceId);
+        if (!"DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) {
+            throw new IllegalArgumentException("该实例不是调试实例");
+        }
+        Object report = instance.get("debugReport");
+        if (report == null) throw new IllegalStateException("调试报告尚未生成");
+        return RealtimeResponse.success(report);
+    }
+    @GetMapping("/{id}/instances/{instanceId}/recovery-options")
+    public RealtimeResponse<Map<String, Object>> recoveryOptions(
+            @PathVariable long id, @PathVariable long instanceId) {
+        actors.requireActor(); taskType(id);
+        return RealtimeResponse.success(runtime.recoveryOptions(id, instanceId));
+    }
+    @PostMapping("/{id}/instances/{instanceId}/recover")
+    public RealtimeResponse<Map<String, Object>> recover(
+            @PathVariable long id, @PathVariable long instanceId,
+            @RequestBody(required = false) TaskActionRequest input) {
+        TaskActionRequest action = input == null ? new TaskActionRequest() : input;
+        taskType(id);
+        return RealtimeResponse.success(runtime.recover(id, instanceId, action, actors.requireActor()));
+    }
     @PostMapping("/{id}/instances/{instanceId}/stop") public RealtimeResponse<Map<String, Object>> stopInstance(@PathVariable long id, @PathVariable long instanceId, @RequestBody(required = false) TaskActionRequest input) {
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
         Map<String, Object> instance = repository.requiredInstance(id, instanceId);
         if ("DEBUG".equalsIgnoreCase(text(instance.get("executionMode")))) action.setStopType("direct");
-        else if (!"savepoint".equalsIgnoreCase(text(action.getStopType()))) throw new IllegalArgumentException("正式实例仅支持 savepoint 停止");
+        else {
+            if (text(action.getStopType()).isEmpty()) action.setStopType("savepoint");
+            if (!List.of("savepoint", "direct").contains(text(action.getStopType()).toLowerCase())) {
+                throw new IllegalArgumentException("停止类型必须是 direct 或 savepoint");
+            }
+        }
         return RealtimeResponse.success(runtime.stop(id, instanceId, action, actors.requireActor()));
     }
 
     /** 外部 MySQL/Paimon 校验在写事务开始前完成。 */
     private void validateSyncSubmission(com.yjn.sqlagent.realtime.model.SyncTaskRequest request,
             Long taskId) {
+        long started = System.nanoTime();
+        long stageStarted = System.nanoTime();
         validator.validate(request);
+        long schemaValidationMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> normalized = repository.validatePreview(request, taskId);
+        long normalizationAndConflictMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> persisted = Map.of();
         if (taskId != null) {
             Object value = repository.requiredTask(taskId).get("taskConfig");
@@ -247,7 +333,12 @@ public class RealtimeUnifiedTaskController {
                 persisted = config;
             }
         }
+        long persistedConfigMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         targetValidator.validateAddedTargets(persisted, normalized);
+        LOG.info("sync_validation_total taskId={} tableCount={} schemaValidationMs={} normalizationAndConflictMs={} persistedConfigMs={} targetCheckMs={} totalMs={}",
+                taskId, selectedTableCount(request), schemaValidationMs, normalizationAndConflictMs,
+                persistedConfigMs, elapsedMs(stageStarted), elapsedMs(started));
     }
 
     private Map<String, Object> unifiedDetail(Map<String, Object> source) {
@@ -326,8 +417,8 @@ public class RealtimeUnifiedTaskController {
             return;
         }
         if ("checkpoint".equalsIgnoreCase(text(action.getStartType()))) {
-            if (!isLatestFailedProductionCheckpoint(taskId, text(action.getStatePath()))) {
-                throw new IllegalArgumentException("Checkpoint 仅支持恢复最近一次异常失败的正式实例，请刷新恢复状态后重新选择");
+            if (!belongsToProductionCheckpoint(taskId, text(action.getStatePath()))) {
+                throw new IllegalArgumentException("请选择当前任务正式实例的有效 Checkpoint");
             }
             return;
         }
@@ -335,6 +426,11 @@ public class RealtimeUnifiedTaskController {
         if (requiredPath.isEmpty()) {
             if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
                 throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
+            }
+            if (Boolean.TRUE.equals(policy.get("productionLocked"))
+                    && "direct".equalsIgnoreCase(text(action.getStartType()))) {
+                throw new IllegalArgumentException(
+                        "任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动");
             }
             return;
         }
@@ -345,14 +441,13 @@ public class RealtimeUnifiedTaskController {
             throw new IllegalArgumentException("只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
         }
     }
-    private boolean isLatestFailedProductionCheckpoint(long taskId, String path) {
+    private boolean belongsToProductionCheckpoint(long taskId, String path) {
+        if (path.isEmpty()) return false;
         for (Map<String, Object> instance : repository.instances(taskId)) {
             if (!"PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode")))) continue;
-            if (!"failed".equalsIgnoreCase(text(instance.get("status")))) return false;
             String jobId = text(instance.get("jobId"));
-            if (jobId.isEmpty()) return false;
+            if (jobId.isEmpty()) continue;
             for (String part : path.replace('\\', '/').split("/")) if (jobId.equals(part)) return true;
-            return false;
         }
         return false;
     }
@@ -376,5 +471,16 @@ public class RealtimeUnifiedTaskController {
     }
     private void put(Map<String, String> target, String key, Object value) { if (value != null && !text(value).isEmpty()) target.put(key, text(value)); }
     private Double memoryGb(Object value) { String text = text(value).toLowerCase().replace("gb", "").replace("g", ""); try { return text.isEmpty() ? null : Double.valueOf(text); } catch (NumberFormatException ex) { return null; } }
+    private int selectedTableCount(com.yjn.sqlagent.realtime.model.SyncTaskRequest request) {
+        if (request == null || request.getTaskConfig() == null) return 0;
+        Object cdcValue = request.getTaskConfig().get("cdcConfig");
+        if (!(cdcValue instanceof Map<?, ?>)) return 0;
+        Object tables = ((Map<?, ?>) cdcValue).get("selectedTables");
+        if (!(tables instanceof Iterable<?>)) return text(tables).isEmpty() ? 0 : text(tables).split(",").length;
+        int count = 0;
+        for (Object ignored : (Iterable<?>) tables) count++;
+        return count;
+    }
+    private long elapsedMs(long started) { return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
     private String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 }

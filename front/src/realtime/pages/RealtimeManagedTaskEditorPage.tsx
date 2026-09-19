@@ -42,6 +42,7 @@ export default function RealtimeManagedTaskEditorPage({ taskType }: { taskType: 
         && proposal.target === (taskType === 'compute' ? 'compute-task-form' : 'export-form') && proposal.patch) {
         form.setFieldsValue(proposal.patch as unknown as ManagedTaskSave);
       } else return;
+      setAnalysisResult(undefined); setAnalysisError('');
       event.preventDefault();
     };
     const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {

@@ -1,11 +1,16 @@
 package com.yjn.sqlagent.realtime.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
+import static org.mockito.Mockito.verify;
 
 import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
+import com.yjn.sqlagent.realtime.model.RealtimeLineageSnapshotDraft;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import com.yjn.sqlagent.realtime.repository.RealtimeTableRepository;
 import com.yjn.sqlagent.realtime.repository.RealtimeTaskDefinitionRepository;
@@ -15,6 +20,7 @@ import java.util.List;
 import java.util.Map;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.mockito.ArgumentCaptor;
 
 class RealtimeTaskDefinitionServiceTest {
     private RealtimeTableRepository tables;
@@ -22,6 +28,7 @@ class RealtimeTaskDefinitionServiceTest {
     private RealtimeServerService servers;
     private RealtimePaimonCatalogService paimon;
     private ManagedFlinkPlannerService planner;
+    private RealtimeTaskDefinitionRepository repository;
     private RealtimeTaskDefinitionService service;
 
     @BeforeEach
@@ -31,8 +38,9 @@ class RealtimeTaskDefinitionServiceTest {
         servers = mock(RealtimeServerService.class);
         paimon = mock(RealtimePaimonCatalogService.class);
         planner = mock(ManagedFlinkPlannerService.class);
-        service = new RealtimeTaskDefinitionService(mock(RealtimeTaskDefinitionRepository.class), tables,
-                sync, servers, planner, paimon);
+        repository = mock(RealtimeTaskDefinitionRepository.class);
+        service = new RealtimeTaskDefinitionService(repository, tables,
+                sync, servers, planner, paimon, new ObjectMapper());
     }
 
     @Test
@@ -76,24 +84,58 @@ class RealtimeTaskDefinitionServiceTest {
     }
 
     @Test
+    void computeSnapshotKeepsParserCompletenessAndDiagnostics() {
+        Map<String, Object> input = table(1L, "ods", "orders", null);
+        Map<String, Object> output = table(2L, "dwd", "order_summary", null);
+        when(tables.available()).thenReturn(List.of(input, output));
+        when(tables.required(1L)).thenReturn(input);
+        when(tables.required(2L)).thenReturn(output);
+        when(paimon.describe("ods", "orders")).thenReturn(input);
+        when(paimon.describe("dwd", "order_summary")).thenReturn(output);
+        Map<String, Object> diagnostic = Map.of("code", "METADATA_UNAVAILABLE", "severity", "WARNING");
+        Map<String, Object> facts = new LinkedHashMap<>();
+        facts.put("complete", false);
+        facts.put("diagnostics", List.of(diagnostic));
+        when(planner.validate("INSERT INTO dwd.order_summary SELECT * FROM ods.orders", "ods"))
+                .thenReturn(new ManagedFlinkPlannerService.Analysis(
+                        List.of("paimon.ods.orders"), List.of("paimon.dwd.order_summary"),
+                        1, 1, "plan", facts));
+
+        service.create(compute("INSERT INTO dwd.order_summary SELECT * FROM ods.orders"), "tester");
+
+        ArgumentCaptor<RealtimeLineageSnapshotDraft> snapshot =
+                ArgumentCaptor.forClass(RealtimeLineageSnapshotDraft.class);
+        verify(repository).create(org.mockito.ArgumentMatchers.any(), eq("tester"), eq(List.of(1L)),
+                eq(List.of(2L)), snapshot.capture());
+        assertFalse(snapshot.getValue().isComplete());
+        assertEquals(List.of(diagnostic), snapshot.getValue().getDiagnostics());
+        assertEquals(false, snapshot.getValue().getLineage().get("complete"));
+    }
+
+    @Test
     void exportRequiresExistingMysqlTableAndCompletePrimaryKeyMapping() {
         Map<String, Object> source = table(1L, "ods", "orders", null);
         when(tables.required(1L)).thenReturn(source);
         when(paimon.describe("ods", "orders")).thenReturn(source);
         when(sync.requiredServer(7L, false)).thenReturn(Map.of("databaseName", "sink_db"));
         when(servers.tables(7L)).thenReturn(List.of("orders_sink"));
-        when(servers.schema(7L, "orders_sink")).thenReturn(Map.of(
+        Map<String, Object> sinkSchema = Map.of(
                 "primaryKeys", List.of("id"),
                 "columns", List.of(
                         Map.of("name", "id", "type", "bigint", "nullable", false),
-                        Map.of("name", "payload", "type", "varchar", "nullable", true))));
+                        Map.of("name", "payload", "type", "varchar", "nullable", true)));
+        when(servers.schemas(7L, List.of("orders_sink"))).thenReturn(Map.of("orders_sink", sinkSchema));
 
-        RealtimeTaskDefinitionService.References references = service.validate(export(List.of(
+        UnifiedTaskRequest request = export(List.of(
                 new LinkedHashMap<>(Map.of("realtimeTableId", 1L, "targetTable", "orders_sink",
                         "columnMappings", List.of(
                                 Map.of("sourceColumn", "id", "targetColumn", "id"),
-                                Map.of("sourceColumn", "payload", "targetColumn", "payload")))))), null);
+                                Map.of("sourceColumn", "payload", "targetColumn", "payload"))))));
+        RealtimeTaskDefinitionService.References references = service.validate(request, null);
         assertEquals(List.of(1L), references.getInputs());
+        @SuppressWarnings("unchecked") Map<String, Object> exportConfig = (Map<String, Object>) request.getTaskConfig().get("exportConfig");
+        assertEquals(1, ((List<?>) exportConfig.get("schemaContracts")).size());
+        verify(servers).schemas(7L, List.of("orders_sink"));
 
         UnifiedTaskRequest missingKey = export(List.of(new LinkedHashMap<>(Map.of(
                 "realtimeTableId", 1L, "targetTable", "orders_sink",
@@ -109,7 +151,7 @@ class RealtimeTaskDefinitionServiceTest {
     }
 
     private ManagedFlinkPlannerService.Analysis analysis(List<String> inputs, List<String> outputs) {
-        return new ManagedFlinkPlannerService.Analysis(inputs, outputs, 1, "plan");
+        return new ManagedFlinkPlannerService.Analysis(inputs, outputs, 1, 1, "plan");
     }
 
     private UnifiedTaskRequest export(List<Map<String, Object>> mappings) {

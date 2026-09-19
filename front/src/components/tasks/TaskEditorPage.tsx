@@ -5,6 +5,7 @@ import {
   DeleteOutlined, DownOutlined, FunctionOutlined, MoreOutlined, OrderedListOutlined,
   PlusOutlined, ReloadOutlined, RobotOutlined, SaveOutlined, SafetyCertificateOutlined,
   SettingOutlined, UpOutlined, LeftOutlined, RightOutlined,
+  AlignLeftOutlined, EditOutlined, TableOutlined,
 } from '@ant-design/icons';
 import CodeMirror, { type ReactCodeMirrorRef } from '@uiw/react-codemirror';
 import { sql } from '@codemirror/lang-sql';
@@ -12,9 +13,9 @@ import { autocompletion, type CompletionContext } from '@codemirror/autocomplete
 import { useNavigate } from 'react-router-dom';
 import { activateTaskVersion, createTask, getTask, getTaskVersion, getTaskVersionCheckSummary, listTaskVersions, updateTaskVersion } from '../../api/tasks';
 import { ApiError } from '../../api/client';
-import { checkTaskQuality, completeSql, explainTaskSql, previewSqlStructure, validateTaskSql } from '../../api/workspace';
+import { checkTaskQuality, completeSql, explainTaskSql, previewSqlQuery, previewSqlStructure, validateTaskSql } from '../../api/workspace';
 import type {
-  AiProposal, HiveExplainVO, HiveValidationVO, SqlStructurePreviewVO, SqlTaskSaveRequest, SqlTaskVO,
+  AiProposal, HiveExplainVO, HiveValidationVO, SqlQueryPreviewVO, SqlStructurePreviewVO, SqlTaskSaveRequest, SqlTaskVO,
   SqlTaskVersionSaveRequest, SqlTaskVersionVO, TaskQualityVO, TaskVersionCheckSummaryVO,
 } from '../../types';
 import WorkspaceBottomPanel, { type WorkbenchTab } from './WorkspaceBottomPanel';
@@ -22,6 +23,7 @@ import WorkspaceMetadataPanel from './WorkspaceMetadataPanel';
 import TaskVersionDrawer from './TaskVersionDrawer';
 import WorkspaceFunctionPanel from './WorkspaceFunctionPanel';
 import TaskDevelopmentSteps, { taskStepsCollapsedKey } from './TaskDevelopmentSteps';
+import { formatHiveScript } from './sqlFormatting';
 
 type InspectorTab = 'metadata' | 'functions';
 
@@ -70,7 +72,7 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
     () => window.localStorage.getItem(taskStepsCollapsedKey) === 'true',
   );
   const [sqlStepOutlineCollapsed, setSqlStepOutlineCollapsed] = useState(false);
-  const [sqlStepOutlineHidden, setSqlStepOutlineHidden] = useState(true);
+  const [sqlStepOutlineHidden, setSqlStepOutlineHidden] = useState(false);
   const [sqlStageMounted, setSqlStageMounted] = useState(false);
   const [inspectorTab, setInspectorTab] = useState<InspectorTab>('metadata');
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -87,6 +89,13 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const [structure, setStructure] = useState<SqlStructurePreviewVO>();
   const [structureError, setStructureError] = useState('');
   const [structureLoading, setStructureLoading] = useState(false);
+  const [selectedStepNo, setSelectedStepNo] = useState(0);
+  const [parameterJson, setParameterJson] = useState('{}');
+  const [parameterError, setParameterError] = useState('');
+  const [renderedStepSql, setRenderedStepSql] = useState('');
+  const [queryPreview, setQueryPreview] = useState<SqlQueryPreviewVO>();
+  const [queryPreviewLoading, setQueryPreviewLoading] = useState(false);
+  const [queryPreviewError, setQueryPreviewError] = useState('');
   const parameters = Form.useWatch('parameters', form) || [];
   const parameterSchemaKey = JSON.stringify(parameters);
   const canEdit = !id || (taskVersion?.status === 'DRAFT' && taskVersion.canEdit);
@@ -163,6 +172,12 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   );
 
   useEffect(() => { callbackRef.current = { onDirtyChange, onTaskSaved }; }, [onDirtyChange, onTaskSaved]);
+  useEffect(() => {
+    const values = Object.fromEntries(parameters
+      .filter((item) => item?.name)
+      .map((item) => [item.name, item.defaultValue ?? '']));
+    setParameterJson(JSON.stringify(values, null, 2));
+  }, [parameterSchemaKey]);
   useEffect(() => { callbackRef.current.onDirtyChange?.(dirty); }, [dirty]);
   useEffect(() => {
     const applyAiProposal = (rawEvent: Event) => {
@@ -296,7 +311,11 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
     const timer = window.setTimeout(() => {
       setStructureLoading(true);
       void previewSqlStructure({ sql: sqlValue, parameterSchema: parameters, validateParameterValues: false }, controller.signal)
-        .then((result) => { setStructure(result); setStructureError(''); })
+        .then((result) => {
+          setStructure(result); setStructureError('');
+          setSelectedStepNo((current) => result.steps.some((step) => step.stepNo === current)
+            ? current : (result.steps[0]?.stepNo ?? 0));
+        })
         .catch((error) => {
           if ((error as Error).name !== 'AbortError') { setStructure(undefined); setStructureError((error as Error).message); }
         }).finally(() => setStructureLoading(false));
@@ -430,6 +449,56 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
     finally { setQualityChecking(false); }
   };
 
+  const readPreviewParameters = () => {
+    try {
+      const value = JSON.parse(parameterJson || '{}') as unknown;
+      if (!value || Array.isArray(value) || typeof value !== 'object') throw new Error('必须是 JSON 对象');
+      setParameterError('');
+      return value as Record<string, unknown>;
+    } catch (error) {
+      const detail = `参数 JSON 无效：${(error as Error).message}`;
+      setParameterError(detail);
+      message.error(detail);
+      return undefined;
+    }
+  };
+
+  const runParameterPreview = async () => {
+    const values = readPreviewParameters();
+    if (!values) return;
+    setBottomOpen(true); setBottomTab('parameters');
+    try {
+      const result = await previewSqlStructure({ sql: sqlValue, parameterSchema: parameters, parameters: values, validateParameterValues: true });
+      const selected = result.steps.find((step) => step.stepNo === selectedStepNo) || result.steps[0];
+      setRenderedStepSql(selected?.renderedSql || result.renderedSql || '');
+      if (selected) setSelectedStepNo(selected.stepNo);
+    } catch (error) { setRenderedStepSql(''); setParameterError((error as Error).message); }
+  };
+
+  const runQueryPreview = async () => {
+    const values = readPreviewParameters();
+    if (!values) return;
+    setBottomOpen(true); setBottomTab('preview'); setQueryPreviewLoading(true); setQueryPreviewError('');
+    try {
+      const result = await previewSqlQuery({
+        sql: sqlValue, parameterSchema: parameters, parameters: values, validateParameterValues: true,
+        stepNo: selectedStepNo, limit: 100, defaultDb: database,
+      });
+      setQueryPreview(result); setRenderedStepSql(result.renderedSql);
+    } catch (error) { setQueryPreview(undefined); setQueryPreviewError((error as Error).message); }
+    finally { setQueryPreviewLoading(false); }
+  };
+
+  const formatCurrentSql = () => {
+    if (!canEdit) { message.info('当前代码只读，请先新建或选择可编辑版本'); return; }
+    const formatted = formatHiveScript(sqlValue);
+    if (formatted === sqlValue) { message.info('SQL 已是规范格式'); return; }
+    const view = editorRef.current?.view;
+    if (view) view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: formatted } });
+    else setSqlValue(formatted);
+    setDirty(true);
+  };
+
   const continueToSql = async () => {
     try {
       await form.validateFields(['name', 'description', 'taskType', 'executionFrequency', 'owner', 'parameters']);
@@ -454,6 +523,7 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   };
 
   const jumpToStep = (stepNo: number) => {
+    setSelectedStepNo(stepNo);
     const view = editorRef.current?.view; if (!view) return;
     const marker = new RegExp(`^\\s*====\\s*step\\s*:\\s*${stepNo}(?:\\s*:|\\s*====)`, 'im').exec(view.state.doc.toString());
     view.dispatch({ selection: { anchor: marker?.index || 0 }, scrollIntoView: true }); view.focus();
@@ -464,6 +534,12 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
   const toggleSqlStepOutlineVisibility = () => setSqlStepOutlineHidden((hidden) => !hidden);
 
   if (loading) return <div className="sql-workbench-page loading"><Skeleton active /></div>;
+
+  const validationByStep = new Map((validation?.steps || []).map((step) => [step.stepNo, step]));
+  const explainRisksByStep = new Map<number, NonNullable<HiveExplainVO['risks']>>();
+  for (const risk of explain?.risks || []) {
+    explainRisksByStep.set(risk.stepNo, [...(explainRisksByStep.get(risk.stepNo) || []), risk]);
+  }
 
   const stepOutline = (
     <div className="task-step-browser">
@@ -485,8 +561,16 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
       </div>
       {structureError ? <div className="task-step-error">{structureError}</div> : null}
       {structure?.steps.map((step) => (
-        <button key={step.stepNo} type="button" className="task-step-item" onClick={() => jumpToStep(step.stepNo)}>
-          <span className="task-step-number">{step.stepNo}</span><span><strong>{step.stepName}</strong><small>{step.statementType}</small></span>
+        <button key={step.stepNo} type="button" className={`task-step-item${selectedStepNo === step.stepNo ? ' active' : ''}`} onClick={() => jumpToStep(step.stepNo)}>
+          <span className="task-step-number">{step.stepNo}</span>
+          <span className="task-step-summary">
+            <strong>{step.stepName}</strong><small>{step.statementType}</small>
+            {validationByStep.get(step.stepNo)?.valid === false
+              ? <Tag color="error">校验失败</Tag>
+              : explainRisksByStep.has(step.stepNo)
+                ? <Tooltip title={explainRisksByStep.get(step.stepNo)?.map((risk) => `${risk.message}：${risk.evidence}`).join('\n')}><Tag color="warning">风险 {explainRisksByStep.get(step.stepNo)?.length}</Tag></Tooltip>
+                : validationByStep.get(step.stepNo)?.valid === true ? <Tag color="success">已校验</Tag> : null}
+          </span>
         </button>
       ))}
       {!structureLoading && !structureError && !structure?.steps.length ? <div className="task-step-empty">输入 SQL 后显示真实解析结果</div> : null}
@@ -592,9 +676,12 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
             return <Tooltip key={type} title={item?.summary || `${label}尚未执行`}><Tag color={!item ? 'default' : item.passed ? 'success' : item.complete ? 'error' : 'processing'}>{label} {!item ? '未检查' : item.passed ? '通过' : item.status}</Tag></Tooltip>;
           })}</span> : null}</div>
           <Space size={2}>
-            {versionSection === 'sql' ? <Button type="text" icon={<SafetyCertificateOutlined />} loading={qualityChecking} onClick={() => void runQualityCheck()}>质量检查</Button> : null}
-            {versionSection === 'sql' ? <Button type="text" icon={<CheckCircleOutlined />} loading={validating} onClick={() => void runValidation()}>编译校验</Button> : null}
+            {versionSection === 'sql' ? <Button type="text" icon={<AlignLeftOutlined />} disabled={!canEdit} onClick={formatCurrentSql}>格式化</Button> : null}
+            {versionSection === 'sql' ? <Button type="text" icon={<EditOutlined />} onClick={() => void runParameterPreview()}>参数预览</Button> : null}
+            {versionSection === 'sql' ? <Button type="text" icon={<TableOutlined />} loading={queryPreviewLoading} onClick={() => void runQueryPreview()}>数据预览</Button> : null}
+            {versionSection === 'sql' ? <Button type="text" icon={<CheckCircleOutlined />} loading={validating} onClick={() => void runValidation()}>校验</Button> : null}
             {versionSection === 'sql' ? <Button type="text" icon={<CodeOutlined />} loading={explaining} onClick={() => void runExplain()}>Explain</Button> : null}
+            {versionSection === 'sql' ? <Button type="text" icon={<SafetyCertificateOutlined />} loading={qualityChecking} onClick={() => void runQualityCheck()}>质量检查</Button> : null}
             <Dropdown placement="bottomRight" menu={{ items: workspaceMoreItems, onClick: handleWorkspaceMoreClick }}><Button type="text" icon={<MoreOutlined />}>更多</Button></Dropdown>
           </Space>
         </div>
@@ -637,6 +724,13 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
               taskName={taskName}
               lineageRefreshKey={lineageRefreshKey}
               onInsertSql={insertSql}
+              parameterJson={parameterJson}
+              parameterError={parameterError}
+              onParameterJsonChange={(value) => { setParameterJson(value); setParameterError(''); }}
+              renderedSql={renderedStepSql}
+              preview={queryPreview}
+              previewLoading={queryPreviewLoading}
+              previewError={queryPreviewError}
             />
           </section>
         ) : null}
@@ -734,10 +828,13 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
             <div className="sql-development-toolbar">
               <div className="sql-development-context"><Button type="text" onClick={() => setDevelopmentStep(0)}>任务设置</Button><span>/</span><strong>SQL 开发</strong><span>{database || '未选择数据库'}</span><span>{sqlValue.length.toLocaleString()} 字符</span></div>
               <Space size={2}>
+                <Button type="text" icon={<AlignLeftOutlined />} disabled={!canEdit} onClick={formatCurrentSql}>格式化</Button>
+                <Button type="text" icon={<EditOutlined />} onClick={() => void runParameterPreview()}>参数预览</Button>
+                <Button type="text" icon={<TableOutlined />} loading={queryPreviewLoading} onClick={() => void runQueryPreview()}>数据预览</Button>
                 {id ? <Button type="text" icon={<BranchesOutlined />} onClick={() => { setVersionCreateOnOpen(false); setVersionOpen(true); }}>版本{taskVersion ? ` v${taskVersion.versionNo}` : task?.effectiveVersionNo ? ` · 生效 v${task.effectiveVersionNo}` : ''}</Button> : null}
-                <Button type="text" icon={<SafetyCertificateOutlined />} loading={qualityChecking} onClick={() => void runQualityCheck()}>质量检查</Button>
-                <Button type="text" icon={<CheckCircleOutlined />} loading={validating} onClick={() => void runValidation()}>编译校验</Button>
+                <Button type="text" icon={<CheckCircleOutlined />} loading={validating} onClick={() => void runValidation()}>校验</Button>
                 <Button type="text" icon={<CodeOutlined />} loading={explaining} onClick={() => void runExplain()}>Explain</Button>
+                <Button type="text" icon={<SafetyCertificateOutlined />} loading={qualityChecking} onClick={() => void runQualityCheck()}>质量检查</Button>
                 <Dropdown placement="bottomRight" menu={{ items: workspaceMoreItems, onClick: handleWorkspaceMoreClick }}><Button type="text" icon={<MoreOutlined />}>更多</Button></Dropdown>
                 {!id && canEdit ? <Button icon={<SaveOutlined />} loading={saving} onClick={() => void save()}>创建任务</Button> : null}
               </Space>
@@ -776,6 +873,13 @@ export default function TaskEditorPage({ taskId: id, versionNo, onDirtyChange, o
                   taskName={taskName}
                   lineageRefreshKey={lineageRefreshKey}
                   onInsertSql={insertSql}
+                  parameterJson={parameterJson}
+                  parameterError={parameterError}
+                  onParameterJsonChange={(value) => { setParameterJson(value); setParameterError(''); }}
+                  renderedSql={renderedStepSql}
+                  preview={queryPreview}
+                  previewLoading={queryPreviewLoading}
+                  previewError={queryPreviewError}
                 />
               </section>
             ) : null}

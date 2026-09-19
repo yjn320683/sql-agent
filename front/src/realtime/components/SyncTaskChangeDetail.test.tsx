@@ -1,6 +1,6 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
-import { ChangeDetailContent } from './SyncTaskDetailDrawer';
+import { ChangeDetailContent, schemaImpactColumns } from './SyncTaskDetailDrawer';
 
 const snapshot = (domainPrefix: string) => ({
   taskType: 'sync',
@@ -28,6 +28,24 @@ const snapshot = (domainPrefix: string) => ({
 });
 
 describe('实时同步变更记录详情', () => {
+  it('提取新增字段和不兼容字段用于影响分析', () => {
+    expect(schemaImpactColumns({
+      id: 1,
+      taskId: 10,
+      realtimeTableId: 20,
+      sourceDatabase: 'src',
+      sourceTable: 'orders',
+      targetDatabase: 'ods',
+      targetTable: 'orders',
+      changeType: 'INCOMPATIBLE',
+      status: 'BLOCKED',
+      change: {
+        addColumns: [{ name: 'remark', dataType: 'STRING', nullable: true, primaryKey: false, partitionKey: false }],
+        incompatibleColumns: [{ column: 'amount', sourceType: 'DECIMAL', targetType: 'BIGINT' }],
+      },
+    })).toEqual(['remark', 'amount']);
+  });
+
   it('编辑记录按参考项目左右展示完整配置并原位标记变更', () => {
     const html = renderToStaticMarkup(<ChangeDetailContent detail={{
       detailKind: 'edit',

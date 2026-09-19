@@ -11,16 +11,20 @@ import java.util.Map;
 import java.util.Set;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 
 /** 校验 MySQL CDC 同步任务固定配置、源表 Schema 以及每表键配置。 */
 @Service
 public class RealtimeSyncConfigValidator {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeSyncConfigValidator.class);
     private static final long MIN_PROCESS_MEMORY_BYTES = 1024L * 1024L * 1024L;
     private static final Pattern MEMORY = Pattern.compile("^([0-9]+(?:\\.[0-9]+)?)\\s*([A-Za-z]+)$");
     private static final Pattern IDENTIFIER = Pattern.compile("[A-Za-z_][A-Za-z0-9_]*");
     private static final Set<String> CDC_MODES = Set.of("combined");
     private static final Set<String> METADATA_COLUMNS = Set.of("database_name", "table_name", "op_ts");
+    private static final String METADATA_COLUMN_PREFIX = "__meta_";
     private static final Set<String> TYPE_MAPPINGS = Set.of(
             "to-nullable", "to-string", "char-to-string", "tinyint1-not-bool",
             "longtext-to-bytes", "bigint-unsigned-to-bigint");
@@ -50,6 +54,7 @@ public class RealtimeSyncConfigValidator {
         rejectLegacyKeys(cdc);
         validateFixedConfig(taskConfig, cdc);
         List<String> selectedTables = strings(cdc.get("selectedTables"), true, "源表列表");
+        Set<String> metadataColumns = prefixedMetadataColumns();
         Map<String, Object> tableConfigs = tableConfigs(cdc.get("tableConfigs"));
         for (String table : tableConfigs.keySet()) {
             if (!selectedTables.contains(table)) throw new IllegalArgumentException("私有配置表不在已选源表中：" + table);
@@ -57,20 +62,25 @@ public class RealtimeSyncConfigValidator {
         if (sourceServerId == null) throw new IllegalArgumentException("请选择 MySQL Server");
 
         Set<String> commonFields = null;
+        long schemaStarted = System.nanoTime();
+        Map<String, Map<String, Object>> schemas;
+        try {
+            schemas = servers.schemas(sourceServerId, selectedTables);
+        } catch (RuntimeException ex) {
+            throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败：" + safe(ex), ex);
+        }
+        LOG.info("sync_validation_stage stage=mysql_schema_read serverId={} tableCount={} costMs={}",
+                sourceServerId, selectedTables.size(), elapsedMs(schemaStarted));
         for (String table : selectedTables) {
-            Map<String, Object> schema;
-            try {
-                schema = servers.schema(sourceServerId, table);
-            } catch (RuntimeException ex) {
-                throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败（" + table + "）：" + safe(ex), ex);
-            }
-            validateTable(table, schema, tableConfigs.get(table), cdc.get("tableConfOverrides"));
+            Map<String, Object> schema = schemas.get(table);
+            if (schema == null) throw new IllegalArgumentException("读取 MySQL CDC 源表结构失败（" + table + "）：未返回表结构");
+            validateTable(table, schema, tableConfigs.get(table), cdc.get("tableConfOverrides"), metadataColumns);
             Set<String> fields = fields(schema);
             if (commonFields == null) commonFields = new LinkedHashSet<>(fields);
             else commonFields.retainAll(fields);
         }
-        validateTableFieldReferences(cdc.get("tableConfOverrides"), commonFields == null ? Set.of() : commonFields,
-                strings(cdc.get("metadataColumns"), false, "元数据列"));
+        validateTableFieldReferences(cdc.get("tableConfOverrides"),
+                commonFields == null ? Set.of() : commonFields, metadataColumns);
     }
 
     private void validateFixedConfig(Map<String, Object> taskConfig, Map<String, Object> cdc) {
@@ -124,7 +134,8 @@ public class RealtimeSyncConfigValidator {
         }
     }
 
-    private void validateTable(String table, Map<String, Object> schema, Object rawConfig, Object rawOverrides) {
+    private void validateTable(String table, Map<String, Object> schema, Object rawConfig,
+            Object rawOverrides, Set<String> metadataColumns) {
         Map<String, Object> config = rawConfig == null ? Map.of()
                 : objectMap(rawConfig, "源表 " + table + " 的私有配置格式不正确");
         List<String> customPrimaryKeys = config.containsKey("primaryKeys")
@@ -137,6 +148,12 @@ public class RealtimeSyncConfigValidator {
                 table, config.get("computedColumns"), sourceColumns);
         Set<String> finalFields = new LinkedHashSet<>(sourceFields);
         finalFields.addAll(computedColumns.keySet());
+        for (String metadataColumn : metadataColumns) {
+            if (finalFields.contains(metadataColumn)) {
+                throw new IllegalArgumentException(
+                        "源表 " + table + " 的字段或计算列与同步元数据列重名：" + metadataColumn);
+            }
+        }
         List<String> sourcePrimaryKeys = strings(schema.get("primaryKeys"), false, table + " 源表主键");
         if (sourcePrimaryKeys.isEmpty() && customPrimaryKeys.isEmpty()) {
             throw new IllegalArgumentException("MySQL CDC 源表无主键，请配置私有主键：" + table);
@@ -258,7 +275,13 @@ public class RealtimeSyncConfigValidator {
         }
     }
 
-    private void validateTableFieldReferences(Object value, Set<String> fields, List<String> metadataColumns) {
+    private Set<String> prefixedMetadataColumns() {
+        Set<String> result = new LinkedHashSet<>();
+        for (String column : METADATA_COLUMNS) result.add(METADATA_COLUMN_PREFIX + column);
+        return result;
+    }
+
+    private void validateTableFieldReferences(Object value, Set<String> fields, Set<String> metadataColumns) {
         if (!(value instanceof Map<?, ?>)) return;
         Map<?, ?> overrides = (Map<?, ?>) value;
         validateReferencedFields(overrides, "bucket-key", "Bucket Key", fields);
@@ -414,6 +437,10 @@ public class RealtimeSyncConfigValidator {
 
     private String safe(RuntimeException ex) {
         return ex.getMessage() == null ? ex.getClass().getSimpleName() : ex.getMessage();
+    }
+
+    private long elapsedMs(long started) {
+        return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started);
     }
 
     private String text(Object value) {

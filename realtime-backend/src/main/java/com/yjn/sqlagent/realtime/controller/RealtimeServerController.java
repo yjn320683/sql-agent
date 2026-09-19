@@ -57,6 +57,10 @@ public class RealtimeServerController {
             @RequestParam String database, @RequestParam String table) {
         actors.requireActor(); requireConfiguredDatabase(id, database); return RealtimeResponse.success(service.schema(id,table));
     }
+    @GetMapping("/{id}/mysql/table-ddl") public RealtimeResponse<Map<String,Object>> ddl(@PathVariable long id,
+            @RequestParam String table) {
+        actors.requireActor(); return RealtimeResponse.success(service.ddl(id, table));
+    }
     @GetMapping("/{id}/mysql/common-columns") public RealtimeResponse<List<Map<String,Object>>> commonColumns(@PathVariable long id,
             @RequestParam String database, @RequestParam List<String> tables) {
         actors.requireActor(); requireConfiguredDatabase(id, database); return RealtimeResponse.success(service.commonColumns(id,tables));

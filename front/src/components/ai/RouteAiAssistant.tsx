@@ -2,8 +2,9 @@ import { useEffect, useMemo, useState } from 'react';
 import { Button, Tooltip } from 'antd';
 import { RobotOutlined } from '@ant-design/icons';
 import { useLocation } from 'react-router-dom';
-import type { AiContext, AiContextType } from '../../types';
+import type { AiContext, AiContextType, AiProposal, ProposalActionResult } from '../../types';
 import AiAssistantDrawer from './AiAssistantDrawer';
+import { inspectProposal } from './proposalRegistry';
 
 interface RouteContext {
   type: AiContextType;
@@ -38,7 +39,7 @@ export function resolveRouteAiContext(pathname: string, search = ''): RouteConte
   };
   if ((found = match(/^\/data-compares\/(\d+)/))) return { type: 'DATA_COMPARE', title: `验数任务 #${found[1]}`, entityId: found[1] };
   if (pathname.startsWith('/data-compares')) return { type: 'DATA_COMPARE', title: '数据验数' };
-  if (pathname.startsWith('/catalog')) return { type: 'CATALOG_TABLE', title: '数据目录', entityId: params.get('table') ?? undefined };
+  if (pathname.startsWith('/catalog') || pathname.startsWith('/data-map/catalog')) return { type: 'CATALOG_TABLE', title: '数据目录', entityId: params.get('table') ?? undefined };
   if ((found = match(/^\/realtime\/sync-tasks\/(\d+)/))) return { type: 'REALTIME_SYNC_TASK', title: `实时同步任务 #${found[1]}`, entityId: found[1] };
   if (pathname.startsWith('/realtime/sync-tasks')) return { type: 'REALTIME_SYNC_TASK', title: '实时同步任务' };
   if ((found = match(/^\/realtime\/compute\/(\d+)/))) return { type: 'REALTIME_COMPUTE_TASK', title: `实时计算任务 #${found[1]}`, entityId: found[1] };
@@ -88,12 +89,16 @@ export default function RouteAiAssistant() {
         open={open}
         context={context}
         onClose={() => setOpen(false)}
-        onApplyProposal={(proposal) => {
+        onApplyProposal={(proposal: AiProposal): ProposalActionResult => {
+          const inspected = inspectProposal(proposal, context);
+          if (inspected.status !== 'APPLIED') return inspected;
           const handled = !window.dispatchEvent(new CustomEvent('sql-agent:apply-ai-proposal', {
             detail: proposal,
             cancelable: true,
           }));
-          if (!handled) throw new Error('当前页面为只读建议；请进入对应编辑页后应用');
+          return handled
+            ? { status: 'APPLIED', message: '已应用到当前页面草稿，仍需使用原页面按钮保存或发布' }
+            : { status: 'READ_ONLY', message: '当前页面没有可写入的编辑表单，请进入对应编辑页后应用' };
         }}
       />
     </>

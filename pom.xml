@@ -23,6 +23,7 @@
 
     <modules>
         <module>parse-sql</module>
+        <module>data-map</module>
         <module>datacompare</module>
         <module>realtime-common</module>
         <module>realtime-task-submit</module>

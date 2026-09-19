@@ -43,6 +43,8 @@ public interface AgentProxyService {
 
     Map<String, Object> previewSqlStructure(SqlStructurePreviewDTO request);
 
+    Map<String, Object> previewHiveQuery(String sql, String defaultDb, int limit);
+
     Map<String, Object> searchHiveFunctions(String keyword, int limit, int offset, String defaultDb);
 
     Map<String, Object> getHiveFunction(String name, String defaultDb);
@@ -52,10 +54,6 @@ public interface AgentProxyService {
     Map<String, Object> getDataMapPrimaryKeys(String db, String table);
 
     Map<String, Object> getTaskExecutionDiagnostics(long executionId);
-
-    Map<String, Object> getTaskLineage(long taskId, Integer versionNo, String defaultDb);
-
-    Map<String, Object> getTaskDependencies(long taskId, Integer versionNo, String defaultDb);
 
     Map<String, Object> checkTaskQuality(long taskId, Integer versionNo, String defaultDb);
 

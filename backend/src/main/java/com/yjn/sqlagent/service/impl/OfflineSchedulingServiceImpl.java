@@ -5,15 +5,18 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.mapper.SqlTaskBackfillBatchMapper;
+import com.yjn.sqlagent.mapper.SqlTaskBackfillItemMapper;
 import com.yjn.sqlagent.mapper.SqlTaskDependencyMapper;
 import com.yjn.sqlagent.mapper.SqlTaskScheduleMapper;
 import com.yjn.sqlagent.mapper.SqlTaskScheduleRunMapper;
+import com.yjn.sqlagent.mapper.SqlTaskMapper;
 import com.yjn.sqlagent.model.dto.SqlTaskBackfillCreateDTO;
 import com.yjn.sqlagent.model.dto.SqlTaskDependencySaveDTO;
 import com.yjn.sqlagent.model.dto.SqlTaskScheduleSaveDTO;
 import com.yjn.sqlagent.model.dto.TaskExecutionCreateDTO;
 import com.yjn.sqlagent.model.entity.SqlTask;
 import com.yjn.sqlagent.model.entity.SqlTaskBackfillBatch;
+import com.yjn.sqlagent.model.entity.SqlTaskBackfillItem;
 import com.yjn.sqlagent.model.entity.SqlTaskDependency;
 import com.yjn.sqlagent.model.entity.SqlTaskSchedule;
 import com.yjn.sqlagent.model.entity.SqlTaskScheduleRun;
@@ -48,24 +51,30 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
     private final SqlTaskDependencyMapper dependencyMapper;
     private final SqlTaskScheduleRunMapper runMapper;
     private final SqlTaskBackfillBatchMapper backfillMapper;
+    private final SqlTaskBackfillItemMapper backfillItemMapper;
     private final SqlTaskService taskService;
     private final TaskExecutionService executionService;
     private final ObjectMapper objectMapper;
+    private final SqlTaskMapper sqlTaskMapper;
 
     public OfflineSchedulingServiceImpl(SqlTaskScheduleMapper scheduleMapper,
                                         SqlTaskDependencyMapper dependencyMapper,
                                         SqlTaskScheduleRunMapper runMapper,
                                         SqlTaskBackfillBatchMapper backfillMapper,
+                                        SqlTaskBackfillItemMapper backfillItemMapper,
                                         SqlTaskService taskService,
                                         TaskExecutionService executionService,
-                                        ObjectMapper objectMapper) {
+                                        ObjectMapper objectMapper,
+                                        SqlTaskMapper sqlTaskMapper) {
         this.scheduleMapper = scheduleMapper;
         this.dependencyMapper = dependencyMapper;
         this.runMapper = runMapper;
         this.backfillMapper = backfillMapper;
+        this.backfillItemMapper = backfillItemMapper;
         this.taskService = taskService;
         this.executionService = executionService;
         this.objectMapper = objectMapper;
+        this.sqlTaskMapper = sqlTaskMapper;
     }
 
     @Override
@@ -134,18 +143,79 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
     @Override
     public Map<String, Object> dag() {
         List<SqlTaskDependency> edges = dependencyMapper.listAll();
-        Set<Long> nodeIds = new HashSet<>();
-        for (SqlTaskDependency edge : edges) { nodeIds.add(edge.getTaskId()); nodeIds.add(edge.getUpstreamTaskId()); }
-        List<Map<String, Object>> nodes = new ArrayList<>();
-        for (Long id : nodeIds) {
-            SqlTask task = taskService.require(id);
-            Map<String, Object> node = new LinkedHashMap<>();
-            node.put("id", id); node.put("name", task.getName()); node.put("enabled", task.getEnabled());
-            nodes.add(node);
+        List<Map<String, Object>> nodes = sqlTaskMapper.listScheduleDagNodes();
+        Map<Long, List<Long>> durations = new HashMap<>();
+        for (Map<String, Object> sample : sqlTaskMapper.listRecentSuccessfulDurations()) {
+            long id = ((Number) sample.get("task_id")).longValue();
+            durations.computeIfAbsent(id, key -> new ArrayList<>()).add(((Number) sample.get("duration_ms")).longValue());
         }
+        Map<Long, Integer> upstream = new HashMap<>(), downstream = new HashMap<>();
+        for (SqlTaskDependency edge : edges) { upstream.merge(edge.getTaskId(), 1, Integer::sum); downstream.merge(edge.getUpstreamTaskId(), 1, Integer::sum); }
+        for (Map<String, Object> node : nodes) {
+            long id = ((Number) node.get("id")).longValue();
+            List<Long> values = new ArrayList<>(durations.getOrDefault(id, List.of()));
+            values.sort(Long::compareTo);
+            node.put("medianDurationMs", median(values));
+            node.put("durationSampleCount", values.size()); node.put("upstreamCount", upstream.getOrDefault(id, 0)); node.put("downstreamCount", downstream.getOrDefault(id, 0));
+        }
+        Set<Long> critical = longestPath(nodes, edges);
+        for (Map<String, Object> node : nodes) node.put("criticalPath", critical.contains(((Number) node.get("id")).longValue()));
         Map<String, Object> result = new LinkedHashMap<>();
-        result.put("nodes", nodes); result.put("edges", edges);
+        result.put("nodes", nodes); result.put("edges", edges); result.put("criticalPathTaskIds", critical);
         return result;
+    }
+
+    private Set<Long> longestPath(List<Map<String, Object>> nodes, List<SqlTaskDependency> edges) {
+        Map<Long, Long> weight = new HashMap<>();
+        boolean hasDurationSample = false;
+        Map<Long, List<Long>> graph = new HashMap<>();
+        Map<Long, Integer> indegree = new HashMap<>();
+        for (Map<String, Object> node : nodes) {
+            long id = ((Number) node.get("id")).longValue();
+            Object duration = node.get("medianDurationMs");
+            weight.put(id, duration instanceof Number ? ((Number) duration).longValue() : 0L);
+            if (duration instanceof Number) hasDurationSample = true;
+            indegree.put(id, 0);
+        }
+        // 没有真实耗时样本时无法估算关键路径，不能任意选择一个零耗时节点。
+        if (!hasDurationSample) return Set.of();
+        for (SqlTaskDependency edge : edges) {
+            if (!weight.containsKey(edge.getTaskId()) || !weight.containsKey(edge.getUpstreamTaskId())) continue;
+            graph.computeIfAbsent(edge.getUpstreamTaskId(), key -> new ArrayList<>()).add(edge.getTaskId());
+            indegree.merge(edge.getTaskId(), 1, Integer::sum);
+        }
+        java.util.ArrayDeque<Long> queue = new java.util.ArrayDeque<>();
+        indegree.forEach((id, degree) -> { if (degree == 0) queue.add(id); });
+        Map<Long, Long> distance = new HashMap<>();
+        Map<Long, Long> previous = new HashMap<>();
+        weight.forEach(distance::put);
+        while (!queue.isEmpty()) {
+            long id = queue.remove();
+            for (long next : graph.getOrDefault(id, List.of())) {
+                long candidate = distance.getOrDefault(id, 0L) + weight.getOrDefault(next, 0L);
+                if (candidate > distance.getOrDefault(next, 0L)) {
+                    distance.put(next, candidate);
+                    previous.put(next, id);
+                }
+                if (indegree.merge(next, -1, Integer::sum) == 0) queue.add(next);
+            }
+        }
+        if (distance.isEmpty()) return Set.of();
+        long end = Collections.max(distance.entrySet(), Map.Entry.comparingByValue()).getKey();
+        java.util.LinkedList<Long> ordered = new java.util.LinkedList<>();
+        while (true) {
+            ordered.addFirst(end);
+            if (!previous.containsKey(end)) break;
+            end = previous.get(end);
+        }
+        return new java.util.LinkedHashSet<>(ordered);
+    }
+
+    private Long median(List<Long> values) {
+        if (values.isEmpty()) return null;
+        int middle = values.size() / 2;
+        if (values.size() % 2 == 1) return values.get(middle);
+        return (values.get(middle - 1) + values.get(middle)) / 2;
     }
 
     @Override
@@ -162,16 +232,49 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
         SqlTaskBackfillBatch batch = new SqlTaskBackfillBatch();
         batch.setTaskId(taskId); batch.setStartDate(request.getStartDate()); batch.setEndDate(request.getEndDate());
         batch.setStatus("PENDING"); batch.setTotalCount((int) days); batch.setSubmittedCount(0);
-        batch.setSucceededCount(0); batch.setFailedCount(0); batch.setParameterValues(writeJson(request.getParameters()));
+        batch.setSucceededCount(0); batch.setFailedCount(0); batch.setMaxConcurrency(request.getMaxConcurrency()); batch.setParameterValues(writeJson(request.getParameters()));
         batch.setRequestedBy(operator); backfillMapper.insert(batch);
         LocalDate date = request.getStartDate();
         while (!date.isAfter(request.getEndDate())) {
-            launch(task, null, "BACKFILL", LocalDateTime.now(), date, request.getParameters(),
-                    1, batch.getId(), operator);
+            SqlTaskBackfillItem item = new SqlTaskBackfillItem();
+            item.setBatchId(batch.getId()); item.setTaskId(taskId); item.setBusinessDate(date);
+            item.setStatus("PENDING"); item.setAttemptNo(0); backfillItemMapper.insert(item);
             date = date.plusDays(1);
         }
+        processBackfill(batch);
         backfillMapper.updateProgress(batch.getId());
         return backfillMapper.selectById(batch.getId());
+    }
+
+    @Override
+    public Map<String, Object> getBackfill(long taskId, long batchId) {
+        SqlTaskBackfillBatch batch = requireBackfill(taskId, batchId);
+        return Map.of("batch", batch, "items", backfillItemMapper.listByBatch(batchId));
+    }
+
+    @Override @Transactional
+    public SqlTaskBackfillBatch pauseBackfill(long taskId, long batchId) {
+        SqlTaskBackfillBatch batch = requireBackfill(taskId, batchId);
+        if (backfillMapper.changeStatus(batchId, batch.getStatus(), "PAUSED") != 1) throw badRequest("补数批次状态已变化");
+        return backfillMapper.selectById(batchId);
+    }
+
+    @Override @Transactional
+    public SqlTaskBackfillBatch resumeBackfill(long taskId, long batchId) {
+        requireBackfill(taskId, batchId);
+        if (backfillMapper.changeStatus(batchId, "PAUSED", "RUNNING") != 1) throw badRequest("只有已暂停批次可以恢复");
+        SqlTaskBackfillBatch batch = backfillMapper.selectById(batchId); processBackfill(batch); backfillMapper.updateProgress(batchId);
+        return backfillMapper.selectById(batchId);
+    }
+
+    @Override @Transactional
+    public SqlTaskBackfillBatch retryFailedBackfill(long taskId, long batchId) {
+        requireBackfill(taskId, batchId);
+        if (backfillItemMapper.retryFailed(batchId) == 0) throw badRequest("没有可重试的失败日期");
+        SqlTaskBackfillBatch batch = backfillMapper.selectById(batchId);
+        if (!"RUNNING".equals(batch.getStatus())) backfillMapper.changeStatus(batchId, batch.getStatus(), "RUNNING");
+        batch = backfillMapper.selectById(batchId); processBackfill(batch); backfillMapper.updateProgress(batchId);
+        return backfillMapper.selectById(batchId);
     }
 
     @Override
@@ -220,9 +323,10 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
     @Override
     public void reconcileAndRetry() {
         runMapper.reconcileExecutionStatuses();
+        backfillItemMapper.reconcileStatuses();
         runMapper.syncScheduleLastRunStatuses();
         runMapper.recoverStaleRetryClaims(LocalDateTime.now().minusMinutes(10));
-        for (SqlTaskBackfillBatch batch : backfillMapper.listActive()) backfillMapper.updateProgress(batch.getId());
+        for (SqlTaskBackfillBatch batch : backfillMapper.listActive()) { processBackfill(batch); backfillMapper.updateProgress(batch.getId()); }
         for (SqlTaskScheduleRun failed : runMapper.listRetryable(LocalDateTime.now(), 20)) {
             if (runMapper.claimRetry(failed.getId()) != 1) continue;
             SqlTaskSchedule schedule = scheduleMapper.selectById(failed.getScheduleId());
@@ -232,9 +336,18 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
                     failed.getBackfillBatchId(), SYSTEM_OPERATOR);
             runMapper.markRetried(failed.getId());
         }
+        for (Map<String, Object> breach : runMapper.listDeadlineBreaches(LocalDateTime.now(), 100)) {
+            long runId = ((Number) breach.get("id")).longValue();
+            String policy = String.valueOf(breach.get("timeout_policy"));
+            long elapsed = ((Number) breach.get("elapsed_seconds")).longValue();
+            String note = "[DEADLINE] 运行已超过配置的超时或 SLA，已运行 " + elapsed + " 秒；策略=" + policy;
+            if (runMapper.markBreach(runId, note) == 1 && "CANCEL".equals(policy) && breach.get("execution_id") instanceof Number) {
+                executionService.cancel(((Number) breach.get("execution_id")).longValue());
+            }
+        }
     }
 
-    private void launch(SqlTask task, SqlTaskSchedule schedule, String triggerType,
+    private SqlTaskScheduleRun launch(SqlTask task, SqlTaskSchedule schedule, String triggerType,
                         LocalDateTime scheduledTime, LocalDate businessDate, Map<String, Object> parameters,
                         int attempt, Long backfillId, String operator) {
         SqlTaskScheduleRun run = new SqlTaskScheduleRun();
@@ -253,6 +366,30 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
             run.setStatus("FAILED"); run.setMessage(safeMessage(ex)); runMapper.updateById(run);
             if (schedule != null) scheduleMapper.updateLastRunStatus(schedule.getId(), "FAILED");
         }
+        return run;
+    }
+
+    private void processBackfill(SqlTaskBackfillBatch batch) {
+        if (batch == null || "PAUSED".equals(batch.getStatus())) return;
+        int available = Math.max(0, (batch.getMaxConcurrency() == null ? 3 : batch.getMaxConcurrency())
+                - backfillItemMapper.countActive(batch.getId()));
+        if (available == 0) return;
+        SqlTask task = taskService.require(batch.getTaskId());
+        Map<String, Object> parameters = readMap(batch.getParameterValues());
+        for (SqlTaskBackfillItem item : backfillItemMapper.listPending(batch.getId(), available)) {
+            if (backfillItemMapper.claim(item.getId()) != 1) continue;
+            SqlTaskScheduleRun run = launch(task, null, "BACKFILL", LocalDateTime.now(), item.getBusinessDate(),
+                    parameters, item.getAttemptNo() + 1, batch.getId(), batch.getRequestedBy());
+            if (run.getExecutionId() != null) backfillItemMapper.markSubmitted(item.getId(), run.getExecutionId());
+            else backfillItemMapper.markFailed(item.getId(), run.getMessage());
+        }
+    }
+
+    private SqlTaskBackfillBatch requireBackfill(long taskId, long batchId) {
+        taskService.require(taskId);
+        SqlTaskBackfillBatch batch = backfillMapper.selectById(batchId);
+        if (batch == null || batch.getTaskId() != taskId) throw badRequest("补数批次不存在");
+        return batch;
     }
 
     private void recordSkipped(SqlTaskSchedule schedule, LocalDateTime due, String message) {
@@ -281,6 +418,9 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
         }
         if (!"FORBID".equals(request.getConcurrencyPolicy()) && !"ALLOW".equals(request.getConcurrencyPolicy())) {
             throw badRequest("concurrencyPolicy 仅支持 FORBID 或 ALLOW");
+        }
+        if (!"ALERT_ONLY".equals(request.getTimeoutPolicy()) && !"CANCEL".equals(request.getTimeoutPolicy())) {
+            throw badRequest("timeoutPolicy 仅支持 ALERT_ONLY 或 CANCEL");
         }
         try { ZoneId.of(request.getTimezone()); }
         catch (Exception ex) { throw badRequest("timezone 非法"); }
@@ -330,13 +470,14 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
         row.setCronExpression("CRON".equals(request.getScheduleType()) ? request.getCronExpression().trim() : null);
         row.setTimezone(request.getTimezone()); row.setEnabled(request.getEnabled()); row.setConcurrencyPolicy(request.getConcurrencyPolicy());
         row.setMaxRetries(request.getMaxRetries()); row.setRetryIntervalSeconds(request.getRetryIntervalSeconds());
+        row.setExecutionTimeoutSeconds(request.getExecutionTimeoutSeconds()); row.setSlaDurationMinutes(request.getSlaDurationMinutes()); row.setTimeoutPolicy(request.getTimeoutPolicy());
         row.setParameterValues(writeJson(request.getParameters())); row.setUpdatedBy(operator); return row;
     }
 
     private SqlTaskScheduleVO defaultSchedule(long taskId) {
         SqlTaskScheduleVO vo = new SqlTaskScheduleVO(); vo.setTaskId(taskId); vo.setScheduleType("MANUAL");
         vo.setTimezone("Asia/Shanghai"); vo.setEnabled(false); vo.setConcurrencyPolicy("FORBID");
-        vo.setMaxRetries(0); vo.setRetryIntervalSeconds(60); vo.setRevision(0L); return vo;
+        vo.setMaxRetries(0); vo.setRetryIntervalSeconds(60); vo.setExecutionTimeoutSeconds(0); vo.setSlaDurationMinutes(0); vo.setTimeoutPolicy("ALERT_ONLY"); vo.setRevision(0L); return vo;
     }
 
     private SqlTaskScheduleVO toVO(SqlTaskSchedule row) {
@@ -344,6 +485,7 @@ public class OfflineSchedulingServiceImpl implements OfflineSchedulingService {
         vo.setScheduleType(row.getScheduleType()); vo.setCronExpression(row.getCronExpression()); vo.setTimezone(row.getTimezone());
         vo.setEnabled(row.getEnabled()); vo.setConcurrencyPolicy(row.getConcurrencyPolicy()); vo.setMaxRetries(row.getMaxRetries());
         vo.setRetryIntervalSeconds(row.getRetryIntervalSeconds()); vo.setParameters(readMap(row.getParameterValues()));
+        vo.setExecutionTimeoutSeconds(row.getExecutionTimeoutSeconds()); vo.setSlaDurationMinutes(row.getSlaDurationMinutes()); vo.setTimeoutPolicy(row.getTimeoutPolicy());
         vo.setNextTriggerTime(row.getNextTriggerTime()); vo.setLastTriggerTime(row.getLastTriggerTime());
         vo.setLastRunStatus(row.getLastRunStatus()); vo.setRevision(row.getRevision()); return vo;
     }

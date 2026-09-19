@@ -16,7 +16,6 @@ import {
   Tag,
   Tooltip,
   Typography,
-  Progress,
   message,
 } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -28,7 +27,7 @@ import {
   startSyncTask,
   stopInstance,
 } from '../api';
-import type { RealtimeServer, SyncTask, TaskInstance, TaskParam, TaskRuntimeCheckpoints, TaskRuntimeSnapshot } from '../types';
+import { MYSQL_METADATA_COLUMN_PREFIX, type RealtimeServer, type SyncTask, type TaskInstance, type TaskParam } from '../types';
 import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import InstanceLogPanel from './InstanceLogPanel';
 import InstanceListToolbar, { type InstanceSearchField, type InstanceSortOrder } from './InstanceListToolbar';
@@ -36,6 +35,7 @@ import SyncMoreConfigRows from './SyncMoreConfigRows';
 import SyncTaskConfigDetail from './SyncTaskConfigDetail';
 import SyncSectionNav from './SyncSectionNav';
 import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
+import TaskInstanceProgressCell from './TaskInstanceProgressCell';
 
 interface Props {
   task?: SyncTask;
@@ -113,16 +113,12 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
   const [logInstance, setLogInstance] = useState<TaskInstance>();
   const [selectedInstanceId, setSelectedInstanceId] = useState<number>();
   const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
-  const [qualificationRuntime, setQualificationRuntime] = useState<TaskRuntimeSnapshot>();
-  const [qualificationCheckpoints, setQualificationCheckpoints] = useState<TaskRuntimeCheckpoints>();
-  const [qualificationError, setQualificationError] = useState('');
   const initializedConfigKeyRef = useRef('');
   const submittingRef = useRef(false);
   const acceptedInstancesRef = useRef(new Map<number, TaskInstance>());
   const instanceRequestSequenceRef = useRef(0);
   const inspectorRequestSequenceRef = useRef(0);
   const startSelectionVersionRef = useRef(0);
-  const qualifyingInstance = instances.find((item) => item.status === 'running' || item.status === 'debug_success_running');
 
   const reload = useCallback(async (silent = false) => {
     if (!task) return;
@@ -184,28 +180,6 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
       ),
     });
   }, [configOpen, form, params, supportLoading, task]);
-
-  useEffect(() => {
-    if (!open || !task || !qualifyingInstance?.jobId) {
-      setQualificationRuntime(undefined); setQualificationCheckpoints(undefined); setQualificationError('');
-      return undefined;
-    }
-    let disposed = false;
-    const loadQualification = async () => {
-      try {
-        const [runtime, checkpoints] = await Promise.all([
-          getInstanceInfo(task.id, qualifyingInstance.id, 'runtime') as Promise<TaskRuntimeSnapshot>,
-          getInstanceInfo(task.id, qualifyingInstance.id, 'checkpoints') as Promise<TaskRuntimeCheckpoints>,
-        ]);
-        if (!disposed) { setQualificationRuntime(runtime); setQualificationCheckpoints(checkpoints); setQualificationError(''); }
-      } catch (error) {
-        if (!disposed) setQualificationError(error instanceof Error ? error.message : '调试资格读取失败');
-      }
-    };
-    void loadQualification();
-    const timer = window.setInterval(() => void loadQualification(), 5000);
-    return () => { disposed = true; window.clearInterval(timer); };
-  }, [open, qualifyingInstance?.id, qualifyingInstance?.jobId, task]);
 
   const filtered = useMemo(() => instances.filter((item) => {
     if (status !== 'all' && item.status !== status) return false;
@@ -319,15 +293,6 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
     <InstanceLogPanel taskId={task!.id} instance={logInstance} backLabel="返回调试记录" onBack={() => setLogInstance(undefined)} />
   ) : (
     <div className="debug-records-panel realtime-debug-records">
-      <Alert showIcon type={qualifyingInstance?.status === 'debug_success_running' ? 'success' : 'info'}
-        message={qualifyingInstance?.status === 'debug_success_running' ? '已具备正式启动资格' : '调试成功资格进度'}
-        description={qualifyingInstance ? <Space direction="vertical" size={4} style={{ width: '100%' }}>
-          <span>持续运行：{Math.floor((qualificationRuntime?.runningDurationMs ?? 0) / 1000)} / {qualificationRuntime?.debugSuccessMinRunningSeconds ?? 120} 秒</span>
-          <Progress size="small" percent={qualifyingInstance.status === 'debug_success_running' ? 100 : Math.min(100, Math.floor((qualificationRuntime?.runningDurationMs ?? 0) / 10 / (qualificationRuntime?.debugSuccessMinRunningSeconds ?? 120)))} />
-          <span>成功 Checkpoint：{(qualificationCheckpoints?.counts?.completed ?? 0) > 0 || qualifyingInstance.status === 'debug_success_running' ? '已满足' : '等待中'}</span>
-          {qualificationError && <Typography.Text type="warning">资格数据暂不可用：{qualificationError}</Typography.Text>}
-        </Space> : '实例需达到配置的持续运行时长（默认 2 分钟）且至少产生一次成功 Checkpoint。'}
-        style={{ marginBottom: 12 }} />
       <Alert showIcon type="info" message="调试成功条件" description="实例需达到配置的持续运行时长（默认 2 分钟）且至少产生一次成功 Checkpoint；提前停止会记为已取消，不能用于正式启动。" style={{ marginBottom: 12 }} />
       <InstanceListToolbar keyword={keyword} searchField={searchField} status={status} sortOrder={sortOrder}
         statusOptions={[{ label: '全部状态', value: 'all' }, ...Object.entries(statusLabel).map(([value, label]) => ({ value, label }))]}
@@ -341,12 +306,13 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
         loading={loading}
         dataSource={filtered}
         locale={{ emptyText: '暂无调试实例' }}
-        scroll={{ x: 1690 }}
+        scroll={{ x: 1880 }}
         rowClassName={(row) => row.id === selectedInstanceId ? 'debug-record-selected' : ''}
         pagination={{ pageSize: 6, showSizeChanger: true, pageSizeOptions: [6, 10, 20], showTotal: (value) => `共 ${value} 条` }}
         columns={[
           { title: '实例 ID', dataIndex: 'id', width: 95, fixed: 'left' },
           { title: '状态', dataIndex: 'status', width: 150, fixed: 'left', render: (value: string) => <Tag color={value === 'running' || value === 'debug_success_running' || value === 'killed_success' ? 'green' : value === 'failed' ? 'red' : 'default'}>{statusLabel[value] ?? value}</Tag> },
+          { title: '进度', width: 190, fixed: 'left', render: (_: unknown, row: TaskInstance) => <TaskInstanceProgressCell taskId={task!.id} instance={row} /> },
           { title: 'JobID', dataIndex: 'jobId', width: 230, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '同步中' : '-') },
           { title: 'YARN Application ID', dataIndex: 'yarnApplicationId', width: 210, ellipsis: true, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '提交中' : '-') },
           { title: 'Flink UI', dataIndex: 'trackingUrl', width: 120, render: (value: string, row: TaskInstance) => value ? <Typography.Link href={value} target="_blank"><LinkOutlined /> 打开</Typography.Link> : (ACTIVE.includes(row.status) ? '同步中' : '-') },
@@ -435,6 +401,7 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
           <Descriptions.Item label="目标Paimon表前缀">{debug.prefix || '-'}</Descriptions.Item>
           <Descriptions.Item label="目标Paimon表列表"><Input.TextArea disabled value={debug.targets.join('\n')} rows={Math.max(2, Math.min(debug.targets.length, 6))} /></Descriptions.Item>
           <Descriptions.Item label="目标Paimon表同步元数据列">{task.taskConfig.cdcConfig.metadataColumns?.join('、') || '-'}</Descriptions.Item>
+          <Descriptions.Item label="目标Paimon表同步元数据列前缀"><Input value={MYSQL_METADATA_COLUMN_PREFIX} disabled /></Descriptions.Item>
           <Descriptions.Item label="目标Paimon表类型映射">{task.taskConfig.cdcConfig.typeMappings?.join('、') || '-'}</Descriptions.Item>
           <Descriptions.Item label="目标Paimon表配置"><div className="realtime-dynamic-param-grid">
             <SyncTopologyConfigRows tableConfPath={['tableConfOverrides']} parallelismPath={['parallelism']}

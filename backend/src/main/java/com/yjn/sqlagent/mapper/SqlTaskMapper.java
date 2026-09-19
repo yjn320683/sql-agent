@@ -3,6 +3,7 @@ package com.yjn.sqlagent.mapper;
 import com.baomidou.mybatisplus.core.mapper.BaseMapper;
 import com.yjn.sqlagent.model.entity.SqlTask;
 import java.util.List;
+import java.util.Map;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Param;
 
@@ -35,4 +36,6 @@ public interface SqlTaskMapper extends BaseMapper<SqlTask> {
 
     int activateVersionOptimistically(@Param("task") SqlTask task,
                                       @Param("expectedRevision") long expectedRevision);
+    List<Map<String, Object>> listScheduleDagNodes();
+    List<Map<String, Object>> listRecentSuccessfulDurations();
 }

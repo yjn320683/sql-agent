@@ -18,6 +18,10 @@ public interface OfflineSchedulingService {
     Map<String, Object> dag();
     SqlTaskBackfillBatch createBackfill(String operator, long taskId, SqlTaskBackfillCreateDTO request);
     Map<String, Object> listBackfills(long taskId, int page, int pageSize);
+    Map<String, Object> getBackfill(long taskId, long batchId);
+    SqlTaskBackfillBatch pauseBackfill(long taskId, long batchId);
+    SqlTaskBackfillBatch resumeBackfill(long taskId, long batchId);
+    SqlTaskBackfillBatch retryFailedBackfill(long taskId, long batchId);
     Map<String, Object> listRuns(long taskId, int page, int pageSize);
     void processDueSchedules();
     void reconcileAndRetry();

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import re
 import time
+from datetime import date, datetime
+from decimal import Decimal
 from contextlib import closing
 from dataclasses import dataclass
 from urllib.parse import parse_qs, urlparse
@@ -50,6 +52,15 @@ class FunctionDetailResult:
     truncated: bool
 
 
+@dataclass(frozen=True)
+class PreviewResult:
+    columns: list[dict[str, str | None]]
+    rows: list[list[object | None]]
+    default_db: str
+    elapsed_ms: int
+    truncated: bool
+
+
 class HiveCompilationError(Exception):
     """目标引擎返回的编译错误。"""
 
@@ -73,6 +84,44 @@ class HiveServer2Adapter:
 
     def health(self) -> int:
         return self.explain("SELECT 1", default_db=None, extended=False).compilation_ms
+
+    def preview_query(
+        self,
+        sql: str,
+        *,
+        default_db: str | None,
+        limit: int,
+        timeout_seconds: int = 30,
+    ) -> PreviewResult:
+        _validate_preview_input(sql, limit)
+        connection_info = self._connection_info(default_db)
+        started_at = time.perf_counter()
+        connection = self._connect(connection_info, timeout_seconds=timeout_seconds)
+        try:
+            with closing(connection):
+                with closing(connection.cursor()) as cursor:
+                    cursor.execute(sql)
+                    description = list(cursor.description or [])
+                    raw_rows = list(cursor.fetchmany(limit + 1))
+        except Exception as exc:  # noqa: BLE001 - PyHive/Thrift 异常类型随版本变化
+            raise McpDomainError(
+                McpErrorCode.DEPENDENCY_UNAVAILABLE,
+                "HiveServer2 preview query failed.",
+                details={"dependency": "HIVE_SERVER2_URI", "errorType": type(exc).__name__},
+            ) from exc
+        truncated = len(raw_rows) > limit
+        rows = [[_json_value(value) for value in row] for row in raw_rows[:limit]]
+        columns = [
+            {"name": str(item[0]), "type": str(item[1]) if len(item) > 1 and item[1] is not None else None}
+            for item in description
+        ]
+        return PreviewResult(
+            columns=columns,
+            rows=rows,
+            default_db=str(connection_info["database"]),
+            elapsed_ms=int((time.perf_counter() - started_at) * 1000),
+            truncated=truncated,
+        )
 
     def search_functions(
         self,
@@ -198,7 +247,12 @@ class HiveServer2Adapter:
             truncated=truncated,
         )
 
-    def _connect(self, connection_info: dict[str, str | int | None]):
+    def _connect(
+        self,
+        connection_info: dict[str, str | int | None],
+        *,
+        timeout_seconds: int | None = None,
+    ):
         try:
             from pyhive import hive
             from pyhive.exc import OperationalError
@@ -215,7 +269,7 @@ class HiveServer2Adapter:
                 int(connection_info["port"]),
                 connection_info["username"] if isinstance(connection_info["username"], str) else None,
                 str(connection_info["auth"]),
-                self.timeout_seconds,
+                timeout_seconds if timeout_seconds is not None else self.timeout_seconds,
             )
             return hive.connect(
                 database=str(connection_info["database"]),
@@ -282,6 +336,28 @@ def _validate_explain_input(sql: str) -> None:
             McpErrorCode.INVALID_REQUEST,
             "Only one SQL statement can be explained at a time.",
         )
+
+
+def _validate_preview_input(sql: str, limit: int) -> None:
+    stripped = sql.strip()
+    if limit < 1 or limit > 200:
+        raise McpDomainError(McpErrorCode.INVALID_REQUEST, "Preview limit must be between 1 and 200.")
+    if _has_multiple_statements(stripped):
+        raise McpDomainError(McpErrorCode.INVALID_REQUEST, "Only one SQL statement can be previewed.")
+    if not re.match(r"(?is)^select\s+\*\s+from\s*\(", stripped):
+        raise McpDomainError(McpErrorCode.INVALID_REQUEST, "Only a server-limited read-only preview query is allowed.")
+    if not re.search(rf"(?is)\blimit\s+{limit}\s*;?\s*$", stripped):
+        raise McpDomainError(McpErrorCode.INVALID_REQUEST, "Preview query must include the enforced row limit.")
+
+
+def _json_value(value):
+    if isinstance(value, (datetime, date)):
+        return value.isoformat()
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, bytes):
+        return value.hex()
+    return value
 
 
 def _has_multiple_statements(sql: str) -> bool:

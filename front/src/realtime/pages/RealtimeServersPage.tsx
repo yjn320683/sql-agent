@@ -42,6 +42,7 @@ export default function RealtimeServersPage() {
         databasePrefix: safePatch.databasePrefix,
         description: safePatch.description,
       });
+      setTested(false);
       event.preventDefault();
     };
     const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
@@ -106,7 +107,7 @@ export default function RealtimeServersPage() {
   }, [keyword, rows]);
 
   return (
-    <div className="realtime-page realtime-sync-tasks-page realtime-servers-page">
+    <div className="page-content realtime-page realtime-sync-tasks-page realtime-servers-page">
       <section className="realtime-sync-main-panel">
         <div className="realtime-sync-filter-section">
           <div className="realtime-server-toolbar">

@@ -112,6 +112,37 @@ public class TaskExecutionServiceImpl implements TaskExecutionService {
     }
 
     @Override
+    public TaskExecutionVO rerun(String obId, long executionId) {
+        SqlTaskExecution source = mapper.selectById(executionId);
+        if (source == null) throw new BusinessException(ErrorCode.NOT_FOUND.getCode(), "执行实例不存在");
+        if (!List.of("FAILED", "CANCELLED").contains(source.getStatus())) {
+            throw badRequest("只能重跑失败或已取消的终态实例");
+        }
+        SqlTask task = taskService.require(source.getTaskId());
+        if (Boolean.TRUE.equals(task.getArchived())) throw badRequest("归档任务不能重跑");
+        if (!Boolean.TRUE.equals(task.getEnabled())) throw badRequest("停用任务不能重跑，请先启用");
+
+        SqlTaskExecution replay = new SqlTaskExecution();
+        replay.setTaskId(source.getTaskId()); replay.setTaskNameSnapshot(source.getTaskNameSnapshot());
+        replay.setSqlSnapshot(source.getSqlSnapshot()); replay.setParameterSchemaSnapshot(source.getParameterSchemaSnapshot());
+        replay.setRenderedSqlSnapshot(source.getRenderedSqlSnapshot());
+        replay.setParameterValues(source.getParameterValues()); replay.setBusinessDate(source.getBusinessDate());
+        replay.setSourceType("REPLAY"); replay.setTaskVersionNo(source.getTaskVersionNo()); replay.setTaskRevision(source.getTaskRevision());
+        replay.setSourceExecutionId(source.getId()); replay.setReplayStrategy("SNAPSHOT_REPLAY");
+        replay.setRequestedBy(obId); replay.setStatus("PENDING"); replay.setSubmittedAt(LocalDateTime.now());
+        replay.setTotalSteps(structureService.parseVersionSteps(source.getTaskId(), 0, source.getSqlSnapshot()).size());
+        replay.setSucceededSteps(0);
+        mapper.insert(replay);
+        try {
+            agentProxyService.startTaskExecution(replay.getId());
+        } catch (RuntimeException ex) {
+            mapper.failPending(replay.getId(), "Agent 未接受执行请求");
+            log.error("启动快照重跑失败 executionId={} sourceExecutionId={}", replay.getId(), source.getId(), ex);
+        }
+        return get(replay.getId());
+    }
+
+    @Override
     public TaskExecutionPageVO list(long taskId, ExecutionQueryDTO query) {
         taskService.require(taskId);
         validateQuery(query);
@@ -173,6 +204,8 @@ public class TaskExecutionServiceImpl implements TaskExecutionService {
         vo.setSourceType(row.getSourceType() == null ? "EFFECTIVE" : row.getSourceType());
         vo.setTaskVersionNo(row.getTaskVersionNo());
         vo.setTaskRevision(row.getTaskRevision());
+        vo.setSourceExecutionId(row.getSourceExecutionId());
+        vo.setReplayStrategy(row.getReplayStrategy());
         vo.setStatus(row.getStatus());
         vo.setCurrentStepNo(row.getCurrentStepNo());
         vo.setTotalSteps(row.getTotalSteps());

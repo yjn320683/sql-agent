@@ -17,6 +17,7 @@ import com.yjn.sqlagent.model.vo.SqlTaskVersionPageVO;
 import com.yjn.sqlagent.model.vo.SqlTaskVersionVO;
 import com.yjn.sqlagent.service.SqlTaskVersionService;
 import com.yjn.sqlagent.service.TaskSqlStructureService;
+import com.yjn.sqlagent.service.TaskLineageSnapshotService;
 import com.yjn.sqlagent.service.TaskVersionUnionService;
 import java.time.LocalDateTime;
 import java.util.Collections;
@@ -37,19 +38,22 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
     private final TaskSqlStructureService structureService;
     private final ObjectMapper objectMapper;
     private final TaskVersionUnionService unionService;
+    private final TaskLineageSnapshotService lineageSnapshotService;
 
     public SqlTaskVersionServiceImpl(SqlTaskMapper taskMapper,
                                      SqlTaskVersionMapper versionMapper,
                                      SqlTaskVersionStepMapper stepMapper,
                                      TaskSqlStructureService structureService,
                                      ObjectMapper objectMapper,
-                                     TaskVersionUnionService unionService) {
+                                     TaskVersionUnionService unionService,
+                                     TaskLineageSnapshotService lineageSnapshotService) {
         this.taskMapper = taskMapper;
         this.versionMapper = versionMapper;
         this.stepMapper = stepMapper;
         this.structureService = structureService;
         this.objectMapper = objectMapper;
         this.unionService = unionService;
+        this.lineageSnapshotService = lineageSnapshotService;
     }
 
     @Override
@@ -80,8 +84,12 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
         LocalDateTime now = LocalDateTime.now();
         version.setCreateTime(now);
         version.setUpdateTime(now);
+        TaskSqlStructureService.VersionAnalysis analysis = structureService.analyzeVersion(
+                taskId, versionNo, version.getSqlContent());
         versionMapper.insert(version);
-        replaceSteps(version);
+        insertSteps(analysis.getSteps());
+        lineageSnapshotService.saveOffline(taskId, version.getId(), versionNo, version.getSqlChecksum(),
+                "default", "SAVED", analysis.getLineage());
         return toVO(version, stepMapper.listByVersion(taskId, versionNo), task);
     }
 
@@ -112,12 +120,15 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
         if (!hasContentChange(current, next)) {
             return toVO(current, stepMapper.listByVersion(taskId, versionNo), task);
         }
-        List<SqlTaskVersionStep> steps = structureService.parseVersionSteps(taskId, versionNo, sql);
+        TaskSqlStructureService.VersionAnalysis analysis = structureService.analyzeVersion(taskId, versionNo, sql);
         if (versionMapper.updateDraftOptimistically(next, request.getRevision()) != 1) {
             throw versionConflict(requireVersion(taskId, versionNo));
         }
         stepMapper.deleteByVersion(taskId, versionNo);
-        for (SqlTaskVersionStep step : steps) stepMapper.insert(step);
+        insertSteps(analysis.getSteps());
+        SqlTaskVersion saved = requireVersion(taskId, versionNo);
+        lineageSnapshotService.saveOffline(taskId, saved.getId(), versionNo, next.getSqlChecksum(),
+                "default", "SAVED", analysis.getLineage());
         unionService.invalidateMemberCompare(taskId, versionNo);
         return get(taskId, versionNo);
     }
@@ -137,7 +148,8 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
         if (!Objects.equals(version.getRevision(), request.getVersionRevision())) throw versionConflict(version);
 
         // 生效前再次完整解析，保证写入任务的是已校验版本。
-        List<SqlTaskVersionStep> steps = structureService.parseVersionSteps(taskId, versionNo, version.getSqlContent());
+        TaskSqlStructureService.VersionAnalysis analysis = structureService.analyzeVersion(
+                taskId, versionNo, version.getSqlContent());
         SqlTask effective = new SqlTask();
         effective.setId(taskId);
         effective.setName(version.getName());
@@ -157,7 +169,9 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
             throw versionConflict(requireVersion(taskId, versionNo));
         }
         stepMapper.deleteByVersion(taskId, versionNo);
-        for (SqlTaskVersionStep step : steps) stepMapper.insert(step);
+        insertSteps(analysis.getSteps());
+        lineageSnapshotService.saveOffline(taskId, version.getId(), versionNo, version.getSqlChecksum(),
+                "default", "SAVED", analysis.getLineage());
         return get(taskId, versionNo);
     }
 
@@ -181,9 +195,7 @@ public class SqlTaskVersionServiceImpl implements SqlTaskVersionService {
         return toVO(version, stepMapper.listByVersion(taskId, versionNo), task);
     }
 
-    private void replaceSteps(SqlTaskVersion version) {
-        List<SqlTaskVersionStep> steps = structureService.parseVersionSteps(
-                version.getTaskId(), version.getVersionNo(), version.getSqlContent());
+    private void insertSteps(List<SqlTaskVersionStep> steps) {
         for (SqlTaskVersionStep step : steps) stepMapper.insert(step);
     }
 

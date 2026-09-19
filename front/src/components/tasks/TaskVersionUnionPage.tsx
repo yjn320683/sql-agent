@@ -217,7 +217,7 @@ export default function TaskVersionUnionPage() {
     { title: '操作', width: 80, render: (_, row) => <Button danger type="link" size="small" onClick={() => setEditorMembers((current) => current.filter((item) => item.key !== row.key))}>移除</Button> },
   ];
 
-  return <div className="data-page task-version-union-page">
+  return <div className="page-content data-page task-version-union-page">
     <header className="data-page-header">
       <div><Typography.Title level={2}>联合版本</Typography.Title><Typography.Text type="secondary">成员分别验数，门禁全部满足后统一执行 DDL 并生效</Typography.Text></div>
       <Space><Button icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks')}>返回任务管理</Button><Button type="primary" icon={<PlusOutlined />} onClick={openCreate}>新建联合版本</Button></Space>

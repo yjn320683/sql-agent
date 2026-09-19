@@ -1,29 +1,50 @@
 import { useCallback, useEffect, useState } from 'react';
 import { Button, Descriptions, Form, Input, Modal, Select, Space, Table, Tabs, Tag, Tooltip, Typography, message } from 'antd';
 import { CopyOutlined, PlusOutlined, ReloadOutlined, SearchOutlined } from '@ant-design/icons';
-import { createRealtimeTable, getRealtimeTable, listRealtimeDatabases, listRealtimeTables, refreshRealtimeTable, safeUpdateRealtimeTable } from '../api';
+import {
+  assignAssetDomain,
+  createRealtimeTable,
+  getAssetDomainAssignment,
+  getRealtimeTable,
+  listBusinessDomainOptions,
+  listRealtimeDatabases,
+  listRealtimeTables,
+  refreshRealtimeTable,
+  safeUpdateRealtimeTable,
+  validateRealtimeTableSafeUpdate,
+  unassignAssetDomain,
+} from '../api';
 import type { AiProposal } from '../../types';
-import type { RealtimeTable, RealtimeTableColumn } from '../types';
+import type { BusinessDomain, RealtimeTable, RealtimeTableColumn } from '../types';
 import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import { createRealtimeTableDdl } from '../utils/realtimeTableDdl';
 import { toRealtimeTableDraft, type RealtimeTableFormValue } from '../utils/realtimeTableDdl';
 import RealtimeTableCreateModal, { normalizeRealtimeTableColumns } from '../components/RealtimeTableCreateModal';
+import { ImpactSummary, RealtimeTableImpactPanel, RealtimeTableSchemaHistory } from '../components/RealtimeTableLifecyclePanels';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 
 const typeOptions = ['BOOLEAN', 'TINYINT', 'SMALLINT', 'INT', 'BIGINT', 'FLOAT', 'DOUBLE', 'STRING', 'BYTES', 'DATE', 'TIMESTAMP(3)', 'DECIMAL(18,2)'].map((value) => ({ value, label: value }));
 const statusLabel: Record<string, string> = { declared: '待创建', active: '可用', error: '异常' };
 const statusColor: Record<string, string> = { declared: 'processing', active: 'success', error: 'error' };
 
 export default function RealtimeTablesPage() {
+  const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const requestedTableId = Number(searchParams.get('tableId') || 0);
   const { actionColumnWidth, actionRef } = useAutoTableActionWidth({ initialWidth: 190, minWidth: 150 });
   const [rows, setRows] = useState<RealtimeTable[]>([]); const [total, setTotal] = useState(0); const [loading, setLoading] = useState(false);
-  const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState('all'); const [source, setSource] = useState('all'); const [producer, setProducer] = useState(''); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(20);
+  const [keyword, setKeyword] = useState(''); const [status, setStatus] = useState('all'); const [source, setSource] = useState('all'); const [producer, setProducer] = useState(''); const [businessDomainId, setBusinessDomainId] = useState<number>(); const [page, setPage] = useState(1); const [pageSize, setPageSize] = useState(20);
   const [databases, setDatabases] = useState<string[]>([]); const [editing, setEditing] = useState(false); const [detail, setDetail] = useState<RealtimeTable>(); const [detailLoading, setDetailLoading] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [domainOptions, setDomainOptions] = useState<BusinessDomain[]>([]);
+  const [domainId, setDomainId] = useState<number>();
+  const [domainSaving, setDomainSaving] = useState(false);
   const detailDdl = detail?.ddl || createRealtimeTableDdl(detail);
   const [addColumn, setAddColumn] = useState(false); const [form] = Form.useForm<RealtimeTableFormValue>(); const [columnForm] = Form.useForm();
   const safeUpdateDraft = Form.useWatch([], columnForm);
-  const load = useCallback(async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) }); if (keyword) query.set('keyword', keyword); if (status !== 'all') query.set('status', status); if (source !== 'all') query.set('source', source); if (producer) query.set('producer', producer); const result = await listRealtimeTables(query); setRows(result.records); setTotal(result.total); } catch (error) { message.error((error as Error).message); } finally { setLoading(false); } }, [keyword, page, pageSize, producer, source, status]);
+  const load = useCallback(async () => { setLoading(true); try { const query = new URLSearchParams({ page: String(page), pageSize: String(pageSize) }); if (keyword) query.set('keyword', keyword); if (status !== 'all') query.set('status', status); if (source !== 'all') query.set('source', source); if (producer) query.set('producer', producer); if (businessDomainId) query.set('businessDomainId', String(businessDomainId)); const result = await listRealtimeTables(query); setRows(result.records); setTotal(result.total); } catch (error) { message.error((error as Error).message); } finally { setLoading(false); } }, [businessDomainId, keyword, page, pageSize, producer, source, status]);
   useEffect(() => { void load(); void listRealtimeDatabases().then(setDatabases).catch(() => setDatabases([])); }, [load]);
+  useEffect(() => { void listBusinessDomainOptions().then(setDomainOptions).catch(() => setDomainOptions([])); }, []);
   useEffect(() => {
     if (editing) return;
     const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
@@ -59,7 +80,32 @@ export default function RealtimeTablesPage() {
     window.addEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
     return () => window.removeEventListener('sql-agent:apply-ai-proposal', applyAiProposal);
   }, [addColumn, columnForm, detail]);
-  const openDetail = async (id: number) => { setDetailLoading(true); try { setDetail(await getRealtimeTable(id)); } catch (error) { message.error((error as Error).message); } finally { setDetailLoading(false); } };
+  const openDetail = async (id: number) => {
+    setDetailLoading(true);
+    try {
+      const table = await getRealtimeTable(id);
+      setDetail(table);
+      const assignment = await getAssetDomainAssignment('PAIMON', table.catalogName || 'paimon', table.databaseName, table.tableName);
+      setDomainId(assignment.domainId);
+    } catch (error) {
+      setDomainId(undefined);
+      message.error((error as Error).message);
+    } finally { setDetailLoading(false); }
+  };
+  const changeDomain = async (nextDomainId?: number) => {
+    if (!detail) return;
+    setDomainSaving(true);
+    try {
+      if (nextDomainId) {
+        await assignAssetDomain({ assetType: 'PAIMON', catalogName: detail.catalogName || 'paimon', databaseName: detail.databaseName, tableName: detail.tableName, realtimeTableId: detail.id, domainId: nextDomainId });
+        setDomainId(nextDomainId); message.success('业务域已关联');
+      } else {
+        await unassignAssetDomain('PAIMON', detail.catalogName || 'paimon', detail.databaseName, detail.tableName);
+        setDomainId(undefined); message.success('业务域关联已解除');
+      }
+    } catch (error) { message.error((error as Error).message); } finally { setDomainSaving(false); }
+  };
+  useEffect(() => { if (requestedTableId > 0 && detail?.id !== requestedTableId) void openDetail(requestedTableId); }, [detail?.id, requestedTableId]);
   const openSafeUpdate = async (id: number) => { try { const table = await getRealtimeTable(id); setDetail(table); columnForm.setFieldsValue({ comment: table.tableComment, options: { 'snapshot.time-retained': table.options?.['snapshot.time-retained'], 'compaction.min.file-num': table.options?.['compaction.min.file-num'] }, addColumns: [], columnComments: [] }); setAddColumn(true); } catch (error) { message.error((error as Error).message); } };
   const submit = async () => { try {
     const value = await form.validateFields(); const draft = toRealtimeTableDraft(value); const columns = normalizeRealtimeTableColumns(draft.columns);
@@ -76,9 +122,10 @@ export default function RealtimeTablesPage() {
   const refresh = async (row: RealtimeTable) => { try { await refreshRealtimeTable(row.id); message.success('物理表状态已刷新'); await load(); if (detail?.id === row.id) await openDetail(row.id); } catch (error) { message.error((error as Error).message); } };
   const copyDdl = async () => { if (!detailDdl) return; try { await navigator.clipboard.writeText(detailDdl); message.success('建表 DDL 已复制'); } catch { message.error('复制失败，请手动选择建表 DDL'); } };
   const create = () => { form.resetFields(); form.setFieldsValue({ catalogName: 'paimon', tableType: 'primary_key', bucket: 2, sinkParallelism: 2, changelogProducer: 'input', consumerExpiration: '1 d', extraOptions: [], columns: [{ name: '', dataType: 'BIGINT', nullable: false, primaryKey: true, partitionKey: false, comment: '' }] }); setEditing(true); };
-  return <div className="realtime-page realtime-sync-tasks-page realtime-tables-page"><section className="realtime-sync-main-panel">
+  const submitSafeUpdate = async () => { try { const value = await columnForm.validateFields(); if (!detail) return; const impact = await validateRealtimeTableSafeUpdate(detail.id, value); Modal.confirm({ title: '确认应用安全变更', width: 760, content: <ImpactSummary value={impact} />, okText: '确认应用', cancelText: '返回修改', onOk: async () => { await safeUpdateRealtimeTable(detail.id, value); message.success('安全变更已应用'); setAddColumn(false); await load(); await openDetail(detail.id); } }); } catch (error) { if (error instanceof Error) message.error(error.message); } };
+  return <div className="page-content realtime-page realtime-sync-tasks-page realtime-tables-page"><section className="realtime-sync-main-panel">
     <div className="realtime-sync-filter-section"><div className="realtime-table-toolbar">
-      <div className="realtime-table-filter-row"><Input value={keyword} onChange={(e) => setKeyword(e.target.value)} onPressEnter={() => { setPage(1); void load(); }} prefix={<SearchOutlined />} placeholder="库名 / 表名 / 描述" allowClear /><Select value={status} onChange={setStatus} options={[{ value: 'all', label: '全部状态' }, { value: 'active', label: '可用' }, { value: 'declared', label: '待创建' }, { value: 'error', label: '异常' }]} /><Select value={source} onChange={setSource} options={[{ value: 'all', label: '全部来源' }, { value: 'manual', label: '手工创建' }, { value: 'sync', label: '同步任务' }]} /><Input value={producer} onChange={(e) => setProducer(e.target.value)} placeholder="生产任务 ID / 名称" allowClear /><Button type="primary" icon={<SearchOutlined />} onClick={() => { setPage(1); void load(); }}>查询</Button><Typography.Text type="secondary" className="realtime-table-total">共 {total} 张</Typography.Text></div>
+      <div className="realtime-table-filter-row"><Input value={keyword} onChange={(e) => setKeyword(e.target.value)} onPressEnter={() => { setPage(1); void load(); }} prefix={<SearchOutlined />} placeholder="库名 / 表名 / 描述" allowClear /><Select value={status} onChange={setStatus} options={[{ value: 'all', label: '全部状态' }, { value: 'active', label: '可用' }, { value: 'declared', label: '待创建' }, { value: 'error', label: '异常' }]} /><Select value={source} onChange={setSource} options={[{ value: 'all', label: '全部来源' }, { value: 'manual', label: '手工创建' }, { value: 'sync', label: '同步任务' }]} /><Select allowClear showSearch optionFilterProp="label" value={businessDomainId} onChange={setBusinessDomainId} placeholder="全部业务域" options={domainOptions.map((item) => ({ value: item.id, label: item.name }))} /><Input value={producer} onChange={(e) => setProducer(e.target.value)} placeholder="生产任务 ID / 名称" allowClear /><Button type="primary" icon={<SearchOutlined />} onClick={() => { setPage(1); void load(); }}>查询</Button><Typography.Text type="secondary" className="realtime-table-total">共 {total} 张</Typography.Text></div>
       <Space size={8}><Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip><Tooltip title="新建实时表"><Button aria-label="新建实时表" type="primary" icon={<PlusOutlined />} onClick={create} /></Tooltip></Space>
     </div></div>
     <div className="realtime-sync-table-section"><Table rowKey="id" loading={loading} dataSource={rows} scroll={{ x: 1170 + actionColumnWidth }} pagination={{ current: page, pageSize, total, showSizeChanger: true, pageSizeOptions: [20, 50, 100], showTotal: (value) => `共 ${value} 张` }} onChange={(pagination) => { setPage(pagination.current || 1); setPageSize(pagination.pageSize || 20); }} columns={[
@@ -91,9 +138,11 @@ export default function RealtimeTablesPage() {
     ]} /></div>
     <RealtimeTableCreateModal open={editing} form={form} databases={databases} submitting={creating} onCancel={() => setEditing(false)} onSubmit={() => void submit()} />
     <Modal title={detail ? `${detail.databaseName}.${detail.tableName}` : '实时表详情'} open={Boolean(detail) && !addColumn} onCancel={() => setDetail(undefined)} footer={null} width={980}><Tabs className="ui-flat-tabs realtime-table-detail-tabs" items={[
-      { key: 'detail', label: '表详情', children: <><Descriptions bordered size="small" column={2}><Descriptions.Item label="状态"><Tag color={detail && statusColor[detail.physicalStatus]}>{detail && statusLabel[detail.physicalStatus]}</Tag></Descriptions.Item><Descriptions.Item label="来源">{detail?.creationSource === 'sync' ? '同步任务自动登记' : '实时表管理创建'}</Descriptions.Item><Descriptions.Item label="生产任务">{detail?.producerTaskName || '-'}</Descriptions.Item><Descriptions.Item label="最近同步">{detail?.lastSyncedAt || '-'}</Descriptions.Item><Descriptions.Item label="描述" span={2}>{detail?.tableComment || '-'}</Descriptions.Item></Descriptions><Typography.Title level={5}>字段</Typography.Title><Table size="small" pagination={false} rowKey="name" dataSource={detail?.columns} columns={[{ title: '字段', dataIndex: 'name' }, { title: '类型', dataIndex: 'dataType' }, { title: '可空', render: (_, row: RealtimeTableColumn) => row.nullable ? '是' : '否' }, { title: '主键', render: (_, row: RealtimeTableColumn) => row.primaryKey ? '是' : '-' }, { title: '分区', render: (_, row: RealtimeTableColumn) => row.partitionKey ? '是' : '-' }, { title: '描述', dataIndex: 'comment' }]} /><Typography.Title level={5}>任务依赖</Typography.Title><Table size="small" pagination={false} rowKey={(row) => `${row.taskId}-${row.referenceRole}`} dataSource={detail?.dependencies} columns={[{ title: '任务', dataIndex: 'taskName' }, { title: '类型', dataIndex: 'taskType' }, { title: '角色', dataIndex: 'referenceRole' }, { title: '状态', dataIndex: 'status' }]} /></> },
+      { key: 'detail', label: '表详情', children: <><Descriptions bordered size="small" column={2}><Descriptions.Item label="状态"><Tag color={detail && statusColor[detail.physicalStatus]}>{detail && statusLabel[detail.physicalStatus]}</Tag></Descriptions.Item><Descriptions.Item label="来源">{detail?.creationSource === 'sync' ? '同步任务自动登记' : '实时表管理创建'}</Descriptions.Item><Descriptions.Item label="生产任务">{detail?.producerTaskName || '-'}</Descriptions.Item><Descriptions.Item label="最近同步">{detail?.lastSyncedAt || '-'}</Descriptions.Item><Descriptions.Item label="业务域"><Select allowClear showSearch optionFilterProp="label" loading={domainSaving} value={domainId} placeholder="未归属业务域" style={{ minWidth: 220 }} options={domainOptions.map((item) => ({ value: item.id, label: `${item.name} (${item.code})` }))} onChange={(value) => void changeDomain(value)} /></Descriptions.Item><Descriptions.Item label="血缘"><Button type="link" onClick={() => detail && navigate(`/data-map/lineage?catalog=${detail.catalogName || 'paimon'}&database=${detail.databaseName}&table=${detail.tableName}`)}>查看全局血缘</Button></Descriptions.Item><Descriptions.Item label="描述">{detail?.tableComment || '-'}</Descriptions.Item></Descriptions><Typography.Title level={5}>字段</Typography.Title><Table size="small" pagination={false} rowKey="name" dataSource={detail?.columns} columns={[{ title: '字段', dataIndex: 'name' }, { title: '类型', dataIndex: 'dataType' }, { title: '可空', render: (_, row: RealtimeTableColumn) => row.nullable ? '是' : '否' }, { title: '主键', render: (_, row: RealtimeTableColumn) => row.primaryKey ? '是' : '-' }, { title: '分区', render: (_, row: RealtimeTableColumn) => row.partitionKey ? '是' : '-' }, { title: '描述', dataIndex: 'comment' }]} /><Typography.Title level={5}>任务依赖</Typography.Title><Table size="small" pagination={false} rowKey={(row) => `${row.taskId}-${row.referenceRole}`} dataSource={detail?.dependencies} columns={[{ title: '任务', dataIndex: 'taskName' }, { title: '类型', dataIndex: 'taskType' }, { title: '角色', dataIndex: 'referenceRole' }, { title: '状态', dataIndex: 'status' }]} /></> },
+      { key: 'schema-history', label: 'Schema 历史', children: detail ? <RealtimeTableSchemaHistory table={detail} /> : null },
+      { key: 'impact', label: '影响分析', children: detail ? <RealtimeTableImpactPanel table={detail} /> : null },
       { key: 'ddl', label: '建表 DDL', children: <div className="realtime-table-ddl-panel"><div className="realtime-table-ddl-toolbar"><Typography.Text type="secondary">完整 Paimon CREATE TABLE 语句</Typography.Text><Space><Button icon={<ReloadOutlined />} loading={detailLoading} onClick={() => detail && void openDetail(detail.id)}>重新读取</Button><Button icon={<CopyOutlined />} disabled={!detailDdl} onClick={() => void copyDdl()}>复制 DDL</Button></Space></div>{detailDdl ? <pre>{detailDdl}</pre> : <div className="realtime-table-ddl-empty">{detail?.ddlError || '未读取到 Paimon 物理表结构'}</div>}</div> },
     ]} /></Modal>
-    <Modal title="安全变更" open={addColumn} width={760} onCancel={() => setAddColumn(false)} onOk={async () => { try { const value = await columnForm.validateFields(); if (!detail) return; await safeUpdateRealtimeTable(detail.id, value); message.success('安全变更已应用'); setAddColumn(false); await load(); } catch (error) { if (error instanceof Error) message.error(error.message); } }}><Form form={columnForm} layout="vertical"><Form.Item name="comment" label="表描述"><Input /></Form.Item><Space><Form.Item name={['options', 'snapshot.time-retained']} label="快照保留时间"><Input placeholder="例如 1 d" /></Form.Item><Form.Item name={['options', 'compaction.min.file-num']} label="Compaction 最小文件数"><Input placeholder="例如 5" /></Form.Item></Space><Typography.Text strong>修改字段描述</Typography.Text><Form.List name="columnComments">{(fields, { add, remove }) => <><Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>{fields.map((field) => <Space key={field.key}><Form.Item name={[field.name, 'name']} rules={[{ required: true }]}><Select style={{ width: 220 }} options={detail?.columns?.map((column) => ({ value: column.name, label: column.name }))} placeholder="已有字段" /></Form.Item><Form.Item name={[field.name, 'comment']}><Input style={{ width: 300 }} placeholder="字段描述" /></Form.Item><Button type="link" danger onClick={() => remove(field.name)}>删除</Button></Space>)}</Space><Button type="dashed" onClick={() => add()}>修改字段描述</Button></>}</Form.List><Typography.Text strong style={{ display: 'block', marginTop: 18 }}>增加可空字段</Typography.Text><Form.List name="addColumns">{(fields, { add, remove }) => <><Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>{fields.map((field) => <Space key={field.key}><Form.Item name={[field.name, 'name']} rules={[{ required: true }]}><Input placeholder="新增字段名" /></Form.Item><Form.Item name={[field.name, 'dataType']} rules={[{ required: true }]}><Select style={{ width: 180 }} options={typeOptions} placeholder="类型" /></Form.Item><Form.Item name={[field.name, 'nullable']}><Select style={{ width: 100 }} options={[{ value: true, label: '可空' }]} /></Form.Item><Button type="link" danger onClick={() => remove(field.name)}>删除</Button></Space>)}</Space><Button type="dashed" onClick={() => add({ nullable: true })}>增加字段</Button></>}</Form.List></Form></Modal>
+    <Modal title="安全变更" open={addColumn} width={760} onCancel={() => setAddColumn(false)} onOk={() => void submitSafeUpdate()} okText="分析影响"><Form form={columnForm} layout="vertical"><Form.Item name="comment" label="表描述"><Input /></Form.Item><Space><Form.Item name={['options', 'snapshot.time-retained']} label="快照保留时间"><Input placeholder="例如 1 d" /></Form.Item><Form.Item name={['options', 'compaction.min.file-num']} label="Compaction 最小文件数"><Input placeholder="例如 5" /></Form.Item></Space><Typography.Text strong>修改字段描述</Typography.Text><Form.List name="columnComments">{(fields, { add, remove }) => <><Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>{fields.map((field) => <Space key={field.key}><Form.Item name={[field.name, 'name']} rules={[{ required: true }]}><Select style={{ width: 220 }} options={detail?.columns?.map((column) => ({ value: column.name, label: column.name }))} placeholder="已有字段" /></Form.Item><Form.Item name={[field.name, 'comment']}><Input style={{ width: 300 }} placeholder="字段描述" /></Form.Item><Button type="link" danger onClick={() => remove(field.name)}>删除</Button></Space>)}</Space><Button type="dashed" onClick={() => add()}>修改字段描述</Button></>}</Form.List><Typography.Text strong style={{ display: 'block', marginTop: 18 }}>增加可空字段</Typography.Text><Form.List name="addColumns">{(fields, { add, remove }) => <><Space direction="vertical" style={{ width: '100%', marginTop: 8 }}>{fields.map((field) => <Space key={field.key}><Form.Item name={[field.name, 'name']} rules={[{ required: true }]}><Input placeholder="新增字段名" /></Form.Item><Form.Item name={[field.name, 'dataType']} rules={[{ required: true }]}><Select style={{ width: 180 }} options={typeOptions} placeholder="类型" /></Form.Item><Form.Item name={[field.name, 'nullable']}><Select style={{ width: 100 }} options={[{ value: true, label: '可空' }]} /></Form.Item><Button type="link" danger onClick={() => remove(field.name)}>删除</Button></Space>)}</Space><Button type="dashed" onClick={() => add({ nullable: true })}>增加字段</Button></>}</Form.List></Form></Modal>
   </section></div>;
 }

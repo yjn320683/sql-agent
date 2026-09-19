@@ -29,6 +29,7 @@ import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
 
 import java.util.Collections;
+import java.time.LocalDate;
 
 @ExtendWith(MockitoExtension.class)
 class TaskExecutionServiceImplTest {
@@ -98,6 +99,33 @@ class TaskExecutionServiceImplTest {
         TaskExecutionServiceImpl service = service();
 
         assertThrows(BusinessException.class, () -> service.create("138284", 9L, request));
+    }
+
+    @Test
+    void rerunCopiesImmutableSnapshotAndLinksSourceExecution() {
+        SqlTaskExecution source = new SqlTaskExecution();
+        source.setId(40L); source.setTaskId(9L); source.setTaskNameSnapshot("旧版本任务");
+        source.setStatus("FAILED"); source.setSqlSnapshot("SELECT '${day}'");
+        source.setRenderedSqlSnapshot("SELECT '2026-09-15'"); source.setParameterSchemaSnapshot("[]");
+        source.setParameterValues("{\"day\":\"2026-09-15\"}"); source.setBusinessDate(LocalDate.of(2026, 9, 15));
+        source.setTaskVersionNo(6); source.setTaskRevision(12L);
+        SqlTask task = new SqlTask(); task.setId(9L); task.setArchived(false); task.setEnabled(true);
+        when(mapper.selectById(40L)).thenReturn(source); when(taskService.require(9L)).thenReturn(task);
+        doAnswer(invocation -> { SqlTaskExecution row = invocation.getArgument(0); row.setId(41L); return 1; })
+                .when(mapper).insert(any(SqlTaskExecution.class));
+        SqlTaskExecution stored = new SqlTaskExecution(); stored.setId(41L); stored.setTaskId(9L);
+        stored.setStatus("QUEUED"); stored.setSourceType("REPLAY"); stored.setSourceExecutionId(40L);
+        when(mapper.selectById(41L)).thenReturn(stored); when(stepMapper.listByExecution(41L)).thenReturn(Collections.emptyList());
+
+        TaskExecutionVO result = service().rerun("tester", 40L);
+
+        ArgumentCaptor<SqlTaskExecution> captor = ArgumentCaptor.forClass(SqlTaskExecution.class);
+        verify(mapper).insert(captor.capture()); SqlTaskExecution replay = captor.getValue();
+        assertEquals("SELECT '${day}'", replay.getSqlSnapshot());
+        assertEquals("SELECT '2026-09-15'", replay.getRenderedSqlSnapshot());
+        assertEquals("{\"day\":\"2026-09-15\"}", replay.getParameterValues());
+        assertEquals(40L, replay.getSourceExecutionId()); assertEquals("SNAPSHOT_REPLAY", replay.getReplayStrategy());
+        verify(agentProxyService).startTaskExecution(41L); assertEquals("REPLAY", result.getSourceType());
     }
 
     @Test

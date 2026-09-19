@@ -14,4 +14,5 @@ public interface SqlTaskBackfillBatchMapper extends BaseMapper<SqlTaskBackfillBa
                                           @Param("offset") long offset,
                                           @Param("pageSize") int pageSize);
     long countByTask(@Param("taskId") long taskId);
+    int changeStatus(@Param("id") long id, @Param("from") String from, @Param("to") String to);
 }

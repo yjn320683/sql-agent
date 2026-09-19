@@ -10,6 +10,7 @@ import javax.validation.constraints.NotNull;
 /** 统一任务接口请求。 */
 public class UnifiedTaskRequest {
     private Long taskId;
+    private Long projectId;
     @NotBlank(message = "任务类型不能为空")
     private String taskType = "sync";
     @NotBlank(message = "任务名称不能为空")
@@ -37,8 +38,7 @@ public class UnifiedTaskRequest {
         cdc.put("mode", "combined");
         Long sourceServerId = number(specific.get("sourceServerId"));
         if (sourceServerId == null) sourceServerId = number(cdc.get("sourceServerId"));
-        String targetDatabase = text(cdc.get("targetDatabase"));
-        if (targetDatabase.isEmpty()) targetDatabase = text(specific.get("targetDatabase"));
+        String targetDatabase = com.yjn.sqlagent.realtime.config.RealtimeProperties.SYNC_TASK_TARGET_DATABASE;
 
         specific.put("sourceServerId", sourceServerId);
         copyIfPresent(flinkConf, specific, "parallelism", "parallelism");
@@ -53,6 +53,7 @@ public class UnifiedTaskRequest {
         specific.put("cdcConfig", cdc);
 
         SyncTaskRequest request = new SyncTaskRequest();
+        request.setProjectId(projectId);
         request.setName(name); request.setOwner(owner); request.setDescription(description);
         request.setFlinkVersion(flinkVersion); request.setSourceServerId(sourceServerId);
         request.setSourceType("mysql-cdc"); request.setTargetDatabase(targetDatabase);
@@ -103,6 +104,7 @@ public class UnifiedTaskRequest {
     private static String text(Object value) { return value == null ? "" : String.valueOf(value).trim(); }
 
     public Long getTaskId() { return taskId; } public void setTaskId(Long value) { taskId = value; }
+    public Long getProjectId() { return projectId; } public void setProjectId(Long value) { projectId = value; }
     public String getTaskType() { return taskType; } public void setTaskType(String value) { taskType = value; }
     public String getName() { return name; } public void setName(String value) { name = value; }
     public String getOwner() { return owner; } public void setOwner(String value) { owner = value; }

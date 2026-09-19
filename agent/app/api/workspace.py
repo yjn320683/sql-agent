@@ -12,9 +12,9 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
-from app.domain.sql.lineage import analyze_sql_lineage
+from app.domain.sql.backend_lineage import get_task_dependencies as get_java_task_dependencies
+from app.domain.sql.backend_lineage import get_task_lineage as get_java_task_lineage
 from app.domain.sql.static_check import static_check_sql
-from app.domain.sql.task_dependencies import analyze_task_dependencies
 from app.domain.sql.completion import SqlCompletionService
 from app.execution.sql_script import parse_and_render_script
 
@@ -24,6 +24,7 @@ from sql_agent_mcp_server.domains.hive_execution.schemas import (
     HiveExplainRequest,
     HiveFunctionDetailRequest,
     HiveFunctionSearchRequest,
+    HivePreviewRequest,
     HiveSqlRequest,
 )
 from sql_agent_mcp_server.domains.hive_execution.service import HiveExecutionService
@@ -100,6 +101,12 @@ class SqlStructureRequest(BaseModel):
     validate_parameter_values: bool = Field(default=True, alias="validateParameterValues")
 
 
+class SqlQueryPreviewRequest(BaseModel):
+    sql: str = Field(min_length=1, max_length=1_000_000)
+    default_db: str | None = Field(default=None, alias="defaultDb", max_length=256)
+    limit: int = Field(default=100, ge=1, le=200)
+
+
 @router.post("/sql/completions")
 async def complete_sql(request: SqlCompletionRequest) -> dict[str, Any]:
     return await _run(lambda: _completion_service().complete(
@@ -141,6 +148,17 @@ async def preview_sql_structure(request: SqlStructureRequest) -> dict[str, Any]:
         }
 
     return await _run(preview)
+
+
+@router.post("/sql/query-preview")
+async def preview_sql_query(request: SqlQueryPreviewRequest) -> dict[str, Any]:
+    """执行后端已通过语法树转换的服务端限量只读查询。"""
+    return await _run(lambda: dump_response(_execution_service().preview(HivePreviewRequest(
+        sql=request.sql,
+        defaultDb=request.default_db,
+        limit=request.limit,
+        timeoutSeconds=30,
+    ))))
 
 
 def _preview_parameter_values(definitions: list[dict[str, Any]]) -> dict[str, Any]:
@@ -192,15 +210,14 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
         )))
         for step in steps
     ]
-    if len(results) == 1:
-        return results[0]
-
     errors: list[dict[str, str]] = []
     warnings: list[str] = []
     missing_reasons: list[str] = []
     for step, result in zip(steps, results):
         errors.extend({
             **error,
+            "stepNo": step.number,
+            "stepName": step.name,
             "message": f"Step {step.number}（{step.name}）：{error.get('message') or 'Hive 编译失败。'}",
         } for error in result.get("errors", []))
         warnings.extend(
@@ -208,7 +225,7 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
             for warning in result.get("warnings", [])
         )
         missing_reasons.extend(result.get("missingReasons", []))
-    return {
+    response = {
         "ok": True,
         "source": "hiveserver2",
         "fetchedAt": datetime.now(timezone.utc).isoformat(),
@@ -216,10 +233,46 @@ def _validate_rendered_steps(steps, default_db: str | None) -> dict[str, Any]:
         "defaultDb": results[0].get("defaultDb") or default_db or "default",
         "compilationMs": sum(int(result.get("compilationMs") or 0) for result in results),
         "errors": errors,
+        "steps": [
+            {
+                "stepNo": step.number,
+                "stepName": step.name,
+                "valid": bool(result.get("valid")),
+                "errors": [{**error, "stepNo": step.number, "stepName": step.name}
+                           for error in result.get("errors", [])],
+                "warnings": list(result.get("warnings", [])),
+            }
+            for step, result in zip(steps, results)
+        ],
         "warnings": warnings,
         "complete": all(bool(result.get("complete", True)) for result in results),
         "missingReasons": list(dict.fromkeys(missing_reasons)),
     }
+    if len(results) == 1:
+        response.update({key: value for key, value in results[0].items()
+                         if key not in {"errors", "warnings", "missingReasons"}})
+        response["errors"] = errors
+        response["warnings"] = warnings
+        response["missingReasons"] = list(dict.fromkeys(missing_reasons))
+    return response
+
+
+def _explain_risks(plan_text: str) -> list[dict[str, str]]:
+    """只根据 Explain 原文中的明确证据生成风险，不从 SQL 文本推测。"""
+    rules = (
+        ("CARTESIAN_JOIN", "检测到笛卡尔连接", ("cartesian product", "cross product")),
+        ("GLOBAL_SORT", "检测到全局排序", ("global sort", "order by operator")),
+        ("PARTITION_NOT_PRUNED", "执行计划明确显示分区未裁剪", (
+            "partition pruning: false", "partition predicate: null", "pruned partition list: []",
+        )),
+    )
+    lines = [line.strip() for line in str(plan_text or "").splitlines() if line.strip()]
+    risks: list[dict[str, str]] = []
+    for code, message, markers in rules:
+        evidence = next((line for line in lines if any(marker in line.lower() for marker in markers)), None)
+        if evidence:
+            risks.append({"code": code, "level": "warning", "message": message, "evidence": evidence[:500]})
+    return risks
 
 
 async def _run(operation) -> dict[str, Any]:
@@ -289,27 +342,10 @@ async def get_task_lineage(
     version_no: int | None = Query(default=None, alias="versionNo", ge=1),
 ) -> dict[str, Any]:
     def analyze() -> dict[str, Any]:
-        task = _get_task_payload(_task_service(), task_id, version_no)
         try:
-            result = analyze_sql_lineage(str(task.get("sql") or ""), default_db=default_db)
+            return get_java_task_lineage(task_id, version_no, default_db)
         except ValueError as exc:
             raise McpDomainError(McpErrorCode.INVALID_REQUEST, str(exc)) from exc
-
-        missing_reasons = list(result["missingReasons"])
-        validation_warnings = _validate_lineage_references(result, missing_reasons)
-
-        return {
-            "ok": True,
-            "fetchedAt": datetime.now(timezone.utc).isoformat(),
-            "taskId": task_id,
-            "versionNo": version_no,
-            "taskName": task.get("name"),
-            **result,
-            "source": "sqlglot+hive-metastore",
-            "warnings": [*result["warnings"], *validation_warnings],
-            "missingReasons": list(dict.fromkeys(missing_reasons)),
-            "complete": result["complete"] and not missing_reasons,
-        }
 
     return await _run(analyze)
 
@@ -322,48 +358,10 @@ async def get_task_dependencies(
     limit: int = Query(default=500, ge=1, le=500),
 ) -> dict[str, Any]:
     def analyze() -> dict[str, Any]:
-        service = _task_service()
-        target = _get_task_payload(service, task_id, version_no)
-        page = service.list_tasks(limit=limit, offset=0)
-        tasks = [
-            target if int(item.get("id") or 0) == task_id else item
-            for item in list(page.get("items") or [])
-        ]
-        if not any(int(item.get("id") or 0) == task_id for item in tasks):
-            tasks.append(target)
-
         try:
-            result = analyze_task_dependencies(tasks, task_id, default_db)
+            return get_java_task_dependencies(task_id, version_no, default_db)
         except ValueError as exc:
             raise McpDomainError(McpErrorCode.INVALID_REQUEST, str(exc)) from exc
-
-        total = int(page.get("total") or len(tasks))
-        missing_reasons: list[str] = []
-        warnings: list[str] = []
-        if total > limit:
-            missing_reasons.append("task_scan_truncated")
-            warnings.append(f"任务总数 {total} 超过单次扫描上限 {limit}，跨任务影响范围可能不完整。")
-        if result["parseFailures"]:
-            missing_reasons.append("task_sql_parse_failed")
-            warnings.append(f"有 {len(result['parseFailures'])} 个任务 SQL 无法解析，相关依赖未纳入结果。")
-        if not default_db:
-            warnings.append("未指定默认库，未限定数据库的表只能按原始名称匹配。")
-
-        return {
-            "ok": True,
-            "source": "sql-agent-db+sqlglot",
-            "fetchedAt": datetime.now(timezone.utc).isoformat(),
-            "taskId": task_id,
-            "versionNo": version_no,
-            "taskName": target.get("name"),
-            "scannedTaskCount": len(tasks),
-            "totalTaskCount": total,
-            "scanLimit": limit,
-            **result,
-            "warnings": warnings,
-            "complete": not missing_reasons,
-            "missingReasons": missing_reasons,
-        }
 
     return await _run(analyze)
 
@@ -384,13 +382,9 @@ async def check_task_quality(
         missing_reasons: list[str] = []
 
         try:
-            lineage = analyze_sql_lineage(sql, default_db=default_db)
+            lineage = get_java_task_lineage(task_id, version_no, default_db)
             missing_reasons.extend(lineage["missingReasons"])
             warnings.extend(lineage["warnings"])
-            metadata_warnings = _validate_lineage_references(
-                lineage, missing_reasons, include_columns=True,
-            )
-            warnings.extend(metadata_warnings)
             for reference in [*lineage["inputs"], *lineage["outputs"]]:
                 status = reference.get("validationStatus")
                 if status == "MISSING":
@@ -470,7 +464,7 @@ async def check_task_quality(
         }
         return {
             "ok": True,
-            "source": "sqlglot+hive-metastore+hiveserver2",
+            "source": "java-parse-sql+hive-metastore+hiveserver2",
             "fetchedAt": datetime.now(timezone.utc).isoformat(),
             "taskId": task_id,
             "taskName": task.get("name"),
@@ -490,44 +484,6 @@ async def check_task_quality(
         }
 
     return await _run(check)
-
-
-def _validate_lineage_references(
-    lineage: dict[str, Any],
-    missing_reasons: list[str],
-    include_columns: bool = False,
-) -> list[str]:
-    validation_warnings: list[str] = []
-    for reference in [*lineage["inputs"], *lineage["outputs"]]:
-        if not reference.get("db"):
-            reference["validationStatus"] = "UNRESOLVED"
-            continue
-        try:
-            response = _metadata_service().get_table(GetTableRequest(
-                catalog="hive",
-                db=str(reference["db"]),
-                table=str(reference["table"]),
-                includeColumns=include_columns,
-            ))
-            reference["validationStatus"] = "EXISTS"
-            reference["tableType"] = response.table.table_type
-            reference["owner"] = response.table.owner
-            reference["comment"] = response.table.comment
-            if include_columns:
-                reference["partitionKeys"] = [
-                    column.name for column in (response.table.columns or []) if column.partition_key
-                ]
-        except McpDomainError as exc:
-            if exc.code == McpErrorCode.NOT_FOUND:
-                reference["validationStatus"] = "MISSING"
-                missing_reasons.append(f"table_not_found:{reference['qualifiedName']}")
-            else:
-                reference["validationStatus"] = "UNKNOWN"
-                validation_warnings.append(
-                    f"无法校验 {reference['qualifiedName']}：{exc.message}"
-                )
-                missing_reasons.append(f"metadata_validation_failed:{reference['qualifiedName']}")
-    return validation_warnings
 
 
 def _quality_issue(issue: dict[str, str]) -> dict[str, str]:
@@ -689,8 +645,21 @@ async def explain_task_sql(
             )))
             for step in steps
         ]
+        step_plans = [
+            {
+                "stepNo": step.number,
+                "stepName": step.name,
+                "planText": result.get("planText") or "",
+                "risks": _explain_risks(str(result.get("planText") or "")),
+            }
+            for step, result in zip(steps, results)
+        ]
+        all_risks = [
+            {**risk, "stepNo": step_plan["stepNo"], "stepName": step_plan["stepName"]}
+            for step_plan in step_plans for risk in step_plan["risks"]
+        ]
         if len(results) == 1:
-            return results[0]
+            return {**results[0], "risks": all_risks, "steps": step_plans}
         warnings = [warning for result in results for warning in result.get("warnings", [])]
         missing_reasons = [
             reason for result in results for reason in result.get("missingReasons", [])
@@ -707,6 +676,8 @@ async def explain_task_sql(
             "defaultDb": results[0].get("defaultDb") or default_db or "default",
             "compilationMs": sum(int(result.get("compilationMs") or 0) for result in results),
             "truncated": any(bool(result.get("truncated")) for result in results),
+            "risks": all_risks,
+            "steps": step_plans,
             "warnings": warnings,
             "complete": all(bool(result.get("complete", True)) for result in results),
             "missingReasons": list(dict.fromkeys(missing_reasons)),

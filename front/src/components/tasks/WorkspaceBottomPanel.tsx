@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Alert, Button, Empty, Spin, Table, Tabs, Tooltip, Typography, message } from 'antd';
+import { Alert, Button, Empty, Input, Spin, Table, Tabs, Tooltip, Typography, message } from 'antd';
 import {
   ApartmentOutlined,
   CheckCircleOutlined,
@@ -9,16 +9,18 @@ import {
   ReloadOutlined,
   RobotOutlined,
   SafetyCertificateOutlined,
+  TableOutlined,
+  EditOutlined,
 } from '@ant-design/icons';
 import { useNavigate } from 'react-router-dom';
 import { listTaskExecutions } from '../../api/tasks';
-import type { HiveExplainVO, HiveValidationVO, TaskExecutionVO, TaskQualityVO } from '../../types';
+import type { HiveExplainVO, HiveValidationVO, SqlQueryPreviewVO, TaskExecutionVO, TaskQualityVO } from '../../types';
 import TaskStatusTag, { isActiveExecution } from './TaskStatusTag';
 import TaskQualityPanel from './TaskQualityPanel';
 import WorkspaceLineagePanel from './WorkspaceLineagePanel';
 import ExecutionDetailDrawer from './ExecutionDetailDrawer';
 
-export type WorkbenchTab = 'quality' | 'validation' | 'explain' | 'lineage' | 'instances';
+export type WorkbenchTab = 'parameters' | 'preview' | 'quality' | 'validation' | 'explain' | 'lineage' | 'instances';
 
 interface Props {
   taskId?: number;
@@ -39,6 +41,13 @@ interface Props {
   taskName: string;
   lineageRefreshKey: number;
   onInsertSql: (text: string) => void;
+  parameterJson?: string;
+  parameterError?: string;
+  onParameterJsonChange?: (value: string) => void;
+  renderedSql?: string;
+  preview?: SqlQueryPreviewVO;
+  previewLoading?: boolean;
+  previewError?: string;
 }
 
 function formatDuration(value?: number): string {
@@ -66,6 +75,13 @@ export default function WorkspaceBottomPanel({
   taskName,
   lineageRefreshKey,
   onInsertSql,
+  parameterJson = '{}',
+  parameterError,
+  onParameterJsonChange,
+  renderedSql,
+  preview,
+  previewLoading,
+  previewError,
 }: Props) {
   const navigate = useNavigate();
   const [instances, setInstances] = useState<TaskExecutionVO[]>([]);
@@ -149,11 +165,55 @@ export default function WorkspaceBottomPanel({
         <span>预测计划</span><span>{explain.defaultDb}</span><span>{explain.compilationMs} ms</span>
         {explain.truncated ? <span>已压缩</span> : null}
       </div>
+      {(explain.risks || []).map((risk, index) => (
+        <Alert
+          key={`${risk.stepNo}-${risk.code}-${index}`}
+          type="warning"
+          showIcon
+          message={`Step ${risk.stepNo}（${risk.stepName}）：${risk.message}`}
+          description={`计划证据：${risk.evidence}`}
+        />
+      ))}
       <pre>{explain.planText}</pre>
     </div>
   ) : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="点击工具栏中的 Explain，获取目标 Hive 的真实预测计划" />;
 
+  const previewColumns = preview?.columns.map((column, index) => ({
+    title: <span>{column.name}{column.type ? <small className="preview-column-type">{column.type}</small> : null}</span>,
+    dataIndex: index,
+    key: `${column.name}-${index}`,
+    width: 180,
+    ellipsis: true,
+    render: (value: unknown) => value == null ? <Typography.Text type="secondary">NULL</Typography.Text> : String(value),
+  })) || [];
+
   const items = [
+    {
+      key: 'parameters',
+      label: <span><EditOutlined /> 参数展开</span>,
+      children: (
+        <div className="workbench-tab-content parameter-preview">
+          <section>
+            <strong>运行参数（JSON）</strong>
+            <Input.TextArea value={parameterJson} rows={7} status={parameterError ? 'error' : undefined} onChange={(event) => onParameterJsonChange?.(event.target.value)} />
+            {parameterError ? <Typography.Text type="danger">{parameterError}</Typography.Text> : <Typography.Text type="secondary">参数只用于当前预览，不会保存到任务。</Typography.Text>}
+          </section>
+          <section><strong>当前 Step 展开结果</strong><pre>{renderedSql || '点击“参数预览”生成展开结果'}</pre></section>
+        </div>
+      ),
+    },
+    {
+      key: 'preview',
+      label: <span><TableOutlined /> 数据预览</span>,
+      children: (
+        <div className="workbench-tab-content query-preview">
+          {previewLoading ? <Spin /> : previewError ? <Alert type="error" showIcon message="只读预览失败" description={previewError} /> : preview ? <>
+            <div className="workbench-result-meta"><span>Step {preview.stepNo} · {preview.stepName}</span><span>{preview.rowCount} 行</span><span>{preview.elapsedMs} ms</span>{preview.truncated ? <span>结果已截断</span> : null}</div>
+            <Table rowKey={(_, index) => String(index)} size="small" columns={previewColumns} dataSource={preview.rows} pagination={false} scroll={{ x: 'max-content', y: 210 }} />
+          </> : <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="选择 Step 后点击工具栏中的数据预览；仅执行服务端限量只读查询" />}
+        </div>
+      ),
+    },
     { key: 'quality', label: <span><SafetyCertificateOutlined /> 质量检查</span>, children: <TaskQualityPanel quality={quality} loading={qualityLoading} error={qualityError} /> },
     { key: 'validation', label: <span><CheckCircleOutlined /> 编译校验</span>, children: <div className="workbench-tab-content centered">{validationContent}</div> },
     { key: 'explain', label: <span><CodeOutlined /> 执行计划</span>, children: <div className="workbench-tab-content">{explainContent}</div> },

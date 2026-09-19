@@ -37,6 +37,45 @@ public final class SqlLineageParser {
         return new SqlLineageAnalyzer(request, bundle.tokens).analyze(bundle.root.statement());
     }
 
+    /**
+     * 将单条 SELECT 或 INSERT 的查询部分包装成服务端限量查询。
+     * 该方法只接受解析器明确识别的查询语句，避免通过字符串裁剪误执行 DDL/DML。
+     */
+    public String toReadOnlyPreviewQuery(ParseRequest request, int limit) {
+        if (request == null || request.getSql().trim().isEmpty()) {
+            throw new SqlParseException("SQL不能为空", 1, 0);
+        }
+        if (limit < 1 || limit > 200) throw new IllegalArgumentException("预览行数必须在1到200之间");
+        String source = request.getSql();
+        ParseBundle bundle = parseTree(source);
+        SqlBaseParser.StatementContext statement = bundle.root.statement();
+        String querySql;
+        if (statement instanceof SqlBaseParser.StatementDefaultContext) {
+            querySql = sourceText(source, ((SqlBaseParser.StatementDefaultContext) statement).query());
+        } else if (statement instanceof SqlBaseParser.InsertIntoContext) {
+            SqlBaseParser.InsertIntoContext insert = (SqlBaseParser.InsertIntoContext) statement;
+            StringBuilder value = new StringBuilder();
+            if (insert.with() != null) value.append(sourceText(source, insert.with())).append('\n');
+            value.append(sourceText(source, insert.query()));
+            querySql = value.toString();
+        } else {
+            throw new IllegalArgumentException("只读预览仅支持SELECT或INSERT查询部分");
+        }
+        String normalized = querySql.trim();
+        while (normalized.endsWith(";")) normalized = normalized.substring(0, normalized.length() - 1).trim();
+        if (normalized.isEmpty()) throw new IllegalArgumentException("没有可预览的查询部分");
+        return "SELECT * FROM (\n" + normalized + "\n) sql_agent_preview LIMIT " + limit;
+    }
+
+    private String sourceText(String source, org.antlr.v4.runtime.ParserRuleContext context) {
+        int start = context.getStart().getStartIndex();
+        int end = context.getStop().getStopIndex() + 1;
+        if (start < 0 || end <= start || end > source.length()) {
+            throw new IllegalArgumentException("无法确定查询源码范围");
+        }
+        return source.substring(start, end);
+    }
+
     public SqlScriptLineage parseScript(ParseRequest request) {
         if (request == null) throw new IllegalArgumentException("解析请求不能为空");
         List<StatementLineage> statements = new ArrayList<>();

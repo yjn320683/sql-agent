@@ -5,15 +5,16 @@ import type { Dayjs } from 'dayjs';
 import { useNavigate } from 'react-router-dom';
 import {
   createTaskBackfill, getTaskDependencies, getTaskSchedule, listTaskBackfills, listTaskScheduleRuns,
-  listTasks, saveTaskDependencies, saveTaskSchedule,
+  listTasks, saveTaskDependencies, saveTaskSchedule, getTaskBackfill, pauseTaskBackfill, resumeTaskBackfill, retryFailedTaskBackfill,
 } from '../../api/tasks';
-import type { AiProposal, SqlTaskBackfillBatchPageVO, SqlTaskDependencyVO, SqlTaskScheduleRunPageVO, SqlTaskScheduleVO, SqlTaskVO } from '../../types';
+import type { AiProposal, SqlTaskBackfillBatchPageVO, SqlTaskBackfillBatchVO, SqlTaskBackfillItemVO, SqlTaskDependencyVO, SqlTaskScheduleRunPageVO, SqlTaskScheduleVO, SqlTaskVO } from '../../types';
 
-interface Props { task: SqlTaskVO; open: boolean; onClose: () => void; }
+interface Props { task: SqlTaskVO; open: boolean; onClose: () => void; initialBackfillId?: number; }
 
 interface ScheduleFields {
   scheduleType: 'MANUAL' | 'CRON'; cronExpression?: string; timezone: string; enabled: boolean;
   concurrencyPolicy: 'FORBID' | 'ALLOW'; maxRetries: number; retryIntervalSeconds: number; parametersText: string;
+  executionTimeoutSeconds: number; slaDurationMinutes: number; timeoutPolicy: 'ALERT_ONLY' | 'CANCEL';
 }
 
 const EMPTY_RUNS: SqlTaskScheduleRunPageVO = { items: [], page: 1, pageSize: 20, total: 0 };
@@ -25,10 +26,11 @@ const RUN_STATUS_LABELS: Record<string, string> = {
 const BACKFILL_STATUS_LABELS: Record<string, string> = {
   PENDING: '等待中', RUNNING: '运行中', SUCCEEDED: '成功', PARTIAL_FAILED: '部分失败',
   FAILED: '失败', CANCELLED: '已取消',
+  PAUSED: '已暂停',
 };
 const TRIGGER_LABELS: Record<string, string> = { CRON: '定时', MANUAL: '手动', BACKFILL: '补数', RETRY: '重试' };
 
-export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
+export default function TaskScheduleDrawer({ task, open, onClose, initialBackfillId }: Props) {
   const navigate = useNavigate();
   const [form] = Form.useForm<ScheduleFields>();
   const [schedule, setSchedule] = useState<SqlTaskScheduleVO>();
@@ -43,6 +45,8 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
   const [saving, setSaving] = useState(false);
   const [backfillRange, setBackfillRange] = useState<[Dayjs, Dayjs]>();
   const [backfillParameters, setBackfillParameters] = useState('{}');
+  const [backfillConcurrency, setBackfillConcurrency] = useState(3);
+  const [backfillDetail, setBackfillDetail] = useState<{ batch: SqlTaskBackfillBatchVO; items: SqlTaskBackfillItemVO[] }>();
   const [activeTab, setActiveTab] = useState('schedule');
   const scheduleType = Form.useWatch('scheduleType', form);
   const scheduleDraft = Form.useWatch([], form);
@@ -64,6 +68,9 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
         timezone: loadedSchedule.timezone, enabled: loadedSchedule.enabled,
         concurrencyPolicy: loadedSchedule.concurrencyPolicy, maxRetries: loadedSchedule.maxRetries,
         retryIntervalSeconds: loadedSchedule.retryIntervalSeconds,
+        executionTimeoutSeconds: loadedSchedule.executionTimeoutSeconds || 0,
+        slaDurationMinutes: loadedSchedule.slaDurationMinutes || 0,
+        timeoutPolicy: loadedSchedule.timeoutPolicy || 'ALERT_ONLY',
         parametersText: JSON.stringify(loadedSchedule.parameters || {}, null, 2),
       });
     } catch (error) { message.error(`加载调度配置失败：${(error as Error).message}`); }
@@ -71,6 +78,13 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
   }, [form, open, runPage, task.id]);
 
   useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    if (!open || !initialBackfillId) return;
+    setActiveTab('backfill');
+    void showBackfill(initialBackfillId);
+    // 仅在通过 DAG 深链首次打开时定位批次。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialBackfillId, open, task.id]);
   useEffect(() => {
     if (!open) return;
     const publishAiContext = () => window.dispatchEvent(new CustomEvent('sql-agent:ai-context-update', {
@@ -103,7 +117,7 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
       if (!['offline-schedule', 'offline-dependencies'].includes(proposal?.target || '')
         || !proposal?.patch || (kind !== 'FORM' && kind !== 'CONFIG')) return;
       const patch = proposal.patch as Record<string, unknown>;
-      const allowed = ['scheduleType', 'cronExpression', 'timezone', 'enabled', 'concurrencyPolicy', 'maxRetries', 'retryIntervalSeconds'] as const;
+      const allowed = ['scheduleType', 'cronExpression', 'timezone', 'enabled', 'concurrencyPolicy', 'maxRetries', 'retryIntervalSeconds', 'executionTimeoutSeconds', 'slaDurationMinutes', 'timeoutPolicy'] as const;
       const fields = Object.fromEntries(allowed.filter((key) => patch[key] !== undefined).map((key) => [key, patch[key]]));
       if (patch.parameters && typeof patch.parameters === 'object') fields.parametersText = JSON.stringify(patch.parameters, null, 2);
       form.setFieldsValue(fields as Partial<ScheduleFields>);
@@ -138,6 +152,7 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
         timezone: values.timezone, enabled: values.scheduleType === 'CRON' && values.enabled,
         concurrencyPolicy: values.concurrencyPolicy, maxRetries: values.maxRetries,
         retryIntervalSeconds: values.retryIntervalSeconds, parameters: parseParameters(values.parametersText),
+        executionTimeoutSeconds: values.executionTimeoutSeconds, slaDurationMinutes: values.slaDurationMinutes, timeoutPolicy: values.timeoutPolicy,
         revision: schedule?.revision || 0,
       });
       setSchedule(saved); message.success('调度配置已保存'); await load();
@@ -163,17 +178,33 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
       await createTaskBackfill(task.id, {
         startDate: backfillRange[0].format('YYYY-MM-DD'), endDate: backfillRange[1].format('YYYY-MM-DD'),
         parameters: parseParameters(backfillParameters),
+        maxConcurrency: backfillConcurrency,
       });
       message.success('补数批次已创建'); setRunPage(1); await load();
     } catch (error) { message.error((error as Error).message); }
     finally { setSaving(false); }
   };
 
+  const showBackfill = async (batchId: number) => {
+    try { setBackfillDetail(await getTaskBackfill(task.id, batchId)); }
+    catch (error) { message.error((error as Error).message); }
+  };
+
+  const updateBackfill = async (batch: SqlTaskBackfillBatchVO, action: 'pause' | 'resume' | 'retry') => {
+    try {
+      if (action === 'pause') await pauseTaskBackfill(task.id, batch.id);
+      else if (action === 'resume') await resumeTaskBackfill(task.id, batch.id);
+      else await retryFailedTaskBackfill(task.id, batch.id);
+      message.success(action === 'pause' ? '补数批次已暂停，不再创建新实例' : action === 'resume' ? '补数批次已恢复' : '失败日期已重新进入队列');
+      await load(); if (backfillDetail?.batch.id === batch.id) await showBackfill(batch.id);
+    } catch (error) { message.error((error as Error).message); }
+  };
+
   const dependencyOptions = useMemo(() => tasks.map((item) => ({ value: item.id, label: `${item.id} · ${item.name}` })), [tasks]);
   const items = [
     { key: 'schedule', label: '调度配置', children: <div className="task-schedule-pane">
       <Alert type="info" showIcon message="调度始终运行当前生效代码" description="版本只负责开发隔离；发布新版本后，下次调度自动使用最新生效代码。" />
-      <Form form={form} layout="vertical" initialValues={{ scheduleType: 'MANUAL', timezone: 'Asia/Shanghai', enabled: false, concurrencyPolicy: 'FORBID', maxRetries: 0, retryIntervalSeconds: 60, parametersText: '{}' }}>
+      <Form form={form} layout="vertical" initialValues={{ scheduleType: 'MANUAL', timezone: 'Asia/Shanghai', enabled: false, concurrencyPolicy: 'FORBID', maxRetries: 0, retryIntervalSeconds: 60, executionTimeoutSeconds: 0, slaDurationMinutes: 0, timeoutPolicy: 'ALERT_ONLY', parametersText: '{}' }}>
         <div className="task-schedule-grid">
           <Form.Item name="scheduleType" label="调度方式" rules={[{ required: true }]}><Select options={[{ value: 'MANUAL', label: '手动执行' }, { value: 'CRON', label: 'Cron 定时' }]} /></Form.Item>
           <Form.Item name="timezone" label="时区" rules={[{ required: true }]}><Select options={[{ value: 'Asia/Shanghai', label: 'Asia/Shanghai' }, { value: 'UTC', label: 'UTC' }]} /></Form.Item>
@@ -181,6 +212,9 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
           <Form.Item name="concurrencyPolicy" label="并发策略"><Select options={[{ value: 'FORBID', label: '已有实例时跳过' }, { value: 'ALLOW', label: '允许并行' }]} /></Form.Item>
           <Form.Item name="maxRetries" label="失败重试次数"><InputNumber min={0} max={10} style={{ width: '100%' }} /></Form.Item>
           <Form.Item name="retryIntervalSeconds" label="重试间隔（秒）"><InputNumber min={10} max={86400} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="executionTimeoutSeconds" label="执行超时（秒，0 为关闭）"><InputNumber min={0} max={604800} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="slaDurationMinutes" label="SLA（分钟，0 为关闭）"><InputNumber min={0} max={10080} style={{ width: '100%' }} /></Form.Item>
+          <Form.Item name="timeoutPolicy" label="超时策略"><Select options={[{ value: 'ALERT_ONLY', label: '仅记录违约（默认）' }, { value: 'CANCEL', label: '取消运行实例' }]} /></Form.Item>
         </div>
         <Form.Item name="parametersText" label="固定运行参数（JSON）"><Input.TextArea className="task-schedule-json" rows={5} /></Form.Item>
         {scheduleType === 'CRON' ? <Form.Item name="enabled" label="自动调度" valuePropName="checked"><Switch checkedChildren="启用" unCheckedChildren="停用" /></Form.Item> : null}
@@ -203,6 +237,7 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
       <Space direction="vertical" style={{ width: '100%' }} size={12}>
         <DatePicker.RangePicker value={backfillRange} onChange={(range) => setBackfillRange(range?.[0] && range[1] ? [range[0], range[1]] : undefined)} />
         <Input.TextArea rows={5} value={backfillParameters} onChange={(event) => setBackfillParameters(event.target.value)} placeholder={'{\n  "region": "cn"\n}'} />
+        <Space><span>最大并发</span><InputNumber min={1} max={20} value={backfillConcurrency} onChange={(value) => setBackfillConcurrency(value || 3)} /></Space>
         <Button type="primary" icon={<CalendarOutlined />} loading={saving} onClick={() => void startBackfill()}>创建补数批次</Button>
       </Space>
       <div className="task-schedule-subtitle"><Typography.Text strong>最近补数批次</Typography.Text><span>共 {backfills.total} 个</span></div>
@@ -210,8 +245,10 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
         { title: '日期范围', render: (_, row) => `${row.startDate} 至 ${row.endDate}` },
         { title: '状态', dataIndex: 'status', width: 120, render: (value) => <Tag color={value === 'SUCCEEDED' ? 'success' : value === 'FAILED' ? 'error' : value === 'PARTIAL_FAILED' ? 'warning' : value === 'RUNNING' ? 'processing' : 'default'}>{BACKFILL_STATUS_LABELS[value] || value}</Tag> },
         { title: '进度', width: 170, render: (_, row) => `${row.succeededCount} 成功 / ${row.failedCount} 失败 / ${row.totalCount} 总计` },
+        { title: '并发', dataIndex: 'maxConcurrency', width: 70 },
         { title: '发起人', dataIndex: 'requestedBy', width: 100 },
         { title: '创建时间', dataIndex: 'createTime', width: 170 },
+        { title: '操作', width: 220, fixed: 'right', render: (_, row) => <Space size={2}><Button type="link" size="small" onClick={() => void showBackfill(row.id)}>明细</Button>{row.status === 'RUNNING' || row.status === 'PENDING' ? <Button type="link" size="small" onClick={() => void updateBackfill(row, 'pause')}>暂停</Button> : null}{row.status === 'PAUSED' ? <Button type="link" size="small" onClick={() => void updateBackfill(row, 'resume')}>恢复</Button> : null}{row.failedCount ? <Button type="link" size="small" onClick={() => void updateBackfill(row, 'retry')}>重试失败</Button> : null}</Space> },
       ]} scroll={{ x: 780 }} locale={{ emptyText: <Empty description="暂无补数批次" /> }} />
     </div> },
     { key: 'runs', label: `调度记录（${runs.total}）`, children: <div className="task-schedule-pane schedule-runs-pane">
@@ -226,5 +263,5 @@ export default function TaskScheduleDrawer({ task, open, onClose }: Props) {
     </div> },
   ];
 
-  return <Drawer width="min(860px, 96vw)" open={open} onClose={onClose} title={<Space><CalendarOutlined /><span>任务调度 · {task.name}</span></Space>} destroyOnHidden><Tabs className="ui-flat-tabs" activeKey={activeTab} onChange={setActiveTab} items={items} /></Drawer>;
+  return <><Drawer width="min(960px, 96vw)" open={open} onClose={onClose} title={<Space><CalendarOutlined /><span>任务调度 · {task.name}</span></Space>} destroyOnHidden><Tabs className="ui-flat-tabs" activeKey={activeTab} onChange={setActiveTab} items={items} /></Drawer><Drawer width="min(760px, 92vw)" open={Boolean(backfillDetail)} onClose={() => setBackfillDetail(undefined)} title={backfillDetail ? `补数批次 #${backfillDetail.batch.id} · 逐日进度` : '补数批次'}><Table rowKey="id" size="small" pagination={false} dataSource={backfillDetail?.items || []} columns={[{ title: '业务日期', dataIndex: 'businessDate' },{ title: '状态', dataIndex: 'status', render: (value) => <Tag>{value}</Tag> },{ title: '尝试', dataIndex: 'attemptNo', width: 70 },{ title: '实例', dataIndex: 'executionId', width: 90, render: (value) => value ? <Button type="link" size="small" onClick={() => navigate(`/tasks/${task.id}/executions/${value}`)}>{value}</Button> : '-' },{ title: '说明', dataIndex: 'message', ellipsis: true }]} /></Drawer></>;
 }

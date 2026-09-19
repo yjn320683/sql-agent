@@ -19,6 +19,7 @@ import type {
   TaskQualityVO,
   SqlCompletionVO,
   SqlStructurePreviewVO,
+  SqlQueryPreviewVO,
   SqlTaskParameter,
   DataMapPrimaryKeysVO,
 } from '../types';
@@ -29,6 +30,12 @@ interface SqlStructurePreviewRequest {
   parameters?: Record<string, unknown>;
   businessDate?: string;
   validateParameterValues: boolean;
+}
+
+export interface SqlQueryPreviewRequest extends SqlStructurePreviewRequest {
+  stepNo: number;
+  limit?: number;
+  defaultDb?: string;
 }
 
 export function completeSql(
@@ -57,6 +64,20 @@ export function previewSqlStructure(
   });
 }
 
+export function previewSqlQuery(body: SqlQueryPreviewRequest): Promise<SqlQueryPreviewVO> {
+  return requestJson<SqlQueryPreviewVO>('/api/workspace/sql/preview', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+}
+
+export function validateHiveDdl(ddl: string): Promise<{ valid: boolean; affectedTables: string[]; executed: boolean }> {
+  return requestJson('/api/workspace/sql/ddl/validate', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ddl }),
+  });
+}
+
 export const getPlatformHealth = (): Promise<PlatformHealthVO> =>
   requestJson<PlatformHealthVO>('/api/workspace/platform/health');
 
@@ -65,6 +86,13 @@ export function getTaskLineage(taskId: number, defaultDb?: string, versionNo?: n
   if (defaultDb) params.set('defaultDb', defaultDb);
   if (versionNo) params.set('versionNo', String(versionNo));
   return requestJson<TaskLineageVO>(`/api/workspace/tasks/${taskId}/lineage?${params.toString()}`);
+}
+
+export function reanalyzeTaskLineage(taskId: number, defaultDb?: string, versionNo?: number): Promise<TaskLineageVO> {
+  const params = new URLSearchParams();
+  if (defaultDb) params.set('defaultDb', defaultDb);
+  if (versionNo) params.set('versionNo', String(versionNo));
+  return requestJson<TaskLineageVO>(`/api/workspace/tasks/${taskId}/lineage/reanalyze?${params.toString()}`, { method: 'POST' });
 }
 
 export function getTaskDependencies(taskId: number, defaultDb?: string, versionNo?: number): Promise<TaskDependenciesVO> {

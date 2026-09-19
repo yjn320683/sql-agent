@@ -13,6 +13,7 @@ import com.yjn.sqlagent.parsesql.SqlParseException;
 import com.yjn.sqlagent.parsesql.SqlStatementType;
 import com.yjn.sqlagent.parsesql.StatementLineage;
 import com.yjn.sqlagent.parsesql.TableMetadataProvider;
+import com.yjn.sqlagent.parsesql.LineageDiagnostic;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.time.LocalDateTime;
@@ -95,18 +96,25 @@ public class TaskSqlStructureService {
     }
 
     public List<SqlTaskVersionStep> parseVersionSteps(long taskId, int versionNo, String sql) {
+        return analyzeVersion(taskId, versionNo, sql).getSteps();
+    }
+
+    /** 每个 Step 只解析一次，同时产出保存结构和不可变血缘事实。 */
+    public VersionAnalysis analyzeVersion(long taskId, int versionNo, String sql) {
         String source = sql == null ? "" : sql.trim();
         if (source.isEmpty()) throw badRequest("SQL不能为空");
         List<StepPart> parts = split(source);
         Set<Integer> numbers = new HashSet<>();
         int previous = -1;
         List<SqlTaskVersionStep> result = new ArrayList<>();
+        List<StatementLineage> statements = new ArrayList<>();
         for (int order = 0; order < parts.size(); order++) {
             StepPart part = parts.get(order);
             if (!numbers.add(part.number)) throw badRequest("Step编号重复：" + part.number);
             if (part.number <= previous) throw badRequest("Step编号必须按脚本顺序递增");
             previous = part.number;
             StatementLineage parsed = parseStatement(part.sql);
+            statements.add(parsed);
             SqlTaskVersionStep row = new SqlTaskVersionStep();
             row.setTaskId(taskId);
             row.setVersionNo(versionNo);
@@ -121,7 +129,24 @@ public class TaskSqlStructureService {
             row.setCreateTime(LocalDateTime.now());
             result.add(row);
         }
-        return result;
+        return new VersionAnalysis(result, TaskLineageFacts.from(statements, Collections.emptyList()));
+    }
+
+    /** 查询历史或当前代码时使用的容错脚本解析，不执行 SQL。 */
+    public TaskLineageFacts analyzeLineage(String sql, String defaultDatabase) {
+        String source = sql == null ? "" : sql.trim();
+        if (source.isEmpty()) throw badRequest("SQL不能为空");
+        try {
+            com.yjn.sqlagent.parsesql.SqlScriptLineage parsed = sqlParser.parseScript(ParseRequest.builder(source)
+                    .dialect(SqlDialect.HIVE)
+                    .defaultDatabase(defaultDatabase)
+                    .metadataProvider(metadataProvider)
+                    .mode(com.yjn.sqlagent.parsesql.ParseMode.TOLERANT)
+                    .build());
+            return TaskLineageFacts.from(parsed.getStatements(), parsed.getDiagnostics());
+        } catch (SqlParseException exception) {
+            throw badRequest(exception.getMessage());
+        }
     }
 
     public String checksum(String sql, String parameterSchema) {
@@ -164,7 +189,8 @@ public class TaskSqlStructureService {
         if (statements.size() != 1) throw badRequest("每个Step只能包含一条SQL语句");
         try {
             StatementLineage parsed = sqlParser.parseStatement(ParseRequest.builder(statements.get(0))
-                    .dialect(SqlDialect.HIVE).metadataProvider(metadataProvider).build());
+                    .dialect(SqlDialect.HIVE).defaultDatabase("default")
+                    .metadataProvider(metadataProvider).build());
             SqlStatementType type = parsed.getStatementType();
             if (type != SqlStatementType.SELECT && type != SqlStatementType.WITH
                     && type != SqlStatementType.INSERT) {
@@ -211,5 +237,18 @@ public class TaskSqlStructureService {
         private StepPart(int number, String name, String sql) {
             this.number = number; this.name = name; this.sql = sql;
         }
+    }
+
+    public static final class VersionAnalysis {
+        private final List<SqlTaskVersionStep> steps;
+        private final TaskLineageFacts lineage;
+
+        private VersionAnalysis(List<SqlTaskVersionStep> steps, TaskLineageFacts lineage) {
+            this.steps = Collections.unmodifiableList(new ArrayList<>(steps));
+            this.lineage = lineage;
+        }
+
+        public List<SqlTaskVersionStep> getSteps() { return steps; }
+        public TaskLineageFacts getLineage() { return lineage; }
     }
 }

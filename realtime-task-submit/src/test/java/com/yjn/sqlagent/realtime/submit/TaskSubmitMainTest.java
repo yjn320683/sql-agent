@@ -38,17 +38,21 @@ class TaskSubmitMainTest {
     void dryRunValidatesSnapshotAndNeverPrintsPassword() throws Exception {
         byte[] bytes = new ObjectMapper().writeValueAsBytes(validSpec());
         Path file = tempDir.resolve("job-config.json");
+        Path report = tempDir.resolve("debug-report.json");
         Files.write(file, bytes);
         ByteArrayOutputStream bytesOut = new ByteArrayOutputStream();
 
         TaskSubmitMain.run(new String[] {"--submission-file", file.toUri().toString(),
-                "--config-sha256", sha256(bytes), "--dry-run"},
+                "--config-sha256", sha256(bytes), "--dry-run",
+                "--debug-report-file", report.toUri().toString()},
                 new PrintStream(bytesOut, true, StandardCharsets.UTF_8));
 
         String output = bytesOut.toString(StandardCharsets.UTF_8);
         assertTrue(output.contains("mysql_sync_database"));
         assertTrue(output.contains("password=******"));
         assertFalse(output.contains("不能泄露的密码"));
+        assertFalse(output.contains("realtime-sync-dry-run"));
+        assertTrue(Files.readString(report).contains("SUBMISSION_SPEC"));
     }
 
     @Test
@@ -77,6 +81,7 @@ class TaskSubmitMainTest {
         spec.setTask(task);
         SubmissionSpec.RuntimeConfig runtime = new SubmissionSpec.RuntimeConfig();
         runtime.setPaimonActionJarPath("/data/action.jar"); runtime.setPaimonWarehouse("hdfs:///warehouse");
+        runtime.setTargetDatabase("ods_rt");
         spec.setRuntimeConfig(runtime);
         SubmissionSpec.ServerSnapshot server = new SubmissionSpec.ServerSnapshot();
         server.setId(3L); server.setAddress("mysql:3306"); server.setDatabaseName("sales");

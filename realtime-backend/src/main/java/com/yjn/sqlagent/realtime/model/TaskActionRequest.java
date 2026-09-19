@@ -6,7 +6,7 @@ public class TaskActionRequest {
     private String startType = "direct";
     private String statePath;
     private Long sourceStartupTimestampMillis;
-    private String stopType = "direct";
+    private String stopType;
     private boolean dryRun;
     private Integer parallelism;
     private Integer checkpointInterval;

@@ -55,6 +55,7 @@ export interface SyncTaskConfig {
 }
 
 export interface SyncTaskSave {
+  projectId?: number;
   name: string;
   owner?: string;
   description?: string;
@@ -64,6 +65,12 @@ export interface SyncTaskSave {
   targetDatabase: string;
   taskConfig: SyncTaskConfig;
   expectedUpdateTime?: string;
+}
+
+export interface MysqlTableDdl {
+  database: string;
+  table: string;
+  ddl: string;
 }
 
 export interface SyncTask extends SyncTaskSave {
@@ -140,6 +147,11 @@ export interface TaskInstance {
   id: number;
   taskId: number;
   versionId?: number;
+  sourceInstanceId?: number;
+  recoveryStrategy?: string;
+  recoveryStatePath?: string;
+  debugReportStatus?: 'PASSED' | 'FAILED';
+  debugReportSummary?: string;
   jobId?: string;
   yarnApplicationId?: string;
   status: string;
@@ -154,6 +166,44 @@ export interface TaskInstance {
   updateTime: string;
 }
 
+export interface RealtimeDebugReport {
+  status: 'PASSED' | 'FAILED'; taskType: 'compute' | 'export' | 'sync'; summary?: string; generatedAt?: string;
+  logicalPlan?: string; physicalPlan?: string; inputs?: string[]; outputs?: string[];
+  checks?: Array<{ code: string; status: string; subject?: string; message?: string }>;
+  diagnostics?: Array<{ code: string; status: string; subject?: string; message?: string }>;
+}
+
+export const MYSQL_METADATA_COLUMN_PREFIX = '__meta_';
+
+export interface TaskInstanceProgressQualification {
+  mode?: 'DURATION_AND_CHECKPOINT' | 'CHECKPOINT_ONLY' | string;
+  requiredRunningSeconds: number;
+  runningSeconds: number;
+  runtimeSatisfied: boolean;
+  checkpointRequired: boolean;
+  completedCheckpointCount: number;
+  checkpointSatisfied: boolean;
+  qualified: boolean;
+  currentVersion: boolean;
+  configurationMessage?: string;
+  unavailableReason?: string;
+}
+
+export interface TaskInstanceProgress {
+  taskId: number;
+  instanceId: number;
+  executionMode: string;
+  taskType: string;
+  instanceStatus: string;
+  phase: 'submitting' | 'running' | 'qualifying' | 'qualified' | 'stopping' | 'restarting' | 'terminal';
+  stage: string;
+  stageIndex?: number;
+  stageCount: number;
+  message: string;
+  failureMessage?: string;
+  qualification?: TaskInstanceProgressQualification;
+}
+
 export interface TaskRuntimeSnapshot {
   available?: boolean;
   instanceId?: number;
@@ -166,10 +216,26 @@ export interface TaskRuntimeSnapshot {
   restartCount?: number;
   restartCountUnavailableReason?: string;
   sync?: TaskSyncRuntimeMetrics;
+  export?: TaskExportRuntimeMetrics;
   vertices?: TaskRuntimeVertexMetric[];
   latestException?: TaskRuntimeException;
   latestExceptionUnavailableReason?: string;
   updatedAt?: string;
+}
+
+export interface TaskExportRuntimeMetrics {
+  sourceOutputRate?: number | null;
+  sinkInputRate?: number | null;
+  pendingRows?: number | null;
+  committedRows?: number | null;
+  committedBatches?: number | null;
+  retryCount?: number | null;
+  lastFlushDurationMs?: number | null;
+  lastSuccessTimestamp?: number | null;
+  lastFailedBatchSize?: number | null;
+  busyMaxMsPerSecond?: number | null;
+  backpressuredMaxMsPerSecond?: number | null;
+  unavailableReasons?: Record<string, string>;
 }
 
 export interface TaskSyncRuntimeMetrics {
@@ -187,6 +253,13 @@ export interface TaskSyncRuntimeMetrics {
   snapshotSplitsFinished?: number | null;
   snapshotSplitsRemaining?: number | null;
   dirtyRecords?: number | null;
+  mysqlPendingRows?: number | null;
+  mysqlCommittedRows?: number | null;
+  mysqlCommittedBatches?: number | null;
+  mysqlRetryCount?: number | null;
+  mysqlLastFlushDurationMs?: number | null;
+  mysqlLastSuccessTimestamp?: number | null;
+  mysqlLastFailedBatchSize?: number | null;
   unavailableReasons?: Record<string, string>;
 }
 
@@ -258,7 +331,7 @@ export interface SyncSchemaChange {
   targetTable?: string;
   changeType: 'ADD_COLUMNS' | 'INCOMPATIBLE' | string;
   status: 'PENDING' | 'APPLIED' | 'BLOCKED' | string;
-  change?: { addColumns?: RealtimeTableColumn[]; incompatibleColumns?: Array<Record<string, string>> };
+  change?: { addColumns?: RealtimeTableColumn[]; incompatibleColumns?: Array<{ column?: string; name?: string; columnName?: string; sourceType?: string; targetType?: string }> };
   detectedAt?: string;
   appliedBy?: string;
   appliedAt?: string;
@@ -367,7 +440,28 @@ export interface TaskParam {
 }
 
 export interface PaimonTablePrefixOption { label: string; value: string }
-export interface RealtimeAlert { id: number; taskId: number; taskName: string; severity: string; status: string; title: string; detail?: string; createTime: string; updateTime: string }
+export interface BusinessDomain {
+  id: number; code: string; name: string; description?: string; owner?: string; sortOrder: number;
+  enabled: boolean | number; disabledTime?: string; assetCount?: number; createTime?: string; updateTime?: string;
+}
+export interface AssetDomainAssignment {
+  id?: number; assetType?: 'HIVE' | 'PAIMON'; assetKey?: string; realtimeTableId?: number;
+  catalogName?: string; databaseName?: string; tableName?: string; domainId?: number;
+  domainCode?: string; domainName?: string; domainEnabled?: boolean | number; updatedBy?: string; updateTime?: string;
+}
+export interface RealtimeAlert {
+  id: number; taskId: number; taskName: string; taskType?: ManagedTaskType | 'sync'; taskInstanceId?: number;
+  ruleId?: number; ruleCode?: string; ruleName?: string; eventType?: string; severity: string;
+  status: 'OPEN' | 'ACKNOWLEDGED' | 'MUTED' | 'RECOVERED' | string; title: string; detail?: string;
+  occurrenceCount?: number; firstOccurredAt?: string; lastOccurredAt?: string; acknowledgedBy?: string;
+  acknowledgedAt?: string; mutedUntil?: string; recoveredAt?: string; evidence?: Record<string, unknown>;
+  active?: boolean; createTime: string; updateTime: string;
+}
+export interface RealtimeAlertPage { records: RealtimeAlert[]; total: number; page: number; pageSize: number }
+export interface RealtimeAlertRule {
+  id: number; ruleCode: string; ruleName: string; eventType: string; severity: string; enabled: boolean | number;
+  thresholdValue?: number; consecutiveSamples: number; windowSeconds: number; description?: string; updateTime?: string;
+}
 export interface TaskChangeLog { id: number; taskId: number; taskName: string; operationId?: number; beforeVersionId?: number; afterVersionId?: number; taskInstanceId?: number; operator: string; action: string; detail?: string; summary?: string; detailKind?: 'create' | 'edit' | 'start' | 'stop' | 'text'; createTime: string }
 export interface MysqlColumn { name: string; type: string; nullable: boolean; comment?: string }
 export interface MysqlTableSchema { table: string; columns: MysqlColumn[]; primaryKeys: string[] }
@@ -384,6 +478,18 @@ export interface RealtimeTable {
   producerTaskId?: number; producerTaskName?: string; physicalStatus: 'declared' | 'active' | 'error';
   options: Record<string, string>; columns?: RealtimeTableColumn[]; dependencies?: ManagedTableReference[];
   columnCount?: number; referenceCount?: number; lastError?: string; lastSyncedAt?: string; updateTime?: string; ddl?: string; ddlError?: string;
+}
+export interface RealtimeSchemaDiff {
+  addedColumns: RealtimeTableColumn[]; removedColumns: RealtimeTableColumn[];
+  modifiedColumns: Array<{ name: string; changes: Record<string, { before?: unknown; after?: unknown }> }>;
+  optionChanges: Array<{ key: string; before?: unknown; after?: unknown }>; commentChanged: boolean;
+}
+export interface RealtimeSchemaVersion {
+  id: number; realtimeTableId: number; versionNo: number; schemaFingerprint: string;
+  changeSource: 'CREATE'|'MANUAL_REFRESH'|'SCHEDULED_REFRESH'|'SAFE_UPDATE'|'SYNC_EVOLUTION'|'BACKFILLED_BASELINE';
+  compatibility: 'BASELINE'|'COMPATIBLE'|'INCOMPATIBLE'; sourceEventId?: number; operator: string;
+  firstSeenAt: string; lastSeenAt: string; diff: RealtimeSchemaDiff;
+  schema?: { comment?: string; options?: Record<string,string>; columns?: RealtimeTableColumn[] };
 }
 export interface RealtimeTableCreateRequest {
   catalogName?: string; databaseName: string; tableName: string; tableComment?: string; comment?: string;

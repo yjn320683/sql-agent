@@ -152,7 +152,7 @@ export default function DataComparePage() {
   };
 
   return (
-    <div className="data-page data-compare-page">
+    <div className="page-content data-page data-compare-page">
       <section className="data-panel">
         <div className="data-toolbar data-compare-toolbar">
           <div className="data-compare-toolbar-main">

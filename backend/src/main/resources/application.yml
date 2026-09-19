@@ -1,6 +1,8 @@
 spring:
   application:
     name: sql-agent-backend
+  flyway:
+    enabled: false
   profiles:
     active: local
   servlet:
@@ -16,20 +18,35 @@ logging:
   config: classpath:logback-spring.xml
 
 app:
+  data-map:
+    enabled: ${DATA_MAP_ENABLED:true}
+    initial-delay-ms: ${DATA_MAP_INITIAL_DELAY_MS:15000}
+    incremental-delay-ms: ${DATA_MAP_INCREMENTAL_DELAY_MS:60000}
+    full-cron: ${DATA_MAP_FULL_CRON:0 30 2 * * *}
+    projection-batch-size: ${DATA_MAP_PROJECTION_BATCH_SIZE:50}
+    max-attempts: ${DATA_MAP_MAX_ATTEMPTS:5}
+    processing-lease-seconds: ${DATA_MAP_PROCESSING_LEASE_SECONDS:600}
+    neo4j:
+      enabled: ${DATA_MAP_NEO4J_ENABLED:false}
+      base-url: ${DATA_MAP_NEO4J_URL:http://127.0.0.1:7474}
+      database: ${DATA_MAP_NEO4J_DATABASE:neo4j}
+      username: ${DATA_MAP_NEO4J_USERNAME:neo4j}
+      password: ${DATA_MAP_NEO4J_PASSWORD:}
+      connect-timeout-ms: ${DATA_MAP_NEO4J_CONNECT_TIMEOUT_MS:2000}
+      read-timeout-ms: ${DATA_MAP_NEO4J_READ_TIMEOUT_MS:10000}
   realtime:
     enabled: ${REALTIME_ENABLED:true}
     default-project-id: ${REALTIME_DEFAULT_PROJECT_ID:1}
     flink-bin: ${FLINK_BIN:flink}
     yarn-bin: ${YARN_BIN:yarn}
     yarn-web-url: ${YARN_WEB_URL:}
+    yarn-queue: ${YARN_QUEUE:root.default}
     submit-jar: ${REALTIME_SUBMIT_JAR:../realtime-task-submit/target/realtime-task-submit.jar}
     submission-dir: ${REALTIME_SUBMISSION_DIR:/tmp/sql-agent-realtime/submissions}
     submission-uri-prefix: ${REALTIME_SUBMISSION_URI_PREFIX:}
     paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:}
     paimon-warehouse: ${PAIMON_WAREHOUSE:}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:}
-    paimon-debug-target-database: ${PAIMON_DEBUG_TARGET_DATABASE:paimon_debug}
-    target-database: ${PAIMON_TARGET_DATABASE:}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:}
     sync-delay-ms: ${REALTIME_SYNC_DELAY_MS:10000}

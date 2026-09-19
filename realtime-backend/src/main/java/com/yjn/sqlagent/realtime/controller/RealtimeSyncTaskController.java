@@ -27,10 +27,13 @@ import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import java.nio.charset.StandardCharsets;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 @RestController
 @RequestMapping("/api/realtime/sync-tasks")
 public class RealtimeSyncTaskController {
+    private static final Logger LOG = LoggerFactory.getLogger(RealtimeSyncTaskController.class);
     private final RealtimeSyncRepository repository;
     private final RealtimeRuntimeService runtime;
     private final RealtimeServerService servers;
@@ -58,8 +61,13 @@ public class RealtimeSyncTaskController {
     @PostMapping
     public RealtimeResponse<Map<String, Object>> create(@Valid @RequestBody SyncTaskRequest request) {
         String actor = actors.requireActor();
+        long started = System.nanoTime();
         validateSubmission(request, null);
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
         long id = repository.createTask(request, actor);
+        LOG.info("sync_save_total operation=legacy_create taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                id, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
         return RealtimeResponse.success(repository.requiredTask(id));
     }
 
@@ -67,8 +75,13 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<Map<String, Object>> update(@PathVariable long id,
             @Valid @RequestBody SyncTaskRequest request) {
         String actor = actors.requireActor();
+        long started = System.nanoTime();
         validateSubmission(request, id);
+        long validationMs = elapsedMs(started);
+        long persistenceStarted = System.nanoTime();
         repository.updateTask(id, request, actor);
+        LOG.info("sync_save_total operation=legacy_update taskId={} tableCount={} validationMs={} persistenceMs={} totalMs={}",
+                id, selectedTableCount(request), validationMs, elapsedMs(persistenceStarted), elapsedMs(started));
         return RealtimeResponse.success(repository.requiredTask(id));
     }
 
@@ -80,8 +93,15 @@ public class RealtimeSyncTaskController {
     @PostMapping("/command-preview")
     public RealtimeResponse<Map<String, Object>> previewRequest(@Valid @RequestBody SyncTaskRequest request,
             @RequestParam(required = false) Long excludeTaskId) {
-        actors.requireActor(); validateSubmission(request, excludeTaskId);
-        return RealtimeResponse.success(runtime.previewRequest(request, excludeTaskId));
+        actors.requireActor();
+        long started = System.nanoTime();
+        validateSubmission(request, excludeTaskId);
+        long validationMs = elapsedMs(started);
+        long previewStarted = System.nanoTime();
+        Map<String, Object> preview = runtime.previewRequest(request, excludeTaskId);
+        LOG.info("sync_save_total operation=legacy_preview taskId={} tableCount={} validationMs={} previewBuildMs={} totalMs={}",
+                excludeTaskId, selectedTableCount(request), validationMs, elapsedMs(previewStarted), elapsedMs(started));
+        return RealtimeResponse.success(preview);
     }
 
     @GetMapping("/{id}/command-preview")
@@ -236,8 +256,14 @@ public class RealtimeSyncTaskController {
     }
 
     private void validateSubmission(SyncTaskRequest request, Long taskId) {
+        long started = System.nanoTime();
+        long stageStarted = System.nanoTime();
         validator.validate(request);
+        long schemaValidationMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> normalized = repository.validatePreview(request, taskId);
+        long normalizationAndConflictMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         Map<String, Object> persisted = Map.of();
         if (taskId != null) {
             Object value = repository.requiredTask(taskId).get("taskConfig");
@@ -246,7 +272,12 @@ public class RealtimeSyncTaskController {
                 persisted = config;
             }
         }
+        long persistedConfigMs = elapsedMs(stageStarted);
+        stageStarted = System.nanoTime();
         targetValidator.validateAddedTargets(persisted, normalized);
+        LOG.info("sync_validation_total operation=legacy taskId={} tableCount={} schemaValidationMs={} normalizationAndConflictMs={} persistedConfigMs={} targetCheckMs={} totalMs={}",
+                taskId, selectedTableCount(request), schemaValidationMs, normalizationAndConflictMs,
+                persistedConfigMs, elapsedMs(stageStarted), elapsedMs(started));
     }
 
     private long latestManagedActive(long taskId) {
@@ -257,5 +288,16 @@ public class RealtimeSyncTaskController {
         }
         throw new IllegalStateException("任务没有本平台管理的活动实例");
     }
+    private int selectedTableCount(SyncTaskRequest request) {
+        if (request == null || request.getTaskConfig() == null) return 0;
+        Object cdcValue = request.getTaskConfig().get("cdcConfig");
+        if (!(cdcValue instanceof Map<?, ?>)) return 0;
+        Object tables = ((Map<?, ?>) cdcValue).get("selectedTables");
+        if (!(tables instanceof Iterable<?>)) return text(tables).isEmpty() ? 0 : text(tables).split(",").length;
+        int count = 0;
+        for (Object ignored : (Iterable<?>) tables) count++;
+        return count;
+    }
+    private long elapsedMs(long started) { return java.util.concurrent.TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - started); }
     private String text(Object value) { return value == null ? "" : String.valueOf(value); }
 }

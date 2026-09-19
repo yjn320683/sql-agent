@@ -61,16 +61,110 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         TaskActionRequest request = new TaskActionRequest();
         request.setStopType("savepoint");
 
-        assertEquals("正式实例缺少 Flink JobID，禁止降级为 YARN kill；请先刷新实例状态",
+        assertEquals("Savepoint 停止需要 Job ID，请等待状态同步后重试",
                 assertThrows(IllegalStateException.class,
                         () -> service.stop(8L, 30L, request, "tester")).getMessage());
         verify(repository, never()).startOperation(anyLong(), any(), anyString(), anyString(), anyString());
     }
 
     @Test
+    void submissionProgressUsesTheLastPersistedStage() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "sync"));
+        when(repository.requiredInstance(8L, 30L)).thenReturn(Map.of(
+                "id", 30L, "taskId", 8L, "status", "submitting", "executionMode", "PRODUCTION",
+                "startupLog", "[SUBMIT_STAGE] 准备正式提交配置\n[SUBMIT_STAGE] 生成启动命令"));
+
+        Map<String, Object> result = service.progress(8L, 30L);
+
+        assertEquals("submitting", result.get("phase"));
+        assertEquals("building_command", result.get("stage"));
+        assertEquals(4, result.get("stageIndex"));
+        assertEquals("正在生成启动命令", result.get("message"));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void completedDebugProgressIsQualifiedWithoutRemoteRequests() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "sync"));
+        when(repository.requiredInstance(8L, 31L)).thenReturn(Map.of(
+                "id", 31L, "taskId", 8L, "versionId", 12L, "status", "killed_success",
+                "executionMode", "DEBUG", "startupLog", "[SUBMIT_STAGE] 执行 Flink 启动命令"));
+        when(repository.latestVersionId(8L)).thenReturn(12L);
+
+        Map<String, Object> result = service.progress(8L, 31L);
+        Map<String, Object> qualification = (Map<String, Object>) result.get("qualification");
+
+        assertTrue(Boolean.TRUE.equals(qualification.get("qualified")));
+        assertTrue(Boolean.TRUE.equals(qualification.get("currentVersion")));
+        assertTrue(Boolean.TRUE.equals(qualification.get("checkpointSatisfied")));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void computeAndExportTasksShareInstanceProgress() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "compute"));
+        when(repository.requiredInstance(8L, 32L)).thenReturn(Map.of(
+                "id", 32L, "taskId", 8L, "status", "submitting", "executionMode", "PRODUCTION",
+                "startupLog", "[SUBMIT_STAGE] 写入 HDFS 提交文件"));
+
+        Map<String, Object> compute = service.progress(8L, 32L);
+
+        assertEquals("compute", compute.get("taskType"));
+        assertEquals("writing_hdfs", compute.get("stage"));
+
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "export"));
+        when(repository.requiredInstance(8L, 33L)).thenReturn(Map.of(
+                "id", 33L, "taskId", 8L, "versionId", 13L, "status", "killed_success",
+                "executionMode", "DEBUG", "startupLog", "[SUBMIT_STAGE] 等待调试作业进入 RUNNING"));
+        when(repository.latestVersionId(8L)).thenReturn(13L);
+
+        Map<String, Object> export = service.progress(8L, 33L);
+        Map<String, Object> qualification = (Map<String, Object>) export.get("qualification");
+
+        assertEquals("export", export.get("taskType"));
+        assertEquals("CHECKPOINT_ONLY", qualification.get("mode"));
+        assertEquals(0L, qualification.get("requiredRunningSeconds"));
+    }
+
+    @Test
     void debugLifecycleDoesNotEnterTaskChangeLog() {
         assertFalse(RealtimeRuntimeService.isProductionLifecycleChange(true));
         assertTrue(RealtimeRuntimeService.isProductionLifecycleChange(false));
+    }
+
+    @Test
+    @SuppressWarnings("unchecked")
+    void recoveryOptionsUseSourceSnapshotAndOnlyItsStatePaths() {
+        RealtimeRuntimeService recovering = spy(service);
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "compute"));
+        when(repository.requiredInstance(8L, 30L)).thenReturn(Map.of(
+                "id", 30L, "taskId", 8L, "managed", true, "status", "failed",
+                "executionMode", "PRODUCTION", "jobId", "job-30", "versionId", 6L,
+                "savepointPath", "hdfs:///savepoints/job-30/sp-1",
+                "config", Map.of("taskType", "compute", "name", "snapshot-name")));
+        doAnswer(invocation -> List.of(
+                Map.of("path", "hdfs:///checkpoints/job-30/chk-8"),
+                Map.of("path", "hdfs:///checkpoints/job-other/chk-9")))
+                .when(recovering).stateHistory(8L, "checkpoint");
+
+        Map<String, Object> result = recovering.recoveryOptions(8L, 30L);
+        List<Map<String, Object>> strategies = (List<Map<String, Object>>) result.get("strategies");
+
+        assertEquals(3, strategies.size());
+        assertTrue(strategies.stream().anyMatch(item -> "direct".equals(item.get("type")) && Boolean.TRUE.equals(item.get("available"))));
+        assertTrue(strategies.stream().anyMatch(item -> "checkpoint".equals(item.get("type")) && String.valueOf(item.get("statePath")).contains("job-30")));
+        assertTrue(strategies.stream().anyMatch(item -> "savepoint".equals(item.get("type")) && String.valueOf(item.get("statePath")).endsWith("sp-1")));
+        assertEquals("snapshot-name", ((Map<String, Object>) result.get("config")).get("name"));
+    }
+
+    @Test
+    void runningInstanceCannotBeRecoverySource() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "compute"));
+        when(repository.requiredInstance(8L, 30L)).thenReturn(Map.of(
+                "id", 30L, "taskId", 8L, "managed", true, "status", "running",
+                "executionMode", "PRODUCTION"));
+
+        assertThrows(IllegalStateException.class, () -> service.recoveryOptions(8L, 30L));
     }
 
     @Test
@@ -139,6 +233,27 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         assertEquals("jobmanager", ((Map<?, ?>) components.get(2)).get("value"));
         assertEquals("imported runtime log", logs.get("runtimeLog"));
         assertEquals(true, logs.get("imported"));
+    }
+
+    @Test
+    void exportRuntimeUsesMysqlSummaryInsteadOfPaimonSummary() throws Exception {
+        RealtimeRuntimeService observed = spy(service);
+        doAnswer(invocation -> {
+            String path = invocation.getArgument(1);
+            if ("/jobs/job-export".equals(path)) return "{\"state\":\"RUNNING\",\"duration\":5000,\"vertices\":[],\"plan\":{\"nodes\":[]}}";
+            if (path.startsWith("/jobs/job-export/metrics")) return "[]";
+            if (path.startsWith("/jobs/job-export/exceptions")) return "{\"all-exceptions\":[]}";
+            return "{}";
+        }).when(observed).fetchText(anyString(), anyString());
+        when(repository.requiredInstance(8L, 19L)).thenReturn(Map.of(
+                "id", 19L, "taskId", 8L, "managed", true, "status", "running",
+                "jobId", "job-export", "trackingUrl", "http://flink/"));
+        when(repository.taskType(8L)).thenReturn("export");
+
+        Map<?, ?> runtime = (Map<?, ?>) observed.runtime(8L, 19L);
+
+        assertTrue(runtime.containsKey("export"));
+        assertFalse(runtime.containsKey("sync"));
     }
 
     @Test
@@ -525,6 +640,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         assertFalse(json.contains("\"servers\""));
         assertFalse(json.contains("inst-null"));
         assertTrue(json.contains("flink run -t yarn-application"));
+        assertTrue(json.contains("-Dyarn.application.queue=root.default"));
         assertFalse(json.contains("run-application"));
     }
 

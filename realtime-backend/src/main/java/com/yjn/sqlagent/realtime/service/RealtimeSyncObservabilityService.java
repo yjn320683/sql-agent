@@ -61,7 +61,7 @@ public class RealtimeSyncObservabilityService {
         if(number(event.get("taskId"))!=taskId)throw new IllegalArgumentException("Schema 变更事件不属于当前任务");
         if(!"PENDING".equals(event.get("status"))||!"ADD_COLUMNS".equals(event.get("changeType")))throw new IllegalStateException("该 Schema 事件不可自动应用");
         Map<String,Object>change=map(event.get("change"));Map<String,Object>request=new LinkedHashMap<>();request.put("addColumns",change.get("addColumns"));
-        Map<String,Object>result=tables.applySyncEvolution(number(event.get("realtimeTableId")),request,actor);
+        Map<String,Object>result=tables.applySyncEvolution(number(event.get("realtimeTableId")),request,actor,eventId);
         observability.markSchemaApplied(eventId,actor);return result;
     }
 

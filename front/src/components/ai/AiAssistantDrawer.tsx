@@ -13,18 +13,20 @@ import type {
   AiContext,
   AiIntent,
   AiProposal,
+  ProposalActionResult,
   ChatMessage,
   Step,
   UserQuestionAnswerPayload,
 } from '../../types';
 import MessageList from '../MessageList';
 import { historyMessageForDisplay, isVisibleHistoryMessage } from '../../utils/messages';
+import { recoverProposals, validateProposal } from './proposalRegistry';
 
 interface Props {
   open: boolean;
   context: AiContext;
   onClose: () => void;
-  onApplyProposal?: (proposal: AiProposal) => void;
+  onApplyProposal?: (proposal: AiProposal) => ProposalActionResult;
 }
 
 const INTENT_LABELS: Array<{ value: AiIntent; label: string }> = [
@@ -94,6 +96,8 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
   const [sessionId, setSessionId] = useState(() => sessionStorage.getItem(storageKey) ?? createSessionId());
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [proposals, setProposals] = useState<AiProposal[]>([]);
+  const [proposalResults, setProposalResults] = useState<Record<string, ProposalActionResult>>({});
+  const [validatingProposal, setValidatingProposal] = useState<string>();
   const [input, setInput] = useState('');
   const [intent, setIntent] = useState<AiIntent>('EXPLAIN');
   const [sending, setSending] = useState(false);
@@ -116,8 +120,12 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
     setSessionId(restored);
     setMessages([]);
     setProposals([]);
+    setProposalResults({});
     void loadMessages(restored).then((history) => {
-      if (active) setMessages(history.filter(isVisibleHistoryMessage).map(historyMessageForDisplay));
+      if (!active) return;
+      const visible = history.filter(isVisibleHistoryMessage).map(historyMessageForDisplay);
+      setMessages(visible);
+      setProposals(recoverProposals(visible));
     }).catch(() => undefined);
     return () => { active = false; };
   }, [contextKey, storageKey]); // sessionId 仅用于终止上一个上下文中的流式请求
@@ -194,7 +202,11 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
             ...item,
             steps: [...(item.steps ?? []), { kind: 'user_question', requestId, questions, rawInput, status: 'pending' }],
           })),
-          onProposal: (proposal) => setProposals((current) => [...current, proposal]),
+          onProposal: (proposal) => setProposals((current) => {
+            const identity = proposal.proposalId || `${proposal.target}:${proposal.kind}:${proposal.summary || ''}`;
+            return current.some((item) => (item.proposalId || `${item.target}:${item.kind}:${item.summary || ''}`) === identity)
+              ? current : [...current, proposal];
+          }),
           onDone: () => updateAssistant((item) => ({ ...item, streaming: false })),
           onError: (error) => updateAssistant((item) => ({
             ...item,
@@ -218,22 +230,32 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
     updateAssistant((item) => ({ ...item, streaming: false }));
   };
 
-  const applyProposal = (proposal: AiProposal) => {
-    if (proposal.baseRevision !== undefined && context.revision !== undefined
-      && String(proposal.baseRevision) !== String(context.revision)) {
-      antdMessage.error('页面内容已变化，Proposal 基线已过期，请刷新后重新生成');
-      return;
-    }
+  const proposalKey = (proposal: AiProposal, index: number) => proposal.proposalId || `${proposal.target}-${index}`;
+
+  const verifyProposal = async (proposal: AiProposal, index: number) => {
+    const key = proposalKey(proposal, index);
+    setValidatingProposal(key);
+    const verified = await validateProposal(proposal, context);
+    setProposalResults((current) => ({ ...current, [key]: verified }));
+    setValidatingProposal(undefined);
+    verified.status === 'APPLIED' ? antdMessage.success(verified.message) : antdMessage.error(verified.message);
+    return verified;
+  };
+
+  const applyProposal = async (proposal: AiProposal, index: number) => {
+    const key = proposalKey(proposal, index);
+    const verified = proposalResults[key]?.status === 'APPLIED'
+      ? proposalResults[key] : await verifyProposal(proposal, index);
+    if (verified.status !== 'APPLIED') return;
     if (!onApplyProposal) {
-      antdMessage.info('当前页面为只读建议；请复制内容或进入对应编辑页面应用');
+      const outcome = { status: 'READ_ONLY' as const, message: '当前页面为只读建议；请复制内容或进入对应编辑页面应用' };
+      setProposalResults((current) => ({ ...current, [key]: outcome }));
+      antdMessage.info(outcome.message);
       return;
     }
-    try {
-      onApplyProposal(proposal);
-      antdMessage.success('已应用到当前页面草稿，仍需使用原页面按钮保存或发布');
-    } catch (error) {
-      antdMessage.info((error as Error).message || '当前页面暂无可写入的编辑表单');
-    }
+    const outcome = onApplyProposal(proposal);
+    setProposalResults((current) => ({ ...current, [key]: outcome }));
+    outcome.status === 'APPLIED' ? antdMessage.success(outcome.message) : antdMessage.info(outcome.message);
   };
 
   const copyProposal = async (proposal: AiProposal) => {
@@ -311,8 +333,10 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
           ) : (
             <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="AI 会自动读取当前页面上下文，不会直接执行生产操作" />
           )}
-          {proposals.map((proposal, index) => (
-            <section className="ai-proposal" key={`${proposal.target}-${index}`}>
+          {proposals.map((proposal, index) => {
+            const key = proposalKey(proposal, index); const actionResult = proposalResults[key];
+            return (
+            <section className="ai-proposal" key={key}>
               <header><strong>{proposal.summary || `${proposal.target} 修改建议`}</strong><Tag>{proposal.kind}</Tag></header>
               {proposal.before !== undefined && proposal.after !== undefined
                 ? <ProposalDiff before={proposal.before} after={proposal.after} />
@@ -323,12 +347,18 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
                     : null}
               {proposal.patch && Object.keys(proposal.patch).length > 0 && <pre>{JSON.stringify(proposal.patch, null, 2)}</pre>}
               {!!proposal.risks?.length && <ul>{proposal.risks.map((risk) => <li key={risk}>{risk}</li>)}</ul>}
+              {actionResult ? <div className={`ai-proposal-result status-${actionResult.status.toLowerCase()}`}>
+                <Tag color={actionResult.status === 'APPLIED' ? 'success' : actionResult.status === 'STALE' ? 'warning' : 'error'}>{actionResult.status}</Tag>
+                <span>{actionResult.message}</span>
+                {!!actionResult.details?.length && <ul>{actionResult.details.map((detail) => <li key={detail}>{detail}</li>)}</ul>}
+              </div> : null}
               <Space size={6}>
                 <Button size="small" icon={<CopyOutlined />} onClick={() => void copyProposal(proposal)}>复制</Button>
-                <Button type="primary" size="small" onClick={() => applyProposal(proposal)}>应用到当前页面</Button>
+                <Button size="small" loading={validatingProposal === key} onClick={() => void verifyProposal(proposal, index)}>验证建议</Button>
+                <Button type="primary" size="small" disabled={actionResult?.status === 'STALE'} onClick={() => void applyProposal(proposal, index)}>应用到当前页面</Button>
               </Space>
             </section>
-          ))}
+          );})}
         </div>
         <div className="ai-assistant-composer">
           <Input.TextArea

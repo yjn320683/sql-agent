@@ -4,11 +4,16 @@ import com.yjn.sqlagent.common.BaseResponse;
 import com.yjn.sqlagent.common.ErrorCode;
 import com.yjn.sqlagent.model.dto.SqlCompletionRequestDTO;
 import com.yjn.sqlagent.model.dto.SqlStructurePreviewDTO;
+import com.yjn.sqlagent.model.dto.SqlQueryPreviewDTO;
 import com.yjn.sqlagent.exception.BusinessException;
 import com.yjn.sqlagent.service.AgentProxyService;
 import com.yjn.sqlagent.service.CurrentUserService;
 import com.yjn.sqlagent.service.PlatformHealthService;
 import com.yjn.sqlagent.service.TaskVersionCheckService;
+import com.yjn.sqlagent.service.SqlQueryPreviewService;
+import com.yjn.sqlagent.service.HiveFunctionCatalogService;
+import com.yjn.sqlagent.service.TaskLineageQueryService;
+import com.yjn.sqlagent.datacompare.service.HiveDdlService;
 import java.util.Map;
 import java.util.Collections;
 import java.util.List;
@@ -30,15 +35,27 @@ public class WorkspaceController {
     private final CurrentUserService currentUserService;
     private final PlatformHealthService platformHealthService;
     private final TaskVersionCheckService taskVersionCheckService;
+    private final SqlQueryPreviewService sqlQueryPreviewService;
+    private final HiveFunctionCatalogService hiveFunctionCatalogService;
+    private final HiveDdlService hiveDdlService;
+    private final TaskLineageQueryService taskLineageQueryService;
 
     public WorkspaceController(AgentProxyService agentProxyService,
                                CurrentUserService currentUserService,
                                PlatformHealthService platformHealthService,
-                               TaskVersionCheckService taskVersionCheckService) {
+                               TaskVersionCheckService taskVersionCheckService,
+                               SqlQueryPreviewService sqlQueryPreviewService,
+                               HiveFunctionCatalogService hiveFunctionCatalogService,
+                               HiveDdlService hiveDdlService,
+                               TaskLineageQueryService taskLineageQueryService) {
         this.agentProxyService = agentProxyService;
         this.currentUserService = currentUserService;
         this.platformHealthService = platformHealthService;
         this.taskVersionCheckService = taskVersionCheckService;
+        this.sqlQueryPreviewService = sqlQueryPreviewService;
+        this.hiveFunctionCatalogService = hiveFunctionCatalogService;
+        this.hiveDdlService = hiveDdlService;
+        this.taskLineageQueryService = taskLineageQueryService;
     }
 
     @GetMapping("/hive/databases")
@@ -58,8 +75,7 @@ public class WorkspaceController {
         if (limit < 1 || limit > 200 || offset < 0 || keyword.length() > 256) {
             throw new BusinessException(ErrorCode.BAD_REQUEST.getCode(), "函数检索参数非法");
         }
-        return BaseResponse.success(
-                agentProxyService.searchHiveFunctions(keyword, limit, offset, defaultDb));
+        return BaseResponse.success(hiveFunctionCatalogService.search(keyword, limit, offset, defaultDb));
     }
 
     @GetMapping("/hive/functions/{name}")
@@ -68,7 +84,7 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
         currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.getHiveFunction(name, defaultDb));
+        return BaseResponse.success(hiveFunctionCatalogService.detail(name, defaultDb));
     }
 
     @GetMapping("/platform/health")
@@ -104,7 +120,7 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
         currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.getTaskLineage(taskId, versionNo, defaultDb));
+        return BaseResponse.success(taskLineageQueryService.lineage(taskId, versionNo, defaultDb));
     }
 
     @GetMapping("/tasks/{taskId}/dependencies")
@@ -114,7 +130,17 @@ public class WorkspaceController {
             @RequestParam(required = false) String defaultDb,
             HttpServletRequest request) {
         currentUserService.requireObId(request);
-        return BaseResponse.success(agentProxyService.getTaskDependencies(taskId, versionNo, defaultDb));
+        return BaseResponse.success(taskLineageQueryService.dependencies(taskId, versionNo, defaultDb));
+    }
+
+    @PostMapping("/tasks/{taskId}/lineage/reanalyze")
+    public BaseResponse<Map<String, Object>> reanalyzeTaskLineage(
+            @PathVariable long taskId,
+            @RequestParam(required = false) Integer versionNo,
+            @RequestParam(required = false) String defaultDb,
+            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(taskLineageQueryService.reanalyze(taskId, versionNo, defaultDb));
     }
 
     @PostMapping("/tasks/{taskId}/quality")
@@ -269,5 +295,42 @@ public class WorkspaceController {
             HttpServletRequest request) {
         currentUserService.requireObId(request);
         return BaseResponse.success(agentProxyService.previewSqlStructure(body));
+    }
+
+    @PostMapping("/sql/preview")
+    public BaseResponse<Map<String, Object>> previewSql(
+            @Valid @RequestBody SqlQueryPreviewDTO body,
+            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        return BaseResponse.success(sqlQueryPreviewService.preview(body));
+    }
+
+    /** 复用版本发布的 Hive DDL 白名单，只做结构校验，不执行 DDL。 */
+    @PostMapping("/sql/ddl/validate")
+    public BaseResponse<Map<String, Object>> validateDdl(
+            @RequestBody Map<String, Object> body,
+            HttpServletRequest request) {
+        currentUserService.requireObId(request);
+        String ddl = body.get("ddl") == null ? "" : String.valueOf(body.get("ddl"));
+        if (ddl.length() > 1_000_000) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST.getCode(), "DDL 内容过长");
+        }
+        final List<HiveDdlService.DdlStatement> statements;
+        try {
+            statements = hiveDdlService.parse(ddl);
+        } catch (IllegalArgumentException exception) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST.getCode(), exception.getMessage());
+        }
+        if (statements.isEmpty()) {
+            throw new BusinessException(ErrorCode.BAD_REQUEST.getCode(), "DDL 内容不能为空");
+        }
+        List<Map<String, Object>> details = statements.stream().map(statement -> Map.<String, Object>of(
+                "type", statement.getType(), "table", statement.getTable(), "clause", statement.getClause()))
+                .collect(java.util.stream.Collectors.toList());
+        return BaseResponse.success(Map.of(
+                "valid", true,
+                "affectedTables", hiveDdlService.affectedTables(ddl),
+                "statements", details,
+                "executed", false));
     }
 }

@@ -4,6 +4,8 @@ import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.never;
+import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
 import java.util.LinkedHashMap;
@@ -20,7 +22,8 @@ class RealtimeSyncConfigValidatorTest {
     void setUp() {
         servers = mock(RealtimeServerService.class);
         validator = new RealtimeSyncConfigValidator(servers);
-        when(servers.schema(3L, "orders")).thenReturn(schema(List.of("id", "tenant_id")));
+        when(servers.schemas(3L, List.of("orders"))).thenReturn(
+                Map.of("orders", schema("orders", List.of("id", "tenant_id"))));
     }
 
     @Test
@@ -65,12 +68,14 @@ class RealtimeSyncConfigValidatorTest {
 
     @Test
     void rejectsMissingKeyAndPartitionCoveringAllKeys() {
-        when(servers.schema(3L, "orders")).thenReturn(schema(List.of()));
+        when(servers.schemas(3L, List.of("orders"))).thenReturn(
+                Map.of("orders", schema("orders", List.of())));
         assertEquals("MySQL CDC 源表无主键，请配置私有主键：orders",
                 assertThrows(IllegalArgumentException.class,
                         () -> validator.validate("mysql-cdc", 3L, validConfig())).getMessage());
 
-        when(servers.schema(3L, "orders")).thenReturn(schema(List.of("id")));
+        when(servers.schemas(3L, List.of("orders"))).thenReturn(
+                Map.of("orders", schema("orders", List.of("id"))));
         Map<String, Object> config = validConfig();
         cdc(config).put("tableConfigs", Map.of("orders", Map.of("partitionKeys", List.of("id"))));
         assertEquals("源表 orders 的分区键不能覆盖全部最终主键，请至少保留一个非分区主键字段",
@@ -92,6 +97,38 @@ class RealtimeSyncConfigValidatorTest {
         assertEquals("Sequence Field 引用的目标字段不存在：missing",
                 assertThrows(IllegalArgumentException.class,
                         () -> validator.validate("mysql-cdc", 3L, invalid)).getMessage());
+
+        Map<String, Object> prefixed = validConfig();
+        cdc(prefixed).put("tableConfOverrides", Map.of("sequence.field", "__meta_op_ts"));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, prefixed));
+    }
+
+    @Test
+    void rejectsCollisionWithPrefixedMetadataColumn() {
+        when(servers.schemas(3L, List.of("orders"))).thenReturn(Map.of("orders", Map.of(
+                "table", "orders", "primaryKeys", List.of("id"), "columns", List.of(
+                Map.of("name", "id", "type", "BIGINT", "nullable", false),
+                Map.of("name", "__meta_op_ts", "type", "TIMESTAMP", "nullable", true)))));
+        assertEquals("源表 orders 的字段或计算列与同步元数据列重名：__meta_op_ts",
+                assertThrows(IllegalArgumentException.class,
+                        () -> validator.validate("mysql-cdc", 3L, validConfig())).getMessage());
+    }
+
+    @Test
+    void readsAllSelectedSchemasInOneBatch() {
+        List<String> tables = java.util.stream.IntStream.range(0, 100)
+                .mapToObj(index -> "orders_" + index).collect(java.util.stream.Collectors.toList());
+        Map<String, Map<String, Object>> schemas = new LinkedHashMap<>();
+        for (String table : tables) schemas.put(table, schema(table, List.of("id")));
+        when(servers.schemas(3L, tables)).thenReturn(schemas);
+        Map<String, Object> config = validConfig();
+        cdc(config).put("selectedTables", tables);
+
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+
+        verify(servers).schemas(3L, tables);
+        verify(servers, never()).schema(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.anyString());
     }
 
     private Map<String, Object> validConfig() {
@@ -117,8 +154,8 @@ class RealtimeSyncConfigValidatorTest {
         return (Map<String, Object>) config.get("cdcConfig");
     }
 
-    private Map<String, Object> schema(List<String> primaryKeys) {
-        return Map.of("table", "orders", "primaryKeys", primaryKeys, "columns", List.of(
+    private Map<String, Object> schema(String table, List<String> primaryKeys) {
+        return Map.of("table", table, "primaryKeys", primaryKeys, "columns", List.of(
                 Map.of("name", "id", "type", "BIGINT", "nullable", false),
                 Map.of("name", "tenant_id", "type", "BIGINT", "nullable", false),
                 Map.of("name", "created_at", "type", "TIMESTAMP", "nullable", false),

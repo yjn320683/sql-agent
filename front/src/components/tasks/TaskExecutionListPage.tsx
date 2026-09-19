@@ -16,7 +16,7 @@ export default function TaskExecutionListPage() {
       .catch((error) => message.error(`加载任务失败：${(error as Error).message}`));
   }, [taskId]);
 
-  return <div className="data-page execution-list-page">
+  return <div className="page-content data-page execution-list-page">
     <header className="data-page-header">
       <Space><Button type="text" icon={<ArrowLeftOutlined />} onClick={() => navigate('/tasks')} /><div><Typography.Title level={2}>{task?.name || '任务实例'}</Typography.Title><Typography.Text type="secondary">任务 {taskId}</Typography.Text></div></Space>
     </header>

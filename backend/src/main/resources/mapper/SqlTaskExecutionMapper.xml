@@ -34,7 +34,7 @@
 
   <select id="listByTask" resultType="com.yjn.sqlagent.model.entity.SqlTaskExecution">
     SELECT id, task_id, task_name_snapshot, sql_snapshot, parameter_schema_snapshot, rendered_sql_snapshot, parameter_values,
-           business_date, source_type, task_version_no, task_revision, status, current_step_no,
+           business_date, source_type, task_version_no, task_revision, source_execution_id, replay_strategy, status, current_step_no,
            total_steps, succeeded_steps, failed_step_no, requested_by,
            executor_instance_id, query_id, application_ids, job_ids, error_message,
            submitted_at, started_at, finished_at, heartbeat_at, update_time
@@ -54,7 +54,7 @@
 
   <select id="listAll" resultType="com.yjn.sqlagent.model.entity.SqlTaskExecution">
     SELECT id, task_id, task_name_snapshot, sql_snapshot, parameter_schema_snapshot, rendered_sql_snapshot, parameter_values,
-           business_date, source_type, task_version_no, task_revision, status, current_step_no,
+           business_date, source_type, task_version_no, task_revision, source_execution_id, replay_strategy, status, current_step_no,
            total_steps, succeeded_steps, failed_step_no, requested_by,
            executor_instance_id, query_id, application_ids, job_ids, error_message,
            submitted_at, started_at, finished_at, heartbeat_at, update_time

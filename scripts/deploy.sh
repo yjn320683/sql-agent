@@ -1,9 +1,21 @@
 #!/bin/bash
 set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+MIGRATE=false
+if [[ "${1:-}" == "--migrate" ]]; then
+  MIGRATE=true
+elif [[ $# -gt 0 ]]; then
+  echo "用法: $0 [--migrate]"
+  exit 2
+fi
 # shellcheck source=scripts/common.sh
 source "${SCRIPT_DIR}/common.sh"
 load_env_file
+if [[ "${MIGRATE}" == "true" ]]; then
+  "${SCRIPT_DIR}/db_migrate.sh" migrate
+else
+  "${SCRIPT_DIR}/db_migrate.sh" validate
+fi
 ensure_host_dirs
 print_deploy_context
 update_latest_code

@@ -75,6 +75,8 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const location = useLocation();
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTaskId = positiveNumber(searchParams.get('taskId'), 0);
+  const requestedTab = searchParams.get('tab') || 'instances';
   const [query, setQuery] = useState(() => ({
     ...emptyQuery,
     keyword: searchParams.get('q') ?? searchParams.get('keyword') ?? '', status: searchParams.get('status') ?? 'all',
@@ -101,7 +103,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [debugParams, setDebugParams] = useState<TaskParam[]>([]);
   const [debugSupportLoading, setDebugSupportLoading] = useState(true);
   const [taskStopTarget, setTaskStopTarget] = useState<SyncTaskListItem>();
-  const [taskStopType] = useState('savepoint');
+  const [allowDirectStop, setAllowDirectStop] = useState(false);
   const [actionForm] = Form.useForm();
   const actionStartType = Form.useWatch('startType', actionForm);
   const actionConsumePointMode = Form.useWatch('consumePointMode', actionForm);
@@ -118,8 +120,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const actionRequiredStatePath = actionTask?.startPolicy?.requiredStatePath;
   const actionShowStateRecoveryReset = showStateRecoveryFallback(actionTask?.startPolicy);
   const actionRecoveryFallbackIncomplete = Boolean(
-    (actionTask?.startPolicy?.syncTableSetChanged || actionShowStateRecoveryReset)
-    && resetFailedStateRecovery
+    resetFailedStateRecovery
     && (!actionRecoveryFallbackMode
       || (actionRecoveryFallbackMode === 'checkpoint' && !actionStatePath)
       || (actionRecoveryFallbackMode === 'timestamp' && !actionSourceStartupTime)),
@@ -144,6 +145,15 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
+    if (!requestedTaskId || detail?.id === requestedTaskId) return;
+    const sequence = ++detailRequestRef.current;
+    setDetailLoading(true);
+    void getSyncTask(requestedTaskId).then((value) => {
+      if (sequence === detailRequestRef.current) setDetail(value);
+    }).catch((error) => { if (sequence === detailRequestRef.current) message.error((error as Error).message); })
+      .finally(() => { if (sequence === detailRequestRef.current) setDetailLoading(false); });
+  }, [detail?.id, requestedTaskId]);
+  useEffect(() => {
     let active = true;
     setDebugSupportLoading(true);
     void Promise.all([listServers(), listTaskParams()])
@@ -161,8 +171,10 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     Object.entries(submittedQuery).forEach(([key, value]) => {
       if (value && value !== 'all') next.set(urlKeys[key as keyof typeof submittedQuery], value);
     });
+    if (requestedTaskId) next.set('taskId', String(requestedTaskId));
+    if (requestedTab !== 'instances') next.set('tab', requestedTab);
     setSearchParams(next, { replace: true });
-  }, [page, pageSize, setSearchParams, sortField, sortOrder, submittedQuery]);
+  }, [page, pageSize, requestedTab, requestedTaskId, setSearchParams, sortField, sortOrder, submittedQuery]);
   useEffect(() => {
     if (!rows.some((row) => ACTIVE.includes(row.status) || ACTIVE.includes(row.runtimeStatus ?? ''))) return undefined;
     const timer = window.setInterval(() => void load(), 10000);
@@ -218,11 +230,44 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
           canResetConsumptionPoint: Boolean(editPolicy.productionLocked && !editPolicy.requiredStartType),
         } : undefined;
       }
-      const requiredType = policy?.requiredStartType ?? 'direct';
+      const requiredType = policy?.requiredStartType;
       const requiredPath = policy?.requiredStatePath;
-      setResetFailedStateRecovery(Boolean(policy?.syncTableSetChanged && !requiredPath));
-      actionForm.setFieldsValue({ startType: requiredType, statePath: requiredPath, consumePointMode: 'default', recoveryFallbackMode: undefined, sourceStartupTime: undefined });
-      if (requiredPath) setStateHistory([{ label: requiredPath, path: requiredPath }]);
+      let initialStartType: 'direct' | 'checkpoint' | 'savepoint' = requiredType ?? 'direct';
+      let initialStatePath = requiredPath;
+      let initialFallbackMode: 'checkpoint' | 'timestamp' | undefined;
+      let initialHistory: Record<string, unknown>[] = requiredPath
+        ? [{ label: requiredPath, path: requiredPath }] : [];
+      const mustUseFallback = Boolean(policy?.syncTableSetChanged) && !requiredPath;
+      let requiresManualStartSelection = mustUseFallback;
+      if (policy?.productionLocked && !requiredPath) {
+        const shouldLoadSavepoints = !policy.syncTableSetChanged;
+        const [savepoints, checkpoints] = await Promise.all([
+          shouldLoadSavepoints ? getStateHistory(row.id, 'savepoint') : Promise.resolve([]),
+          getStateHistory(row.id, 'checkpoint'),
+        ]);
+        if (sequence !== actionRequestRef.current) return;
+        if (savepoints[0]) {
+          initialStartType = 'savepoint';
+          initialStatePath = String(savepoints[0].path);
+          initialHistory = savepoints;
+        } else if (checkpoints[0]) {
+          initialStartType = 'checkpoint';
+          initialStatePath = String(checkpoints[0].path);
+          initialHistory = checkpoints;
+          initialFallbackMode = mustUseFallback ? 'checkpoint' : undefined;
+        } else {
+          initialStartType = 'direct';
+          initialStatePath = undefined;
+          initialHistory = [];
+          requiresManualStartSelection = true;
+        }
+      }
+      setResetFailedStateRecovery(requiresManualStartSelection);
+      setStateHistory(initialHistory);
+      actionForm.setFieldsValue({
+        startType: initialStartType, statePath: initialStatePath, consumePointMode: 'default',
+        recoveryFallbackMode: initialFallbackMode, sourceStartupTime: undefined,
+      });
       setActionTask({ row, startPolicy: policy });
     } catch (error) {
       if (sequence === actionRequestRef.current) message.error((error as Error).message);
@@ -358,7 +403,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         return (
           <Space size={12} onClick={(event) => event.stopPropagation()}>
             {running || restarting
-              ? <Tooltip title={row.managed === false ? '历史导入实例只读，不能在本平台停止' : undefined}><Typography.Link disabled={row.managed === false} onClick={() => { if (row.managed === false) return; setTaskStopTarget(row); }}>停止</Typography.Link></Tooltip>
+              ? <Tooltip title={row.managed === false ? '历史导入实例只读，不能在本平台停止' : undefined}><Typography.Link disabled={row.managed === false} onClick={() => { if (row.managed === false) return; setAllowDirectStop(false); setTaskStopTarget(row); }}>停止</Typography.Link></Tooltip>
               : <Typography.Link disabled={operating} onClick={() => !operating && void openAction(row)}>启动</Typography.Link>}
             <Typography.Link onClick={() => void openDebug(row)}>调试</Typography.Link>
             <Typography.Link disabled={active} onClick={() => !active && openEdit(row)}>编辑</Typography.Link>
@@ -395,7 +440,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   };
 
   return (
-    <div className="realtime-page realtime-sync-tasks-page">
+    <div className="page-content realtime-page realtime-sync-tasks-page">
       <section className="realtime-sync-main-panel">
         {!workspace && <div className="realtime-page-header">
           <Typography.Title level={4}>实时同步任务</Typography.Title>
@@ -483,15 +528,25 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         </Form>
       </Modal>
 
-      <Modal title={`停止任务（任务：${taskStopTarget?.name ?? ''}）`} open={Boolean(taskStopTarget)} onCancel={() => setTaskStopTarget(undefined)} okText="确认停止" cancelText="取消" onOk={async () => {
+      <Modal title={`停止任务（任务：${taskStopTarget?.name ?? ''}）`} open={Boolean(taskStopTarget)} onCancel={() => { setTaskStopTarget(undefined); setAllowDirectStop(false); }} okText="确认停止" cancelText="取消" onOk={async () => {
         if (!taskStopTarget) return;
-        try { await stopSyncTask(taskStopTarget.id, { stopType: taskStopType }); message.success('停止请求已提交'); setTaskStopTarget(undefined); await load(); }
+        if (!allowDirectStop && String(taskStopTarget.runtimeStatus ?? taskStopTarget.status).toLowerCase() !== 'running') {
+          message.error('当前正式实例不是运行中状态，无法生成 Savepoint；请勾选允许直接停止');
+          return;
+        }
+        try { await stopSyncTask(taskStopTarget.id, { stopType: allowDirectStop ? 'direct' : 'savepoint' }); message.success('停止请求已提交'); setTaskStopTarget(undefined); await load(); }
         catch (error) { message.error((error as Error).message); }
       }}>
-        <Form layout="horizontal" labelCol={{ span: 6 }} wrapperCol={{ span: 16 }}><Form.Item label="停止类型" required><Select value={taskStopType} disabled options={[{ label: 'Savepoint 停止', value: 'savepoint' }]} /></Form.Item></Form>
+        {taskStopTarget && String(taskStopTarget.runtimeStatus ?? taskStopTarget.status).toLowerCase() !== 'running' && <Alert showIcon type="error" message="当前正式实例不是运行中状态，无法生成 Savepoint" description="如需停止，请勾选允许直接停止。" style={{ marginBottom: 16 }} />}
+        <Form layout="vertical">
+          <Alert showIcon type="info" message="默认使用 Savepoint 停止" description="会在停止前生成新的 Savepoint，便于下次完整恢复。" style={{ marginBottom: 16 }} />
+          <Checkbox checked={allowDirectStop} onChange={(event) => setAllowDirectStop(event.target.checked)}>
+            Savepoint 停止失败，允许直接停止（不会生成 Savepoint，已有 Checkpoint 会保留）
+          </Checkbox>
+        </Form>
       </Modal>
 
-      <SyncTaskDetailDrawer task={detail} loading={detailLoading} onClose={() => setDetail(undefined)} />
+      <SyncTaskDetailDrawer task={detail} loading={detailLoading} initialTab={requestedTab} onClose={() => setDetail(undefined)} />
     </div>
   );
 }

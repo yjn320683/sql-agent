@@ -31,4 +31,10 @@ describe('syncStartMethodOptions', () => {
       ['direct', true], ['savepoint', true], ['checkpoint', false], ['timestamp', false],
     ]);
   });
+
+  it('never allows another initial snapshot after a production instance exists', () => {
+    const options = syncStartMethodOptions({ productionLocked: true, canResetConsumptionPoint: true });
+    expect(options.find((item) => item.value === 'direct')?.disabled).toBe(true);
+    expect(options.find((item) => item.value === 'timestamp')?.disabled).toBe(false);
+  });
 });

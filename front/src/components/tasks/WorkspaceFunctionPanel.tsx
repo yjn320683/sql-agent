@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { useNavigate } from 'react-router-dom';
 import {
   Alert,
   Button,
@@ -27,6 +28,7 @@ interface Props {
 const FUNCTION_LIMIT = 100;
 
 export default function WorkspaceFunctionPanel({ database, onInsertSql }: Props) {
+  const navigate = useNavigate();
   const [keyword, setKeyword] = useState('');
   const [functions, setFunctions] = useState<string[]>([]);
   const [total, setTotal] = useState(0);
@@ -102,6 +104,7 @@ export default function WorkspaceFunctionPanel({ database, onInsertSql }: Props)
               <Typography.Text type="secondary">HiveServer2 说明</Typography.Text>
               <pre>{detail.lines.join('\n')}</pre>
             </section>
+            <Button type="link" onClick={() => navigate(`/functions?name=${encodeURIComponent(selected)}${database ? `&defaultDb=${encodeURIComponent(database)}` : ''}`)}>在函数目录中查看</Button>
           </div>
         ) : null}
       </div>

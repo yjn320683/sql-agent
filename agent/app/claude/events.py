@@ -34,7 +34,7 @@ class EventMapper:
                 elif isinstance(block, ToolUseBlock):
                     self._tool_names_by_id[block.id] = block.name
                     if block.name.endswith("platform_proposal_present"):
-                        events.append(sse_event("proposal", block.input))
+                        events.append(sse_event("proposal", {**block.input, "proposalId": block.id}))
                     else:
                         events.append(
                             sse_event("tool_use", {"id": block.id, "name": block.name, "input": block.input})
@@ -45,7 +45,9 @@ class EventMapper:
                     if tool_use_id:
                         self._tool_names_by_id[tool_use_id] = tool_name
                     if tool_name.endswith("platform_proposal_present"):
-                        events.append(sse_event("proposal", block.get("input") or {}))
+                        events.append(sse_event("proposal", {
+                            **(block.get("input") or {}), "proposalId": tool_use_id,
+                        }))
                     else:
                         events.append(
                             sse_event("tool_use", {"id": tool_use_id, "name": tool_name, "input": block.get("input")})

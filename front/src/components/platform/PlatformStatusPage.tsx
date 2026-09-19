@@ -28,6 +28,7 @@ const dependencyNames: Record<string, { label: string; description: string }> = 
   webHdfs: { label: 'WebHDFS', description: '表路径、文件数量与存储大小' },
   yarnResourceManager: { label: 'YARN ResourceManager', description: 'Application、Attempt 与运行资源信息' },
   mapReduceJobHistory: { label: 'MapReduce JobHistory', description: '历史 Job、Counter、Task 与聚合日志' },
+  databaseSchema: { label: '数据库结构版本', description: 'Flyway 基线、待执行迁移与应用兼容性' },
 };
 
 function formatTime(value?: string): string {
@@ -44,6 +45,7 @@ const detailFields: Record<string, string[]> = {
   webHdfs: ['type', 'owner', 'childrenNum', 'snapshotEnabled'],
   yarnResourceManager: ['state', 'haState', 'resourceManagerVersion', 'hadoopVersion'],
   mapReduceJobHistory: ['hadoopVersion', 'startedOn'],
+  databaseSchema: ['currentVersion', 'requiredVersion', 'pendingMigrations', 'tracked'],
 };
 
 function formatDetails(name: string, details?: Record<string, unknown>): string {
@@ -125,7 +127,7 @@ export default function PlatformStatusPage() {
   ];
 
   return (
-    <div className="data-page platform-status-page">
+    <div className="page-content data-page platform-status-page">
       <div className="data-toolbar platform-status-toolbar">
         <span className="result-count">共 {total} 项依赖</span>
         <Space size={10}>

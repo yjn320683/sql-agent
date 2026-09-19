@@ -9,11 +9,10 @@ import {
 } from '@ant-design/icons';
 import type { ColumnsType } from 'antd/es/table';
 import { useNavigate } from 'react-router-dom';
-import { cancelTaskExecution, getTask, getTaskExecution, getTaskVersion, listTaskExecutions } from '../../api/tasks';
-import type { SqlTaskVersionVO, SqlTaskVO, TaskExecutionStatus, TaskExecutionVO } from '../../types';
+import { cancelTaskExecution, getTaskExecution, listTaskExecutions, rerunTaskExecution } from '../../api/tasks';
+import type { SqlTaskVO, TaskExecutionStatus, TaskExecutionVO } from '../../types';
 import { useAutoTableActionWidth } from '../../utils/useAutoTableActionWidth';
 import TaskStatusTag, { isActiveExecution } from './TaskStatusTag';
-import TaskExecutionModal from './TaskExecutionModal';
 import { ExecutionDetailContent } from './ExecutionDetailDrawer';
 
 const dateTime = (value?: string) => value
@@ -37,7 +36,7 @@ interface Props {
   onExecutionChange?: (executionId?: number) => void;
 }
 
-export default function TaskExecutionPanel({ taskId, task, initialExecutionId, onExecutionChange }: Props) {
+export default function TaskExecutionPanel({ taskId, initialExecutionId, onExecutionChange }: Props) {
   const navigate = useNavigate();
   const { actionColumnWidth, actionRef } = useAutoTableActionWidth({ initialWidth: 140 });
   const [items, setItems] = useState<TaskExecutionVO[]>([]);
@@ -48,15 +47,7 @@ export default function TaskExecutionPanel({ taskId, task, initialExecutionId, o
   const [keyword, setKeyword] = useState('');
   const [committedKeyword, setCommittedKeyword] = useState('');
   const [loading, setLoading] = useState(false);
-  const [resolvedTask, setResolvedTask] = useState<SqlTaskVO | undefined>(task);
-  const [rerunOpen, setRerunOpen] = useState(false);
-  const [rerunVersion, setRerunVersion] = useState<SqlTaskVersionVO>();
   const [selectedExecution, setSelectedExecution] = useState<TaskExecutionVO>();
-
-  useEffect(() => {
-    if (task) { setResolvedTask(task); return; }
-    void getTask(taskId).then(setResolvedTask).catch(() => setResolvedTask(undefined));
-  }, [task, taskId]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -107,19 +98,16 @@ export default function TaskExecutionPanel({ taskId, task, initialExecutionId, o
     if (selectedExecution) setSelectedExecution(await getTaskExecution(selectedExecution.id));
   };
 
-  const openRerun = async (execution?: TaskExecutionVO) => {
-    if (execution?.sourceType === 'VERSION' && execution.taskVersionNo) {
-      try {
-        setRerunVersion(await getTaskVersion(taskId, execution.taskVersionNo));
-      } catch (error) {
-        message.error(`读取执行版本失败：${(error as Error).message}`);
-        return;
-      }
-    } else {
-      setRerunVersion(undefined);
-    }
-    setRerunOpen(true);
-  };
+  const rerunSnapshot = (execution: TaskExecutionVO) => Modal.confirm({
+    title: `按实例 ${execution.id} 的快照重跑？`,
+    content: <div><p>将复用该实例的 SQL、版本、参数和业务日期，不会读取任务当前编辑内容。</p><p>来源：{execution.sourceType}{execution.taskVersionNo ? ` · 版本 v${execution.taskVersionNo}` : ''}</p></div>,
+    okText: '创建重跑实例', cancelText: '取消',
+    onOk: async () => {
+      const created = await rerunTaskExecution(execution.id);
+      message.success(`已创建快照重跑实例 ${created.id}`);
+      setSelectedExecution(await getTaskExecution(created.id)); await load();
+    },
+  });
 
   const cancel = (row: TaskExecutionVO) => Modal.confirm({
     title: `取消实例 ${row.id}？`,
@@ -135,7 +123,7 @@ export default function TaskExecutionPanel({ taskId, task, initialExecutionId, o
   const columns: ColumnsType<TaskExecutionVO> = [
     { title: '实例 ID', dataIndex: 'id', width: 110, fixed: 'left', render: (id) => <span className="mono-id">{id}</span> },
     { title: '结果', dataIndex: 'status', width: 110, fixed: 'left', render: (value) => <TaskStatusTag status={value} /> },
-    { title: '来源', key: 'source', width: 100, render: (_, row) => row.sourceType === 'VERSION' ? `版本 v${row.taskVersionNo}` : '生效代码' },
+    { title: '来源', key: 'source', width: 130, render: (_, row) => row.sourceType === 'REPLAY' ? `重跑 #${row.sourceExecutionId}` : row.sourceType === 'VERSION' ? `版本 v${row.taskVersionNo}` : '生效代码' },
     { title: 'Step 进度', key: 'stepProgress', width: 120, render: (_, row) => `${row.succeededSteps}/${row.totalSteps}` },
     { title: '执行人', dataIndex: 'requestedBy', width: 110 },
     { title: '提交时间', dataIndex: 'submittedAt', width: 170, render: dateTime },
@@ -198,28 +186,8 @@ export default function TaskExecutionPanel({ taskId, task, initialExecutionId, o
             onExecutionChange?.();
           }}
           onCancel={() => cancel(selectedExecution)}
-          onRerun={() => void openRerun(selectedExecution)}
+          onRerun={['FAILED', 'CANCELLED'].includes(selectedExecution.status) ? () => rerunSnapshot(selectedExecution) : undefined}
         />
-        {resolvedTask ? (
-          <TaskExecutionModal
-            open={rerunOpen}
-            taskId={resolvedTask.id}
-            taskName={rerunVersion?.name || resolvedTask.name}
-            sql={rerunVersion?.sql || resolvedTask.sql}
-            parameters={rerunVersion?.parameters || resolvedTask.parameters}
-            revision={resolvedTask.revision}
-            effectiveVersionNo={resolvedTask.effectiveVersionNo}
-            versionNo={rerunVersion?.versionNo}
-            onClose={() => { setRerunOpen(false); setRerunVersion(undefined); }}
-            onSubmitted={() => {
-              setRerunOpen(false);
-              setRerunVersion(undefined);
-              setSelectedExecution(undefined);
-              onExecutionChange?.();
-              void load();
-            }}
-          />
-        ) : null}
       </div>
     );
   }

@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+<mapper namespace="com.yjn.sqlagent.mapper.SqlTaskBackfillItemMapper">
+  <select id="listByBatch" resultType="com.yjn.sqlagent.model.entity.SqlTaskBackfillItem">SELECT id,batch_id,task_id,business_date,status,execution_id,attempt_no,message,create_time,update_time FROM sql_task_backfill_item WHERE batch_id=#{batchId} ORDER BY business_date</select>
+  <select id="listPending" resultType="com.yjn.sqlagent.model.entity.SqlTaskBackfillItem">SELECT id,batch_id,task_id,business_date,status,execution_id,attempt_no,message,create_time,update_time FROM sql_task_backfill_item WHERE batch_id=#{batchId} AND status='PENDING' ORDER BY business_date LIMIT #{limit}</select>
+  <select id="countActive" resultType="int">SELECT COUNT(*) FROM sql_task_backfill_item WHERE batch_id=#{batchId} AND status IN ('CLAIMED','SUBMITTED','RUNNING')</select>
+  <update id="claim">UPDATE sql_task_backfill_item SET status='CLAIMED',attempt_no=attempt_no+1,update_time=NOW() WHERE id=#{id} AND status='PENDING'</update>
+  <update id="markSubmitted">UPDATE sql_task_backfill_item SET status='SUBMITTED',execution_id=#{executionId},message='已提交执行实例',update_time=NOW() WHERE id=#{id} AND status='CLAIMED'</update>
+  <update id="markFailed">UPDATE sql_task_backfill_item SET status='FAILED',message=#{message},update_time=NOW() WHERE id=#{id} AND status='CLAIMED'</update>
+  <update id="retryFailed">UPDATE sql_task_backfill_item SET status='PENDING',execution_id=NULL,message='等待重试',update_time=NOW() WHERE batch_id=#{batchId} AND status IN ('FAILED','CANCELLED')</update>
+  <update id="reconcileStatuses">UPDATE sql_task_backfill_item i JOIN sql_task_execution e ON e.id=i.execution_id SET i.status=CASE WHEN e.status='SUCCEEDED' THEN 'SUCCEEDED' WHEN e.status='FAILED' THEN 'FAILED' WHEN e.status='CANCELLED' THEN 'CANCELLED' WHEN e.status='RUNNING' THEN 'RUNNING' ELSE i.status END,i.message=CASE WHEN e.status='FAILED' THEN e.error_message WHEN e.status='CANCELLED' THEN '执行已取消' ELSE i.message END,i.update_time=NOW() WHERE i.status IN ('SUBMITTED','RUNNING') AND e.status IN ('RUNNING','SUCCEEDED','FAILED','CANCELLED')</update>
+</mapper>
