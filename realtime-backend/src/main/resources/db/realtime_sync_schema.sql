@@ -18,12 +18,15 @@ CREATE TABLE IF NOT EXISTS rt_task (
   flink_version VARCHAR(32) NULL,
   owner VARCHAR(64) NOT NULL,
   description VARCHAR(1024) NULL,
-  status VARCHAR(32) NOT NULL DEFAULT 'not_running',
+  task_status TINYINT(1) NOT NULL DEFAULT 0 COMMENT '任务上下线状态：0=下线、1=上线',
+  instance_status VARCHAR(32) NOT NULL DEFAULT 'not_running' COMMENT '正式实例汇总运行状态',
+  deleted_flag TINYINT(1) NOT NULL DEFAULT 0 COMMENT '逻辑删除标记：0正常、1已删除',
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
   update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (id),
   UNIQUE KEY uk_rt_task_name (project_id, task_name),
-  KEY idx_rt_task_list (task_type, status, update_time),
+  KEY idx_rt_task_list (deleted_flag, task_status, instance_status, update_time),
+  KEY idx_rt_task_enabled (task_type, task_status, update_time),
   KEY idx_rt_task_owner (owner)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务';
 

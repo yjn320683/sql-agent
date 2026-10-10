@@ -14,11 +14,11 @@ export default function RealtimeSyncWorkspacePage() {
   const location = useLocation();
   const navigate = useNavigate();
   const creating = location.pathname.endsWith('/new');
-  const editing = Boolean(taskId);
-  const activeKey = creating ? 'new' : editing ? `task:${taskId}` : 'list';
+  const viewing = location.pathname.endsWith('/view');
+  const activeKey = creating ? 'new' : taskId ? `${viewing ? 'view' : 'task'}:${taskId}` : 'list';
   const state = location.state as WorkspaceLocationState | null;
   const returnTo = state?.returnTo || '/realtime/sync-tasks';
-  const editorTitle = creating ? '新建同步任务' : state?.taskName || `同步任务 ${taskId}`;
+  const editorTitle = creating ? '新建同步任务' : viewing ? `查看 · ${state?.taskName || `同步任务 ${taskId}`}` : state?.taskName || `同步任务 ${taskId}`;
 
   const items = [
     {

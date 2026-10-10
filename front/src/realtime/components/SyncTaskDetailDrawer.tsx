@@ -1,7 +1,7 @@
-import { CheckOutlined, EyeOutlined, ReloadOutlined } from '@ant-design/icons';
+import { CheckOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDirtyRecords, listSyncSchemaChanges, listVersions, previewSavedSyncTask, resolveSyncDirtyRecord, stopInstance } from '../api';
+import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDirtyRecords, listSyncSchemaChanges, listVersions, resolveSyncDirtyRecord, stopInstance } from '../api';
 import type { RealtimeAlert, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
 import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
@@ -132,8 +132,6 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   const [activeChangeLog, setActiveChangeLog] = useState<TaskChangeLog>();
   const [changeDetailError, setChangeDetailError] = useState('');
   const [activeDrawerTab, setActiveDrawerTab] = useState('instances');
-  const [detailCommand, setDetailCommand] = useState('');
-  const [detailCommandLoading, setDetailCommandLoading] = useState(false);
   const [syncProgress, setSyncProgress] = useState<SyncProgressSnapshot>();
   const [dirtyRecords, setDirtyRecords] = useState<SyncDirtyRecord[]>([]);
   const [dirtyTotal, setDirtyTotal] = useState(0);
@@ -211,7 +209,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     if (!task) return;
     instanceRequestSequenceRef.current += 1; tabRequestSequenceRef.current += 1; inspectorRequestSequenceRef.current += 1;
     setInstances([]); setAlerts([]); setChanges([]); setVersions([]); setDirtyRecords([]); setDirtyTotal(0); setSchemaChanges([]);
-    setDetailCommand(''); setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab(initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
+    setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab(initialTab === 'detail' ? 'instances' : initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
   }, [initialTab, task?.id]);
 
   useEffect(() => { void reloadInstances(); }, [reloadInstances]);
@@ -381,7 +379,6 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   return <>
     <RealtimeTaskDetailDrawer title={task.name} loading={loading} activeKey={activeDrawerTab} onTabChange={setActiveDrawerTab} onClose={onClose} tabs={[
         { key: 'instances', label: '实例列表', children: instanceContent },
-        { key: 'detail', label: '任务详情', children: <div className="task-detail-sections"><SyncTaskConfigDetail value={task} sourceServerName={task.sourceServerName} /><section className="realtime-instance-config-section"><Typography.Title level={5}>命令预览</Typography.Title><div className="task-command-preview"><Button type="link" icon={<EyeOutlined />} loading={detailCommandLoading} onClick={async () => { try { setDetailCommandLoading(true); setDetailCommand((await previewSavedSyncTask(task.id)).command); } catch (error) { message.error((error as Error).message); } finally { setDetailCommandLoading(false); } }}>预览</Button><Input.TextArea className="task-command-preview-textarea" value={detailCommand} placeholder="点击预览生成 Paimon Action 等价命令" readOnly rows={10} wrap="off" /></div></section></div> },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} taskType="sync" instance={runtimeInstance} active={activeDrawerTab === 'runtime'} checkpointIntervalSeconds={task.taskConfig.checkpointInterval} /> },
         { key: 'diagnostics', label: '诊断', children: <RealtimeDiagnosticPanel taskId={task.id} instances={instances} onRecover={setRecoverySource} /> },
         { key: 'data-link', label: '数据链路', children: <div className="sync-data-link-panel">

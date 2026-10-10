@@ -9,10 +9,22 @@ export type DevelopmentMode = 'offline' | 'realtime';
 export type RememberedMode = DevelopmentMode | 'data-map';
 export type ApplicationMode = 'workspace' | RememberedMode;
 
+const offlineRoutes = [
+  /^\/chat(?:\/[^/]+)?$/,
+  /^\/sessions$/,
+  /^\/tasks(?:\/new|\/unions|\/[^/]+\/(?:edit|executions(?:\/[^/]+)?))?$/,
+  /^\/executions$/,
+  /^\/schedules\/dag$/,
+  /^\/functions$/,
+  /^\/platform$/,
+  /^\/data-compares(?:\/[^/]+)?$/,
+];
+
 export function modeOf(pathname: string): ApplicationMode {
-  if (pathname === '/overview' || pathname.startsWith('/overview?')) return 'workspace';
-  if (pathname === '/data-map' || pathname.startsWith('/data-map/')) return 'data-map';
-  return pathname.startsWith('/realtime') ? 'realtime' : 'offline';
+  const path = pathname.split(/[?#]/, 1)[0].replace(/\/+$/, '') || '/';
+  if (path === '/data-map' || path.startsWith('/data-map/')) return 'data-map';
+  if (path === '/realtime' || path.startsWith('/realtime/')) return 'realtime';
+  return offlineRoutes.some((route) => route.test(path)) ? 'offline' : 'workspace';
 }
 
 export function storageKeyOf(mode: RememberedMode): string {
@@ -27,6 +39,6 @@ export function fallbackOf(mode: RememberedMode): string {
 
 export function validRememberedPath(mode: RememberedMode, remembered?: string | null): string {
   const fallback = fallbackOf(mode);
-  if (!remembered) return fallback;
+  if (!remembered || !remembered.startsWith('/') || remembered.startsWith('//')) return fallback;
   return modeOf(remembered) === mode ? remembered : fallback;
 }

@@ -76,6 +76,8 @@ export interface MysqlTableDdl {
 export interface SyncTask extends SyncTaskSave {
   id: number;
   status: RealtimeTaskStatus;
+  taskStatus: 0 | 1;
+  instanceStatus: RealtimeTaskStatus;
   projectId?: number;
   projectName?: string;
   sourceServerName?: string;
@@ -100,6 +102,8 @@ export interface SyncTaskListItem {
   id: number;
   name: string;
   status: RealtimeTaskStatus;
+  taskStatus: 0 | 1;
+  instanceStatus: RealtimeTaskStatus;
   owner: string;
   description?: string;
   flinkVersion?: string;
@@ -515,7 +519,7 @@ export interface ManagedTaskSave {
   taskConfig: ManagedTaskConfig;
 }
 export interface ManagedTask extends ManagedTaskSave {
-  id: number; status: RealtimeTaskStatus; createTime?: string; updateTime?: string;
+  id: number; status: RealtimeTaskStatus; taskStatus: 0 | 1; instanceStatus: RealtimeTaskStatus; createTime?: string; updateTime?: string;
   latestInstanceId?: number; latestInstanceStatus?: string; latestInstanceExecutionMode?: string;
   tableReferences?: ManagedTableReference[];
 }

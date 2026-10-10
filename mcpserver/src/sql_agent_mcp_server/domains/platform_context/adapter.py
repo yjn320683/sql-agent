@@ -32,25 +32,25 @@ ENTITY_QUERIES: dict[str, tuple[str, str]] = {
         "FROM data_compare_job_detail ORDER BY id DESC LIMIT 20",
     ),
     "REALTIME_SYNC_TASK": (
-        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.status,t.update_time,"
+        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.task_status,t.instance_status AS status,t.update_time,"
         "c.source_type,c.source_server_id,c.target_database FROM rt_task t "
         "LEFT JOIN rt_sync_task_config c ON c.task_id=t.id WHERE t.id=:id",
-        "SELECT id,task_name,task_type,flink_version,owner,description,status,update_time FROM rt_task "
-        "WHERE task_type='sync' ORDER BY update_time DESC LIMIT 20",
+        "SELECT id,task_name,task_type,flink_version,owner,description,task_status,instance_status AS status,update_time FROM rt_task "
+        "WHERE task_type='sync' AND deleted_flag=0 ORDER BY update_time DESC LIMIT 20",
     ),
     "REALTIME_COMPUTE_TASK": (
-        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.status,t.update_time,"
+        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.task_status,t.instance_status AS status,t.update_time,"
         "c.default_database,c.sql_text FROM rt_task t LEFT JOIN rt_compute_task_config c ON c.task_id=t.id "
         "WHERE t.id=:id",
-        "SELECT id,task_name,task_type,flink_version,owner,description,status,update_time FROM rt_task "
-        "WHERE task_type='compute' ORDER BY update_time DESC LIMIT 20",
+        "SELECT id,task_name,task_type,flink_version,owner,description,task_status,instance_status AS status,update_time FROM rt_task "
+        "WHERE task_type='compute' AND deleted_flag=0 ORDER BY update_time DESC LIMIT 20",
     ),
     "REALTIME_EXPORT_TASK": (
-        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.status,t.update_time,"
+        "SELECT t.id,t.task_name,t.task_type,t.flink_version,t.owner,t.description,t.task_status,t.instance_status AS status,t.update_time,"
         "c.source_database,c.target_server_id FROM rt_task t LEFT JOIN rt_export_task_config c ON c.task_id=t.id "
         "WHERE t.id=:id",
-        "SELECT id,task_name,task_type,flink_version,owner,description,status,update_time FROM rt_task "
-        "WHERE task_type='export' ORDER BY update_time DESC LIMIT 20",
+        "SELECT id,task_name,task_type,flink_version,owner,description,task_status,instance_status AS status,update_time FROM rt_task "
+        "WHERE task_type='export' AND deleted_flag=0 ORDER BY update_time DESC LIMIT 20",
     ),
     "REALTIME_INSTANCE": (
         "SELECT id,task_id,version_id,job_id,yarn_application_id,status,execution_mode,managed_flag,"
@@ -198,7 +198,7 @@ class PlatformContextAdapter:
             })
         if context_type == "REALTIME_ALERT":
             selected_queries.update({
-                "task": "SELECT id,task_name,task_type,status,owner,description,update_time FROM rt_task "
+                "task": "SELECT id,task_name,task_type,task_status,instance_status AS status,owner,description,update_time FROM rt_task "
                 "WHERE id=(SELECT task_id FROM rt_alert WHERE id=:id)",
                 "relatedAlerts": "SELECT id,severity,status,title,detail,create_time FROM rt_alert "
                 "WHERE task_id=(SELECT task_id FROM rt_alert WHERE id=:id) ORDER BY id DESC LIMIT 20",

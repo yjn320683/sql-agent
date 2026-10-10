@@ -68,6 +68,21 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void savepointStopUsesFlinkCliDirectoryOptionAndLongClientTimeout() {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setSavepointDir("hdfs://ns/flink/savepoints/");
+        RealtimeRuntimeService runtime = new RealtimeRuntimeService(repository, properties, new ObjectMapper());
+
+        assertEquals(List.of("flink", "stop", "-Dyarn.application.id=application_1_30",
+                "-Dclient.timeout=300s", "-p", "hdfs://ns/flink/savepoints/task-8", "job-30"),
+                runtime.stopCommand(8L, "job-30", "application_1_30", "savepoint"));
+        assertEquals("hdfs://ns/flink/savepoints/task-8/savepoint-1", runtime.parseSavepoint(
+                "Savepoint completed. Path: hdfs://ns/flink/savepoints/task-8/savepoint-1"));
+        assertEquals("", runtime.parseSavepoint(
+                "Flink stop failed while reading hdfs://ns/flink/savepoints/task-8"));
+    }
+
+    @Test
     void submissionProgressUsesTheLastPersistedStage() {
         when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "sync"));
         when(repository.requiredInstance(8L, 30L)).thenReturn(Map.of(
@@ -171,8 +186,10 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     @SuppressWarnings("unchecked")
     void listsExistingCheckpointsFromAnyProductionInstance(@TempDir Path tempDir) throws Exception {
         Path valid = tempDir.resolve("task-8/old-job/chk-559");
+        Path orphan = tempDir.resolve("task-8/untracked-job/chk-560");
         Path debug = tempDir.resolve("task-8/debug-job/chk-1");
         Files.createDirectories(valid); Files.writeString(valid.resolve("_metadata"), "valid");
+        Files.createDirectories(orphan); Files.writeString(orphan.resolve("_metadata"), "valid");
         Files.createDirectories(debug); Files.writeString(debug.resolve("_metadata"), "debug");
         RealtimeProperties properties = new RealtimeProperties();
         properties.setCheckpointDir(tempDir.toString());
@@ -185,9 +202,10 @@ class RealtimeRuntimeServiceManagedInstanceTest {
 
         List<Map<String, Object>> rows = (List<Map<String, Object>>) historyService.stateHistory(8L, "checkpoint");
 
-        assertEquals(1, rows.size());
-        assertEquals(valid.toString(), rows.get(0).get("path"));
-        assertTrue(String.valueOf(rows.get(0).get("label")).contains("实例 602"));
+        assertEquals(2, rows.size());
+        assertTrue(rows.stream().anyMatch(row -> valid.toString().equals(row.get("path"))));
+        assertTrue(rows.stream().anyMatch(row -> orphan.toString().equals(row.get("path"))));
+        assertTrue(rows.stream().allMatch(row -> String.valueOf(row.get("label")).contains("chk-")));
     }
 
     @Test
@@ -280,7 +298,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
 
     @Test
     void importedActiveJobBlocksProductionDoubleRun() {
-        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_orders"));
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_orders", "taskStatus", 1));
         when(repository.hasActiveManagedInstance(8L)).thenReturn(false);
         when(repository.hasActiveImportedInstance(8L)).thenReturn(true);
 
@@ -292,9 +310,18 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void offlineTaskCannotStartProduction() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskStatus", 0));
+
+        assertEquals("任务已下线，请先上线再启动", assertThrows(IllegalStateException.class,
+                () -> service.start(8L, new TaskActionRequest(), "tester", false)).getMessage());
+        verify(repository, never()).startOperation(anyLong(), any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void yarnNamePrefixPreflightBlocksUntrackedProductionJob() {
         RealtimeRuntimeService guarded = spy(service);
-        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_orders"));
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_orders", "taskStatus", 1));
         when(repository.hasActiveManagedInstance(8L)).thenReturn(false);
         when(repository.hasActiveImportedInstance(8L)).thenReturn(false);
         doAnswer(invocation -> List.of("application_1_9")).when(guarded).liveSyncApplications(8L);
@@ -608,6 +635,86 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void pendingSavepointStopRecoversOnlyOneNewCompleteDirectory(@TempDir Path tempDir) throws Exception {
+        Path old = tempDir.resolve("task-8/savepoint-old");
+        Path current = tempDir.resolve("task-8/savepoint-new");
+        Files.createDirectories(old);
+        Files.createDirectories(current);
+        Files.writeString(old.resolve("_metadata"), "old");
+        Files.writeString(current.resolve("_metadata"), "new");
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setSavepointDir(tempDir.toString());
+        RealtimeRuntimeService reconciler = spy(new RealtimeRuntimeService(repository, properties, new ObjectMapper()));
+        Map<String, Object> stopping = Map.of(
+                "id", 32L, "taskId", 8L, "managed", true, "status", "stopping",
+                "executionMode", "PRODUCTION", "yarnApplicationId", "application_1_32");
+        Map<String, Object> finished = Map.of(
+                "id", 32L, "taskId", 8L, "managed", true, "status", "finished",
+                "executionMode", "PRODUCTION");
+        when(repository.requiredInstance(8L, 32L)).thenReturn(stopping, finished, finished);
+        when(repository.activeStopOperation(8L, 32L)).thenReturn(Map.of(
+                "id", 43L, "operator", "tester", "result", Map.of(
+                        "baselineSavepointPaths", List.of(old.toString()))));
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
+                "State : FINISHED\nFinal-State : SUCCEEDED"))
+                .when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 32L);
+
+        verify(repository).updateSavepointPath(32L, current.toString());
+        ArgumentCaptor<String> operationResult = ArgumentCaptor.forClass(String.class);
+        verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(43L),
+                org.mockito.ArgumentMatchers.eq("SUCCESS"), operationResult.capture(),
+                org.mockito.ArgumentMatchers.isNull());
+        assertTrue(operationResult.getValue().contains("STATE_DIRECTORY"));
+        assertTrue(operationResult.getValue().contains(current.toString()));
+    }
+
+    @Test
+    void canceledExternalJobDoesNotCompleteSavepointStopSuccessfully() {
+        RealtimeRuntimeService reconciler = spy(service);
+        Map<String, Object> stopping = Map.of(
+                "id", 33L, "taskId", 8L, "managed", true, "status", "stopping",
+                "executionMode", "PRODUCTION", "yarnApplicationId", "application_1_33");
+        Map<String, Object> canceled = Map.of(
+                "id", 33L, "taskId", 8L, "managed", true, "status", "canceled",
+                "executionMode", "PRODUCTION", "savepointPath", "hdfs://savepoints/sp-33");
+        when(repository.requiredInstance(8L, 33L)).thenReturn(stopping, canceled, canceled);
+        when(repository.activeStopOperation(8L, 33L)).thenReturn(Map.of("id", 44L, "operator", "tester"));
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
+                "State : FINISHED\nFinal-State : KILLED"))
+                .when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 33L);
+
+        verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(44L),
+                org.mockito.ArgumentMatchers.eq("FAILED"), anyString(),
+                org.mockito.ArgumentMatchers.contains("canceled"));
+        verify(repository, never()).addChange(anyLong(), any(), any(), any(), anyString(),
+                anyString(), anyString());
+    }
+
+    @Test
+    void terminalInstanceRetriesAnUnfinishedStopOperation() {
+        RealtimeRuntimeService reconciler = spy(service);
+        Map<String, Object> finished = Map.of(
+                "id", 34L, "taskId", 8L, "managed", true, "status", "finished",
+                "executionMode", "PRODUCTION", "yarnApplicationId", "application_1_34",
+                "savepointPath", "hdfs://savepoints/sp-34");
+        when(repository.requiredInstance(8L, 34L)).thenReturn(finished);
+        when(repository.activeStopOperation(8L, 34L)).thenReturn(Map.of("id", 45L, "operator", "tester"));
+        doAnswer(invocation -> new RealtimeRuntimeService.CommandResult(0,
+                "State : FINISHED\nFinal-State : SUCCEEDED"))
+                .when(reconciler).execute(any(), anyLong());
+
+        reconciler.refresh(8L, 34L);
+
+        verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(45L),
+                org.mockito.ArgumentMatchers.eq("SUCCESS"), anyString(),
+                org.mockito.ArgumentMatchers.isNull());
+    }
+
+    @Test
     void timedOutOperationWithoutInstanceRemainsLockedAndAlerts() {
         when(repository.expiredActiveOperations()).thenReturn(java.util.List.of(Map.of(
                 "id", 31L, "taskId", 8L, "operationType", "START")));
@@ -718,7 +825,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
                 new RealtimeTaskOperationExecutor(queued::set)));
         Map<String, Object> task = Map.of(
                 "id", 8L, "name", "sync_orders", "sourceServerId", 3L, "targetDatabase", "ods",
-                "status", "not_running", "taskConfig", Map.of("cdcConfig", Map.of()));
+                "status", "not_running", "taskStatus", 1, "taskConfig", Map.of("cdcConfig", Map.of()));
         Map<String, Object> submitting = Map.of(
                 "id", 19L, "taskId", 8L, "managed", true,
                 "status", "submitting", "executionMode", "PRODUCTION");
@@ -812,7 +919,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         verify(repository).updateInstanceSubmission(19L, "canceled",
                 "0123456789abcdef0123456789abcdef", "application_1_2", "http://flink/",
                 "start\nflink cancel 异常\nKilled application application_1_2", null);
-        verify(repository).updateSavepointPath(19L, "");
+        verify(repository, never()).updateSavepointPath(anyLong(), anyString());
         ArgumentCaptor<String> operationResult = ArgumentCaptor.forClass(String.class);
         verify(repository).completeOperation(org.mockito.ArgumentMatchers.eq(12L),
                 org.mockito.ArgumentMatchers.eq("SUCCESS"), operationResult.capture(),

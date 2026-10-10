@@ -13,6 +13,7 @@ export default function RealtimeSyncTaskEditorPage() {
   const { taskId } = useParams();
   const location = useLocation();
   const navigate = useNavigate();
+  const readOnly = location.pathname.endsWith('/view');
   const [task, setTask] = useState<SyncTask>();
   const [loading, setLoading] = useState(Boolean(taskId));
   const [error, setError] = useState('');
@@ -57,6 +58,7 @@ export default function RealtimeSyncTaskEditorPage() {
     <SyncTaskEditorDrawer
       open
       task={task}
+      readOnly={readOnly}
       onClose={() => navigate(returnTo)}
       onSaved={() => navigate(returnTo, { replace: true })}
     />

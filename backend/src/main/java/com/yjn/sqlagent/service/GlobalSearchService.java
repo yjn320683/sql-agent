@@ -116,10 +116,10 @@ public class GlobalSearchService {
             case "REALTIME_TASK": {
                 String base = " FROM (SELECT id search_id,task_name search_name,task_name title,"
                         + "CONCAT(CASE task_type WHEN 'sync' THEN '实时同步' WHEN 'compute' THEN '实时计算' ELSE '实时出仓' END,"
-                        + "' · ',COALESCE(description,'')) subtitle,status,'realtime' mode,"
+                        + "' · ',COALESCE(description,'')) subtitle,instance_status status,'realtime' mode,"
                         + "CONCAT(CASE task_type WHEN 'sync' THEN '/realtime/sync-tasks' WHEN 'compute' THEN '/realtime/compute' "
                         + "ELSE '/realtime/export' END,'?taskId=',id) route,update_time updatedAt FROM rt_task "
-                        + "WHERE status<>'deleted') s WHERE ";
+                        + "WHERE deleted_flag=0) s WHERE ";
                 return new QuerySpec("SELECT 'REALTIME_TASK' type,search_id id,title,subtitle,status,mode,route,updatedAt" + base
                         + searchCondition + ranking, "SELECT COUNT(*)" + base + searchCondition, false);
             }

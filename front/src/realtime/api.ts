@@ -18,6 +18,7 @@ import type {
   TaskInstanceProgress, RealtimeDebugReport,
   TaskMapping,
   TaskParam,
+  RealtimeTaskStatus,
   SyncDirtyRecordPage,
   SyncProgressSnapshot,
   SyncSchemaChange,
@@ -34,7 +35,7 @@ const json = (method: string, body?: unknown): RequestInit => ({
 type UnifiedTaskWire = {
   id?: number; taskId?: number; taskType: 'sync'; name: string; owner?: string; description?: string;
   projectId?: number;
-  flinkVersion: string; status?: SyncTask['status']; updateTime?: string; createTime?: string;
+  flinkVersion: string; status?: SyncTask['status']; taskStatus?: 0 | 1; instanceStatus?: SyncTask['instanceStatus']; updateTime?: string; createTime?: string;
   expectedUpdateTime?: string; startType?: string; statePath?: string; sourceStartupTimestampMillis?: number;
   alarmConfig: { alarmType?: string; alarmGroup?: string };
   flinkConf: { parallelism?: number; checkpointIntervalSeconds?: number; taskManagerMemoryGb?: number; jobManagerMemoryGb?: number; flinkConfOverrides?: Record<string, string> };
@@ -72,7 +73,8 @@ const fromUnifiedTask = (value: UnifiedTaskWire): SyncTask => ({
   id: value.id!, name: value.name, owner: value.owner, description: value.description,
   flinkVersion: value.flinkVersion, sourceServerId: value.taskConfig.sourceServerId,
   sourceType: 'mysql-cdc', targetDatabase: value.taskConfig.cdcConfig.targetDatabase,
-  status: value.status ?? 'not_running', projectId: value.projectId, projectName: value.projectName,
+  status: value.status ?? 'not_running', taskStatus: value.taskStatus ?? 0,
+  instanceStatus: value.instanceStatus ?? value.status ?? 'not_running', projectId: value.projectId, projectName: value.projectName,
   sourceServerName: value.sourceServerName, createTime: value.createTime ?? '', updateTime: value.updateTime ?? '',
   editPolicy: value.editPolicy,
   taskConfig: {
@@ -90,7 +92,8 @@ const fromUnifiedTask = (value: UnifiedTaskWire): SyncTask => ({
 export const listSyncTasks = async (query: URLSearchParams): Promise<SyncTaskPage> => {
   const page = await requestJson<{ records: SyncTaskPage['items']; total: number; pageNo: number; pageSize: number }>('/v1/api/tasks/page', json('POST', {
     taskType: 'sync', pageNo: Number(query.get('page') || 1), pageSize: Number(query.get('pageSize') || 20),
-    keyword: query.get('keyword') || undefined, status: query.get('status') || undefined,
+    keyword: query.get('keyword') || undefined, taskStatus: query.get('taskStatus') || undefined,
+    instanceStatus: query.get('instanceStatus') || query.get('status') || undefined,
     owner: query.get('owner') || undefined, lastOperator: query.get('lastOperator') || undefined,
     paimonTableKeyword: query.get('paimonTableKeyword') || undefined,
     sortField: query.get('sort') || 'lastOperationTime', sortOrder: query.get('order') || 'desc',
@@ -101,6 +104,7 @@ export const getSyncTask = async (id: number) => fromUnifiedTask(await requestJs
 export const createSyncTask = (value: SyncTaskSave) => requestJson<number>('/v1/api/tasks/create', json('POST', toUnifiedTask(value)));
 export const updateSyncTask = (id: number, value: SyncTaskSave) => requestJson<number>(`/v1/api/tasks/${id}/update`, json('POST', toUnifiedTask(value)));
 export const deleteSyncTask = (id: number) => requestJson<void>(`/v1/api/tasks/${id}/delete`, json('POST'));
+export const updateRealtimeTaskStatus = (id: number, taskStatus: 0 | 1) => requestJson<{ id: number; taskStatus: 0 | 1; instanceStatus: RealtimeTaskStatus }>(`/v1/api/tasks/${id}/task-status`, json('PUT', { taskStatus }));
 export const previewSyncTask = (value: SyncTaskSave, excludeTaskId?: number) => requestJson<{ command: string; arguments: string[] }>(`/v1/api/tasks/command-preview${excludeTaskId ? `?excludeTaskId=${excludeTaskId}` : ''}`, json('POST', toUnifiedTask(value)));
 export const previewSavedSyncTask = (id: number, debug = false, value?: Record<string, unknown>) => requestJson<{ command: string; arguments: string[] }>(debug ? `/api/tasks/${id}/debug-command-preview` : `/v1/api/tasks/${id}/command-preview`, debug ? json('POST', value ?? {}) : undefined);
 export const startSyncTask = async (id: number, value: { startType: string; statePath?: string; sourceStartupTimestampMillis?: number; dryRun?: boolean; parallelism?: number; checkpointInterval?: number; taskManagerMemory?: string; jobManagerMemory?: string; flinkConfOverrides?: Record<string, string>; mysqlConfOverrides?: Record<string, string>; tableConfOverrides?: Record<string, string> }, debug = false) => {
@@ -213,7 +217,8 @@ export const unassignAssetDomain = (assetType: 'HIVE' | 'PAIMON', catalogName: s
 export const listManagedTasks = async (taskType: ManagedTaskType, query: URLSearchParams) => {
   const page = await requestJson<{ records: ManagedTask[]; total: number; pageNo: number; pageSize: number }>('/v1/api/tasks/page', json('POST', {
     taskType, pageNo: Number(query.get('page') || 1), pageSize: Number(query.get('pageSize') || 20),
-    keyword: query.get('keyword') || undefined, status: query.get('status') || undefined,
+    keyword: query.get('keyword') || undefined, taskStatus: query.get('taskStatus') || undefined,
+    instanceStatus: query.get('instanceStatus') || query.get('status') || undefined,
     owner: query.get('owner') || undefined, lastOperator: query.get('lastOperator') || undefined,
     sourceKeyword: query.get('sourceKeyword') || undefined,
   }));

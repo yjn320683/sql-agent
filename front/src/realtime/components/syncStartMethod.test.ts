@@ -13,7 +13,7 @@ describe('syncStartMethodLabel', () => {
 });
 
 describe('syncStartMethodOptions', () => {
-  it('locks a required Savepoint until the user explicitly enables fallback', () => {
+  it('offers both stored recovery types even with an older required Savepoint policy', () => {
     const policy = {
       productionLocked: true,
       requiredStartType: 'savepoint' as const,
@@ -21,20 +21,20 @@ describe('syncStartMethodOptions', () => {
     };
     expect(showStateRecoveryFallback(policy)).toBe(true);
     expect(syncStartMethodOptions(policy).map(({ value, disabled }) => [value, disabled])).toEqual([
-      ['direct', true], ['savepoint', false], ['checkpoint', false], ['timestamp', false],
+      ['direct', true], ['savepoint', false], ['checkpoint', false],
     ]);
   });
 
-  it('requires checkpoint or timestamp when changed tables have no Savepoint', () => {
+  it('requires a stored state when changed tables have no Savepoint', () => {
     const options = syncStartMethodOptions({ productionLocked: true, syncTableSetChanged: true });
     expect(options.map(({ value, disabled }) => [value, disabled])).toEqual([
-      ['direct', true], ['savepoint', true], ['checkpoint', false], ['timestamp', false],
+      ['direct', true], ['savepoint', false], ['checkpoint', false],
     ]);
   });
 
   it('never allows another initial snapshot after a production instance exists', () => {
     const options = syncStartMethodOptions({ productionLocked: true, canResetConsumptionPoint: true });
     expect(options.find((item) => item.value === 'direct')?.disabled).toBe(true);
-    expect(options.find((item) => item.value === 'timestamp')?.disabled).toBe(false);
+    expect(options.find((item) => item.value === 'checkpoint')?.disabled).toBe(false);
   });
 });

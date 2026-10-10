@@ -122,6 +122,7 @@ export default function App() {
           <Route path="/realtime/sync-tasks" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
           <Route path="/realtime/sync-tasks/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
           <Route path="/realtime/sync-tasks/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
+          <Route path="/realtime/sync-tasks/:taskId/view" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeSyncWorkspacePage /></Suspense>} />
           <Route path="/realtime/servers" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeServersPage /></Suspense>} />
           <Route path="/realtime/alerts" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeAlertsPage /></Suspense>} />
           <Route path="/realtime/paimon-tables" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeTablesPage /></Suspense>} />

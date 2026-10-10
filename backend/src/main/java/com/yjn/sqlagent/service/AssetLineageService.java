@@ -164,7 +164,7 @@ public class AssetLineageService {
                     + "FROM task_lineage_relation r JOIN task_lineage_snapshot s ON s.id=r.snapshot_id "
                     + "LEFT JOIN sql_task o ON r.task_scope='OFFLINE' AND o.id=r.task_id AND o.archived=0 "
                     + "AND o.effective_version_no=r.version_no "
-                    + "LEFT JOIN rt_task t ON r.task_scope='REALTIME' AND t.id=r.task_id AND t.status<>'deleted' "
+                    + "LEFT JOIN rt_task t ON r.task_scope='REALTIME' AND t.id=r.task_id AND t.deleted_flag=0 "
                     + "AND r.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=t.id) "
                     + "WHERE r.relation_kind<>'SNAPSHOT' AND ((r.task_scope='OFFLINE' AND o.id IS NOT NULL) "
                     + "OR (r.task_scope='REALTIME' AND t.id IS NOT NULL)) ORDER BY r.id LIMIT " + RELATION_LIMIT);
@@ -189,7 +189,7 @@ public class AssetLineageService {
         try {
             for (Map<String, Object> row : jdbc.queryForList("SELECT x.task_id,t.task_name,t.task_type,x.reference_role,"
                     + "r.catalog_name,r.database_name,r.table_name FROM rt_task_table_reference x "
-                    + "JOIN rt_task t ON t.id=x.task_id AND t.status<>'deleted' JOIN rt_realtime_table r ON r.id=x.realtime_table_id")) {
+                    + "JOIN rt_task t ON t.id=x.task_id AND t.deleted_flag=0 JOIN rt_realtime_table r ON r.id=x.realtime_table_id")) {
                 Asset asset = new Asset(text(row.get("catalog_name")), text(row.get("database_name")), text(row.get("table_name")), "");
                 boolean input = "INPUT".equals(row.get("reference_role"));
                 result.add(Relation.declared(number(row.get("task_id")), text(row.get("task_name")), text(row.get("task_type")), input, asset));

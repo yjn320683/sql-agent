@@ -41,7 +41,7 @@ public class LineageOutboxService {
                         + "LEFT JOIN rt_task rt ON s.task_scope='REALTIME' AND rt.id=s.task_id "
                         + "LEFT JOIN data_map_graph_outbox go ON go.snapshot_id=s.id AND go.generation_no=" + generation + " "
                         + "WHERE go.id IS NULL AND ((s.task_scope='OFFLINE' AND ot.archived=0 AND ot.effective_version_no=s.version_no) "
-                        + "OR (s.task_scope='REALTIME' AND rt.status<>'deleted' AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))) "
+                        + "OR (s.task_scope='REALTIME' AND rt.deleted_flag=0 AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))) "
                         + "ORDER BY s.id LIMIT " + Math.max(1, Math.min(1000, limit)));
         jdbc.update("INSERT INTO data_map_lineage_task_state(task_scope,task_id,version_id,version_no,generation_no,snapshot_id,sql_checksum,parse_status,projection_status,last_parsed_at) "
                 + "SELECT s.task_scope,s.task_id,s.version_id,s.version_no,?,s.id,s.sql_checksum,CASE WHEN s.complete_flag=1 THEN 'COMPLETE' ELSE 'PARTIAL' END,'PENDING',s.create_time "
@@ -83,7 +83,7 @@ public class LineageOutboxService {
                         + "FROM task_lineage_snapshot s LEFT JOIN sql_task ot ON s.task_scope='OFFLINE' AND ot.id=s.task_id "
                         + "LEFT JOIN rt_task rt ON s.task_scope='REALTIME' AND rt.id=s.task_id "
                         + "WHERE (s.task_scope='OFFLINE' AND ot.archived=0 AND ot.effective_version_no=s.version_no) "
-                        + "OR (s.task_scope='REALTIME' AND rt.status<>'deleted' AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))",
+                        + "OR (s.task_scope='REALTIME' AND rt.deleted_flag=0 AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))",
                 generation);
         return generation;
     }
@@ -105,7 +105,7 @@ public class LineageOutboxService {
         Integer value = jdbc.queryForObject("SELECT COUNT(*) FROM task_lineage_snapshot s LEFT JOIN sql_task ot ON s.task_scope='OFFLINE' AND ot.id=s.task_id "
                 + "LEFT JOIN rt_task rt ON s.task_scope='REALTIME' AND rt.id=s.task_id WHERE "
                 + "(s.task_scope='OFFLINE' AND ot.archived=0 AND ot.effective_version_no=s.version_no) OR "
-                + "(s.task_scope='REALTIME' AND rt.status<>'deleted' AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))", Integer.class);
+                + "(s.task_scope='REALTIME' AND rt.deleted_flag=0 AND s.version_no=(SELECT MAX(v.version_no) FROM rt_task_version v WHERE v.task_id=rt.id))", Integer.class);
         return value == null ? 0 : value;
     }
 

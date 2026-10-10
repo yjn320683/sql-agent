@@ -101,8 +101,8 @@ public class RealtimeTableRepository {
 
     public List<Map<String, Object>> dependencies(long id) {
         return jdbc.queryForList("SELECT x.task_id taskId,t.task_name taskName,t.task_type taskType,x.reference_role referenceRole,"
-                + "t.status FROM rt_task_table_reference x JOIN rt_task t ON t.id=x.task_id "
-                + "WHERE x.realtime_table_id=? AND t.status<>'deleted' ORDER BY x.reference_role,t.task_name", id);
+                + "t.instance_status status FROM rt_task_table_reference x JOIN rt_task t ON t.id=x.task_id "
+                + "WHERE x.realtime_table_id=? AND t.deleted_flag=0 ORDER BY x.reference_role,t.task_name", id);
     }
 
     @Transactional

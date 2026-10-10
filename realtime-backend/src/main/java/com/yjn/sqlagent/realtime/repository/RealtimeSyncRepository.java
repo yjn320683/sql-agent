@@ -67,14 +67,16 @@ public class RealtimeSyncRepository {
     public Map<String, Object> taskPage(Map<String, String> query) {
         int page = positive(query.get("page"), 1);
         int pageSize = Math.min(100, positive(query.get("pageSize"), 20));
-        StringBuilder where = new StringBuilder(" WHERE t.task_type='sync' AND t.status<>'deleted'");
+        StringBuilder where = new StringBuilder(" WHERE t.task_type='sync' AND t.deleted_flag=0");
         MapSqlParameterSource params = new MapSqlParameterSource();
         String keyword = text(query.get("keyword"));
         if (!keyword.isEmpty()) {
             where.append(" AND (CAST(t.id AS CHAR) LIKE :keyword OR t.task_name LIKE :keyword OR t.description LIKE :keyword)");
             params.addValue("keyword", "%" + keyword.trim() + "%");
         }
-        equal(where, params, query, "status", " AND t.status=:status");
+        equal(where, params, query, "status", " AND t.instance_status=:status");
+        equal(where, params, query, "instanceStatus", " AND t.instance_status=:instanceStatus");
+        equal(where, params, query, "taskStatus", " AND t.task_status=:taskStatus");
         equalLong(where, params, query, "sourceServerId", " AND c.source_server_id=:sourceServerId");
         like(where, params, query, "owner", " AND t.owner LIKE :owner");
         like(where, params, query, "lastOperator", " AND l.operator LIKE :lastOperator");
@@ -107,7 +109,7 @@ public class RealtimeSyncRepository {
         String sort = sortColumn(query.get("sort"));
         String order = "asc".equalsIgnoreCase(query.get("order")) ? "ASC" : "DESC";
         params.addValue("limit", pageSize).addValue("offset", (page - 1) * pageSize);
-        String sql = "SELECT t.id,t.task_name name,t.status,t.owner,t.description,t.flink_version flinkVersion,"
+        String sql = "SELECT t.id,t.task_name name,t.instance_status status,t.instance_status instanceStatus,t.task_status+0 taskStatus,t.owner,t.description,t.flink_version flinkVersion,"
                 + "t.create_time createTime,t.update_time updateTime,p.project_name projectName,"
                 + "c.source_server_id sourceServerId,s.name sourceServerName,s.database_name sourceServerDatabase,c.target_database targetDatabase,"
                 + "c.config_json configJson,"
@@ -168,7 +170,7 @@ public class RealtimeSyncRepository {
     }
 
     public String taskType(long taskId) {
-        List<String> taskTypes = jdbc.query("SELECT task_type FROM rt_task WHERE id=? AND status<>'deleted'",
+        List<String> taskTypes = jdbc.query("SELECT task_type FROM rt_task WHERE id=? AND deleted_flag=0",
                 (rs, row) -> rs.getString(1), taskId);
         if (taskTypes.isEmpty()) throw new IllegalArgumentException("实时任务不存在：" + taskId);
         return text(taskTypes.get(0)).toLowerCase(Locale.ROOT);
@@ -183,12 +185,12 @@ public class RealtimeSyncRepository {
     public Map<String, Object> requiredSyncTask(long taskId) {
         List<Map<String, Object>> rows = jdbc.queryForList(
                 "SELECT t.id,t.project_id projectId,t.task_name name,t.task_type taskType,t.flink_version flinkVersion,"
-                        + "t.owner,t.description,t.status,t.create_time createTime,t.update_time updateTime,"
+                        + "t.owner,t.description,t.instance_status status,t.instance_status instanceStatus,t.task_status+0 taskStatus,t.create_time createTime,t.update_time updateTime,"
                         + "c.source_type sourceType,c.source_server_id sourceServerId,c.target_database targetDatabase,"
                         + "c.config_json configJson,s.name sourceServerName,p.project_name projectName "
                         + "FROM rt_task t JOIN rt_sync_task_config c ON c.task_id=t.id "
                         + "LEFT JOIN rt_server s ON s.id=c.source_server_id LEFT JOIN rt_project p ON p.id=t.project_id "
-                        + "WHERE t.id=? AND t.task_type='sync' AND t.status<>'deleted'", taskId);
+                        + "WHERE t.id=? AND t.task_type='sync' AND t.deleted_flag=0", taskId);
         if (rows.isEmpty()) throw new IllegalArgumentException("同步任务不存在：" + taskId);
         Map<String, Object> task = new LinkedHashMap<>(rows.get(0));
         task.put("taskConfig", normalizePaimonTableNames(jsonMap(task.remove("configJson")),
@@ -205,8 +207,8 @@ public class RealtimeSyncRepository {
 
     private Map<String, Object> requiredManagedTask(long taskId, String taskType) {
         List<Map<String, Object>> rows = jdbc.queryForList("SELECT t.id,t.project_id projectId,t.task_name name,t.task_type taskType,"
-                + "t.flink_version flinkVersion,t.owner,t.description,t.status,t.create_time createTime,t.update_time updateTime,"
-                + "p.project_name projectName FROM rt_task t LEFT JOIN rt_project p ON p.id=t.project_id WHERE t.id=? AND t.status<>'deleted'", taskId);
+                + "t.flink_version flinkVersion,t.owner,t.description,t.instance_status status,t.instance_status instanceStatus,t.task_status+0 taskStatus,t.create_time createTime,t.update_time updateTime,"
+                + "p.project_name projectName FROM rt_task t LEFT JOIN rt_project p ON p.id=t.project_id WHERE t.id=? AND t.deleted_flag=0", taskId);
         if (rows.isEmpty()) throw new IllegalArgumentException("实时任务不存在：" + taskId);
         Map<String, Object> task = new LinkedHashMap<>(rows.get(0));
         Map<String, Object> config;
@@ -231,7 +233,7 @@ public class RealtimeSyncRepository {
             task.put("sourceType", "paimon"); task.put("targetType", "mysql"); task.put("sourceServerId", row.get("targetServerId"));
             task.put("targetDatabase", requiredServer(((Number) row.get("targetServerId")).longValue(), false).get("databaseName"));
         } else throw new IllegalArgumentException("不支持的任务类型：" + taskType);
-        task.put("taskConfig", config); task.put("editPolicy", Map.of("updateBlocked", hasActiveInstance(taskId), "requiredStartType", "direct"));
+        task.put("taskConfig", config); task.put("editPolicy", Map.of("updateBlocked", hasActiveInstance(taskId) || isOnline(taskId), "requiredStartType", "direct"));
         return task;
     }
 
@@ -245,7 +247,7 @@ public class RealtimeSyncRepository {
         KeyHolder holder = new GeneratedKeyHolder();
         jdbc.update(connection -> {
             PreparedStatement ps = connection.prepareStatement(
-                    "INSERT INTO rt_task(project_id,task_name,task_type,flink_version,owner,description,status)"
+                    "INSERT INTO rt_task(project_id,task_name,task_type,flink_version,owner,description,instance_status)"
                             + " VALUES(?,?,'sync',?,?,?,'not_running')", Statement.RETURN_GENERATED_KEYS);
             ps.setLong(1, request.getProjectId() == null ? properties.getDefaultProjectId() : request.getProjectId());
             ps.setString(2, request.getName().trim());
@@ -280,6 +282,9 @@ public class RealtimeSyncRepository {
         long totalStartedAt = System.nanoTime();
         long stageStartedAt = totalStartedAt;
         Map<String, Object> currentTask = requiredTask(taskId);
+        if (((Number) currentTask.get("taskStatus")).intValue() == 1) {
+            throw new IllegalStateException("上线中的任务不允许编辑，请先下线任务");
+        }
         validateUpdatePolicy(taskId, currentTask, request);
         long operationId = startOperation(taskId, null, "EDIT", actor, json(Map.of("expectedUpdateTime",
                 text(request.getExpectedUpdateTime()))));
@@ -324,11 +329,13 @@ public class RealtimeSyncRepository {
 
     @Transactional
     public void deleteTask(long taskId, String actor) {
-        requiredTask(taskId);
+        if (((Number) requiredTask(taskId).get("taskStatus")).intValue() == 1) {
+            throw new IllegalStateException("上线中的任务不允许删除，请先下线任务");
+        }
         if (hasActiveInstance(taskId)) throw new IllegalStateException("任务存在活动实例，历史导入实例也不允许删除");
         long operationId = startOperation(taskId, null, "DELETE", actor, "{}");
         Long beforeVersion = latestVersionId(taskId);
-        jdbc.update("UPDATE rt_task SET task_name=CONCAT(task_name,'#deleted#',id),status='deleted',update_time=NOW()"
+        jdbc.update("UPDATE rt_task SET task_name=CONCAT(task_name,'#deleted#',id),deleted_flag=1,update_time=NOW()"
                 + " WHERE id=? AND task_type='sync'", taskId);
         jdbc.update("DELETE FROM rt_sync_task_table_mapping WHERE task_id=?", taskId);
         jdbc.update("DELETE FROM rt_sync_task_config WHERE task_id=?", taskId);
@@ -644,7 +651,42 @@ public class RealtimeSyncRepository {
     }
 
     public void changeTaskStatus(long taskId, String status) {
-        jdbc.update("UPDATE rt_task SET status=?,update_time=NOW() WHERE id=?", status, taskId);
+        jdbc.update("UPDATE rt_task SET instance_status=?,update_time=NOW() WHERE id=?", status, taskId);
+    }
+
+    public boolean isOnline(long taskId) {
+        Integer value = jdbc.queryForObject("SELECT task_status FROM rt_task WHERE id=? AND deleted_flag=0",
+                Integer.class, taskId);
+        if (value == null) throw new IllegalArgumentException("实时任务不存在：" + taskId);
+        return value == 1;
+    }
+
+    /** 上下线只改变任务管理状态，不提交或停止 Flink 作业。 */
+    @Transactional
+    public Map<String, Object> updateOnlineStatus(long taskId, int taskStatus, String actor) {
+        if (taskStatus != 0 && taskStatus != 1) throw new IllegalArgumentException("任务状态只能为 0 或 1");
+        List<Map<String, Object>> rows = jdbc.queryForList(
+                "SELECT task_status+0 taskStatus,instance_status instanceStatus FROM rt_task"
+                        + " WHERE id=? AND deleted_flag=0 FOR UPDATE", taskId);
+        if (rows.isEmpty()) throw new IllegalArgumentException("实时任务不存在：" + taskId);
+        Map<String, Object> task = rows.get(0);
+        int current = ((Number) task.get("taskStatus")).intValue();
+        if (current != taskStatus) {
+            if (hasActiveProductionInstance(taskId)) {
+                throw new IllegalStateException("任务存在活动正式实例，请先完成 Savepoint 停止后再修改上下线状态");
+            }
+            if (jdbc.update("UPDATE rt_task SET task_status=?,update_time=NOW() WHERE id=? AND task_status=?",
+                    taskStatus, taskId, current) != 1) {
+                throw new IllegalStateException("任务上下线状态已变化，请刷新后重试");
+            }
+            insertChange(taskId, null, null, null, null, actor,
+                    taskStatus == 1 ? "ONLINE" : "OFFLINE", taskStatus == 1 ? "上线任务" : "下线任务");
+        }
+        Map<String, Object> result = new LinkedHashMap<>();
+        result.put("id", taskId);
+        result.put("taskStatus", taskStatus);
+        result.put("instanceStatus", task.get("instanceStatus"));
+        return result;
     }
 
     public void addChange(long taskId, Long operationId, Long versionId, Long instanceId,
@@ -858,6 +900,7 @@ public class RealtimeSyncRepository {
         if ("DEBUG".equalsIgnoreCase(executionMode)) return false;
         String action = row.get("action") == null ? "" : String.valueOf(row.get("action")).trim();
         return "创建".equals(action) || "编辑".equals(action) || "删除".equals(action)
+                || "上线".equals(action) || "下线".equals(action)
                 || "启动".equals(action) || "停止".equals(action) || "状态同步".equals(action);
     }
 
@@ -1411,6 +1454,8 @@ public class RealtimeSyncRepository {
             case "CREATE": return "创建";
             case "EDIT": return "编辑";
             case "DELETE": return "删除";
+            case "ONLINE": return "上线";
+            case "OFFLINE": return "下线";
             case "START": return "启动";
             case "STOP": return "停止";
             case "STATUS_SYNC":
@@ -1430,6 +1475,7 @@ public class RealtimeSyncRepository {
         Map<String, Object> result = new LinkedHashMap<>();
         // DEBUG 实例不改变生产任务编辑策略，与参考平台保持一致。
         boolean active = hasActiveProductionInstance(taskId);
+        boolean online = isOnline(taskId);
         List<Map<String, Object>> snapshots = productionSnapshots(taskId);
         boolean productionLocked = !snapshots.isEmpty();
         Map<String, Object> current = taskConfigFromSnapshot(requiredTaskConfig(taskId));
@@ -1446,8 +1492,8 @@ public class RealtimeSyncRepository {
             lockedTableConfigs.put(table, objectMap(referenceTableConfigs.get(table)));
         }
         if (lockedTables.isEmpty()) lockedTables.addAll(selectedTables(current));
-        result.put("editable", !active);
-        result.put("updateBlocked", active);
+        result.put("editable", !active && !online);
+        result.put("updateBlocked", active || online);
         result.put("structureLocked", productionLocked);
         result.put("productionLocked", productionLocked);
         result.put("lockedTables", lockedTables);
@@ -1462,7 +1508,8 @@ public class RealtimeSyncRepository {
             result.put("requiredStartType", "savepoint");
             result.put("requiredStatePath", text(restorable.get("savepointPath")));
         }
-        result.put("reason", active ? "任务正在提交、运行、停止或重启，当前不能修改配置" : "");
+        result.put("reason", active ? "任务正在提交、运行、停止或重启，当前不能修改配置"
+                : online ? "上线中的任务不允许编辑，请先下线任务" : "");
         return result;
     }
 
@@ -1537,7 +1584,8 @@ public class RealtimeSyncRepository {
     }
 
     String sortColumn(String value) {
-        Map<String, String> columns = Map.of("id", "t.id", "name", "t.task_name", "status", "t.status", "owner", "t.owner",
+        Map<String, String> columns = Map.of("id", "t.id", "name", "t.task_name", "status", "t.instance_status",
+                "taskStatus", "t.task_status", "instanceStatus", "t.instance_status", "owner", "t.owner",
                 "createTime", "t.create_time", "updateTime", "t.update_time", "lastOperationTime", "l.create_time",
                 "runtime", "i.started_at");
         return value == null ? "COALESCE(l.create_time,t.update_time)"

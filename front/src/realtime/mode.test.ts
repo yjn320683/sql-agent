@@ -29,4 +29,12 @@ describe('实时/离线路由切换', () => {
     expect(validRememberedPath('offline', '/realtime/servers')).toBe('/chat');
     expect(validRememberedPath('data-map', '/assets/lineage')).toBe('/data-map');
   });
+
+  it('根路径和无效页面不会被记作离线页面', () => {
+    expect(modeOf('/')).toBe('workspace');
+    expect(modeOf('/unknown')).toBe('workspace');
+    expect(validRememberedPath('offline', '/')).toBe('/chat');
+    expect(validRememberedPath('offline', '/unknown')).toBe('/chat');
+    expect(validRememberedPath('offline', '/tasks/42/executions/7')).toBe('/tasks/42/executions/7');
+  });
 });

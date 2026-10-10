@@ -32,6 +32,7 @@ class RealtimeUnifiedTaskControllerTest {
     @BeforeEach
     void setUp() {
         repository = mock(RealtimeSyncRepository.class);
+        when(repository.isOnline(org.mockito.ArgumentMatchers.anyLong())).thenReturn(true);
         RealtimeActorProvider actors = mock(RealtimeActorProvider.class);
         when(actors.requireActor()).thenReturn("tester");
         runtime = mock(RealtimeRuntimeService.class);
@@ -74,6 +75,21 @@ class RealtimeUnifiedTaskControllerTest {
         assertEquals("running", result.get("latestInstanceStatus"));
         assertEquals("PRODUCTION", result.get("latestInstanceExecutionMode"));
         assertEquals(1, ((List<?>) result.get("mapping")).size());
+    }
+
+    @Test
+    void changingOnlineStatusDoesNotStartOrStopAJob() {
+        when(repository.taskType(8L)).thenReturn("sync");
+        when(repository.updateOnlineStatus(8L, 0, "tester"))
+                .thenReturn(Map.of("id", 8L, "taskStatus", 0, "instanceStatus", "not_running"));
+
+        Map<String, Object> result = controller.updateTaskStatus(8L, Map.of("taskStatus", 0)).getData();
+
+        assertEquals(0, result.get("taskStatus"));
+        verify(repository).updateOnlineStatus(8L, 0, "tester");
+        verify(runtime, never()).start(org.mockito.ArgumentMatchers.anyLong(),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.anyString(),
+                org.mockito.ArgumentMatchers.anyBoolean());
     }
 
     @Test
@@ -147,15 +163,15 @@ class RealtimeUnifiedTaskControllerTest {
         assertTrue(Boolean.TRUE.equals(result.get("canEnable")));
         @SuppressWarnings("unchecked")
         Map<String, Object> policy = (Map<String, Object>) result.get("startPolicy");
-        assertEquals("savepoint", policy.get("requiredStartType"));
-        assertEquals("hdfs://savepoints/task-8/savepoint-1", policy.get("requiredStatePath"));
+        assertEquals(null, policy.get("requiredStartType"));
+        assertEquals(null, policy.get("requiredStatePath"));
         assertFalse(Boolean.TRUE.equals(policy.get("canResetConsumptionPoint")));
         verify(repository, never()).requiredTask(8L);
         verify(repository, never()).requiredSyncTask(8L);
     }
 
     @Test
-    void productionLockedSyncTaskCanExplicitlyResetConsumptionPointByTimestamp() {
+    void productionLockedSyncTaskRejectsTimestampReset() {
         when(repository.taskType(8L)).thenReturn("sync");
         when(repository.latestVersionId(8L)).thenReturn(12L);
         when(repository.instances(8L)).thenReturn(List.of(Map.of(
@@ -170,9 +186,10 @@ class RealtimeUnifiedTaskControllerTest {
         request.setStartType("direct");
         request.setSourceStartupTimestampMillis(1_700_000_000_000L);
 
-        controller.enable(8L, request);
-
-        verify(runtime).start(8L, request, "tester", false);
+        assertEquals("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复",
+                assertThrows(IllegalArgumentException.class,
+                        () -> controller.enable(8L, request)).getMessage());
+        verify(runtime, never()).start(8L, request, "tester", false);
     }
 
     @Test
@@ -206,7 +223,7 @@ class RealtimeUnifiedTaskControllerTest {
                 "productionLocked", true, "syncTableSetChanged", false));
         TaskActionRequest request = new TaskActionRequest();
 
-        assertEquals("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动",
+        assertEquals("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint 或 Checkpoint 启动",
                 assertThrows(IllegalArgumentException.class,
                         () -> controller.enable(8L, request)).getMessage());
         verify(runtime, never()).start(8L, request, "tester", false);
@@ -225,7 +242,7 @@ class RealtimeUnifiedTaskControllerTest {
         TaskActionRequest request = new TaskActionRequest();
         request.setSourceStartupTimestampMillis(1_700_000_000_000L);
 
-        assertEquals("首次正式启动必须执行 initial 全量快照，不能按时间戳重置消费点",
+        assertEquals("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复",
                 assertThrows(IllegalArgumentException.class,
                         () -> controller.enable(8L, request)).getMessage());
         verify(runtime, never()).start(8L, request, "tester", false);

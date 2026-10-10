@@ -3,7 +3,6 @@ import {
   Alert,
   Button,
   Descriptions,
-  DatePicker,
   Drawer,
   Form,
   Input,
@@ -100,7 +99,6 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
   const [sortOrder, setSortOrder] = useState<InstanceSortOrder>('startedAtDesc');
   const [configOpen, setConfigOpen] = useState(false);
   const [form] = Form.useForm();
-  const consumePointMode = Form.useWatch('consumePointMode', form);
   const startType = Form.useWatch('startType', form);
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
   const [stateHistoryLoading, setStateHistoryLoading] = useState(false);
@@ -166,7 +164,7 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
     initializedConfigKeyRef.current = key;
     form.resetFields();
     form.setFieldsValue({
-      startType: 'direct', consumePointMode: 'default', sourceStartupTime: undefined,
+      startType: 'direct',
       parallelism: task.taskConfig.parallelism ?? 3,
       checkpointInterval: task.taskConfig.checkpointInterval ?? 60,
       taskManagerMemory: task.taskConfig.taskManagerMemory || '3GB',
@@ -216,9 +214,6 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
   const buildAction = (values: Record<string, unknown>) => ({
     ...values,
     statePath: values.startType === 'direct' ? undefined : values.statePath,
-    sourceStartupTimestampMillis: values.consumePointMode === 'timestamp'
-      && values.sourceStartupTime && typeof (values.sourceStartupTime as { valueOf?: unknown }).valueOf === 'function'
-      ? (values.sourceStartupTime as { valueOf: () => number }).valueOf() : undefined,
     mysqlConfOverrides: normalizeOverrides(values.mysqlConfOverrides as Record<string, unknown>),
     tableConfOverrides: mergeSyncTopologyOverrides(
       normalizeOverrides(values.tableConfOverrides as Record<string, unknown>),
@@ -233,16 +228,14 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
     setCommand(''); setStateHistory([]); setConfigOpen(true);
   };
 
-  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint' | 'timestamp') => {
+  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint') => {
     if (!task) return;
     const selectionVersion = ++startSelectionVersionRef.current;
-    const nextStartType = method === 'timestamp' ? 'direct' : method;
+    const nextStartType = method;
     setStateHistory([]);
     form.setFieldsValue({
       startType: nextStartType,
-      consumePointMode: method === 'timestamp' ? 'timestamp' : 'default',
       statePath: undefined,
-      sourceStartupTime: undefined,
     });
     if (nextStartType === 'direct') return;
     try {
@@ -424,22 +417,18 @@ export default function SyncDebugDrawer({ task, open, params, servers, supportLo
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="启动方式" span={2}>
             <Form.Item name="startType" hidden><Input /></Form.Item>
-            <Form.Item name="consumePointMode" hidden><Input /></Form.Item>
             <Select aria-label="启动方式" style={{ width: '100%' }}
-              value={consumePointMode === 'timestamp' ? 'timestamp' : startType}
+              value={startType}
               disabled={stateHistoryLoading}
               onChange={(value) => void selectStartMethod(value)}
               options={[
                 { label: '首次全量同步', value: 'direct' },
                 { label: '从 Savepoint 恢复', value: 'savepoint' },
                 { label: '从 Checkpoint 恢复', value: 'checkpoint' },
-                { label: '从指定时间戳开始消费', value: 'timestamp' },
               ]} />
           </Descriptions.Item>
-          {consumePointMode === 'timestamp' && <Descriptions.Item label="消费起始时间" span={2}><Form.Item name="sourceStartupTime" noStyle rules={[{ required: true, message: '请选择消费起始时间' }, { validator: (_, value) => !value || value.valueOf() <= Date.now() ? Promise.resolve() : Promise.reject(new Error('消费起始时间不能晚于当前时间')) }]}><DatePicker showTime style={{ width: '100%' }} placeholder="请选择过去的时间" /></Form.Item></Descriptions.Item>}
           <Descriptions.Item label="历史状态"><Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" noStyle rules={[{ required: true, message: '请选择历史状态' }]}><Select aria-label="历史状态" loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Typography.Text type="secondary">全量同步不需要恢复点</Typography.Text>}</Form.Item></Descriptions.Item>
         </Descriptions>
-        {consumePointMode === 'timestamp' && <Alert showIcon type="warning" message="本次调试从指定时间戳开始消费，调试目标表不会预先清空" description="选择较早时间可能重复消费，选择较晚时间可能跳过事件；时间早于 MySQL Binlog 保留范围时调试会失败。" style={{ marginTop: 12 }} />}
         <Typography.Title id="sync-debug-config-runtime" level={5} className="realtime-detail-title sync-config-anchor-section">资源与运行</Typography.Title>
         <Descriptions bordered size="small" column={2}>
           <Descriptions.Item label="并行度"><Form.Item name="parallelism" noStyle rules={[{ required: true }, { type: 'number', min: 1, max: 4 }]}><Tooltip title="由目标 Paimon 表 Sink 并行度统一决定"><InputNumber min={1} max={4} disabled style={{ width: '100%' }} /></Tooltip></Form.Item></Descriptions.Item>

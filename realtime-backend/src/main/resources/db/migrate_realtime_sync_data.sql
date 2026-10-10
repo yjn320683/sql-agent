@@ -61,8 +61,8 @@ BEGIN
   WHERE EXISTS (SELECT 1 FROM flink_paimon_research.rt_task t
     WHERE t.task_type='sync' AND COALESCE(t.deleted_flag,0)=0 AND t.project_id=p.id);
 
-  INSERT INTO rt_task (id, project_id, task_name, task_type, flink_version, owner, description, status, create_time, update_time)
-  SELECT id, project_id, task_name, task_type, flink_version, owner, description, status, create_time, update_time
+  INSERT INTO rt_task (id, project_id, task_name, task_type, flink_version, owner, description, task_status, instance_status, deleted_flag, create_time, update_time)
+  SELECT id, project_id, task_name, task_type, flink_version, owner, description, task_status, instance_status, deleted_flag, create_time, update_time
   FROM flink_paimon_research.rt_task WHERE task_type='sync' AND COALESCE(deleted_flag,0)=0;
 
   INSERT INTO rt_server (id, name, type, address, database_name, database_prefix, account, password, description, operator, create_time, update_time)

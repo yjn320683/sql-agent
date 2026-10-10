@@ -3,12 +3,12 @@ import {
   Alert,
   Button,
   Checkbox,
-  DatePicker,
   Form,
   Input,
   Modal,
   Select,
   Space,
+  Switch,
   Table,
   Tag,
   Tooltip,
@@ -38,6 +38,7 @@ import {
   listTaskParams,
   startSyncTask,
   stopSyncTask,
+  updateRealtimeTaskStatus,
 } from '../api';
 import type {
   SyncTask,
@@ -61,7 +62,7 @@ const statusLabel: Record<string, string> = {
   not_running: '未运行', canceled: '已取消', finished: '已完成',
 };
 
-const emptyQuery = { keyword: '', status: 'all', paimonTableKeyword: '', owner: '', lastOperator: '' };
+const emptyQuery = { keyword: '', taskStatus: 'all', instanceStatus: 'all', paimonTableKeyword: '', owner: '', lastOperator: '' };
 const positiveNumber = (value: string | null, fallback: number) => {
   const number = Number(value);
   return Number.isInteger(number) && number > 0 ? number : fallback;
@@ -79,12 +80,13 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const requestedTab = searchParams.get('tab') || 'instances';
   const [query, setQuery] = useState(() => ({
     ...emptyQuery,
-    keyword: searchParams.get('q') ?? searchParams.get('keyword') ?? '', status: searchParams.get('status') ?? 'all',
+    keyword: searchParams.get('q') ?? searchParams.get('keyword') ?? '', taskStatus: searchParams.get('taskStatus') ?? 'all',
+    instanceStatus: searchParams.get('instanceStatus') ?? searchParams.get('status') ?? 'all',
     paimonTableKeyword: searchParams.get('paimonTable') ?? searchParams.get('paimonTableKeyword') ?? searchParams.get('tableKeyword') ?? '',
     owner: searchParams.get('owner') ?? '', lastOperator: searchParams.get('operator') ?? searchParams.get('lastOperator') ?? '',
   }));
   const [submittedQuery, setSubmittedQuery] = useState(query);
-  const [filtersExpanded, setFiltersExpanded] = useState(() => Boolean(query.owner || query.lastOperator));
+  const [filtersExpanded, setFiltersExpanded] = useState(() => Boolean(query.paimonTableKeyword || query.owner || query.lastOperator));
   const [page, setPage] = useState(() => positiveNumber(searchParams.get('page'), 1));
   const [pageSize, setPageSize] = useState(() => positiveNumber(searchParams.get('pageSize'), 20));
   const [sortField, setSortField] = useState(() => searchParams.get('sort') || 'lastOperationTime');
@@ -94,6 +96,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<SyncTask>();
   const [detailLoading, setDetailLoading] = useState(false);
+  const [statusLoadingIds, setStatusLoadingIds] = useState<Set<number>>(() => new Set());
   const [mappingTask, setMappingTask] = useState<SyncTaskListItem>();
   const [mappingRows, setMappingRows] = useState<TaskMapping[]>([]);
   const [actionTask, setActionTask] = useState<{ row: SyncTaskListItem; startPolicy?: SyncTaskStartPolicy }>();
@@ -106,10 +109,8 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [allowDirectStop, setAllowDirectStop] = useState(false);
   const [actionForm] = Form.useForm();
   const actionStartType = Form.useWatch('startType', actionForm);
-  const actionConsumePointMode = Form.useWatch('consumePointMode', actionForm);
   const actionStatePath = Form.useWatch('statePath', actionForm);
   const actionRecoveryFallbackMode = Form.useWatch('recoveryFallbackMode', actionForm);
-  const actionSourceStartupTime = Form.useWatch('sourceStartupTime', actionForm);
   const [resetFailedStateRecovery, setResetFailedStateRecovery] = useState(false);
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
   const submitActionRef = useRef(false);
@@ -122,12 +123,10 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const actionRecoveryFallbackIncomplete = Boolean(
     resetFailedStateRecovery
     && (!actionRecoveryFallbackMode
-      || (actionRecoveryFallbackMode === 'checkpoint' && !actionStatePath)
-      || (actionRecoveryFallbackMode === 'timestamp' && !actionSourceStartupTime)),
+      || (actionRecoveryFallbackMode === 'checkpoint' && !actionStatePath)),
   );
   const actionConfirmationDisabled = actionRecoveryFallbackIncomplete
-    || (actionStartType !== 'direct' && !actionStatePath)
-    || (actionConsumePointMode === 'timestamp' && !actionSourceStartupTime);
+    || (actionStartType !== 'direct' && !actionStatePath);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -145,14 +144,14 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
 
   useEffect(() => { void load(); }, [load]);
   useEffect(() => {
-    if (!requestedTaskId || detail?.id === requestedTaskId) return;
+    if (!requestedTaskId) return;
     const sequence = ++detailRequestRef.current;
     setDetailLoading(true);
     void getSyncTask(requestedTaskId).then((value) => {
       if (sequence === detailRequestRef.current) setDetail(value);
     }).catch((error) => { if (sequence === detailRequestRef.current) message.error((error as Error).message); })
       .finally(() => { if (sequence === detailRequestRef.current) setDetailLoading(false); });
-  }, [detail?.id, requestedTaskId]);
+  }, [requestedTaskId]);
   useEffect(() => {
     let active = true;
     setDebugSupportLoading(true);
@@ -166,7 +165,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     const next = new URLSearchParams();
     next.set('page', String(page)); next.set('pageSize', String(pageSize)); next.set('sort', sortField); next.set('order', sortOrder);
     const urlKeys: Record<keyof typeof submittedQuery, string> = {
-      keyword: 'q', status: 'status', paimonTableKeyword: 'paimonTable', owner: 'owner', lastOperator: 'operator',
+      keyword: 'q', taskStatus: 'taskStatus', instanceStatus: 'instanceStatus', paimonTableKeyword: 'paimonTable', owner: 'owner', lastOperator: 'operator',
     };
     Object.entries(submittedQuery).forEach(([key, value]) => {
       if (value && value !== 'all') next.set(urlKeys[key as keyof typeof submittedQuery], value);
@@ -188,6 +187,12 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     });
   };
 
+  const openView = (row: SyncTaskListItem) => {
+    navigate(`/realtime/sync-tasks/${row.id}/view`, {
+      state: { returnTo: `${location.pathname}${location.search}`, taskName: row.name },
+    });
+  };
+
   const openDetail = async (row: SyncTaskListItem) => {
     const sequence = ++detailRequestRef.current;
     setDetailLoading(true);
@@ -196,6 +201,28 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       if (sequence === detailRequestRef.current) setDetail(value);
     } catch (error) { if (sequence === detailRequestRef.current) message.error((error as Error).message); }
     finally { if (sequence === detailRequestRef.current) setDetailLoading(false); }
+  };
+
+  const closeDetail = () => {
+    ++detailRequestRef.current;
+    setDetail(undefined);
+    setDetailLoading(false);
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      next.delete('taskId');
+      next.delete('tab');
+      return next;
+    }, { replace: true });
+  };
+
+  const changeOnlineStatus = async (row: SyncTaskListItem, checked: boolean) => {
+    setStatusLoadingIds((current) => new Set(current).add(row.id));
+    try {
+      await updateRealtimeTaskStatus(row.id, checked ? 1 : 0);
+      setRows((current) => current.map((item) => item.id === row.id ? { ...item, taskStatus: checked ? 1 : 0 } : item));
+      void load();
+    } catch (error) { message.error((error as Error).message); }
+    finally { setStatusLoadingIds((current) => { const next = new Set(current); next.delete(row.id); return next; }); }
   };
 
   const openMappings = async (row: SyncTaskListItem) => {
@@ -230,19 +257,19 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
           canResetConsumptionPoint: Boolean(editPolicy.productionLocked && !editPolicy.requiredStartType),
         } : undefined;
       }
+      if (policy) policy = { ...policy, requiredStartType: undefined, requiredStatePath: undefined, canResetConsumptionPoint: false };
       const requiredType = policy?.requiredStartType;
       const requiredPath = policy?.requiredStatePath;
       let initialStartType: 'direct' | 'checkpoint' | 'savepoint' = requiredType ?? 'direct';
       let initialStatePath = requiredPath;
-      let initialFallbackMode: 'checkpoint' | 'timestamp' | undefined;
+      let initialFallbackMode: 'checkpoint' | undefined;
       let initialHistory: Record<string, unknown>[] = requiredPath
         ? [{ label: requiredPath, path: requiredPath }] : [];
       const mustUseFallback = Boolean(policy?.syncTableSetChanged) && !requiredPath;
-      let requiresManualStartSelection = mustUseFallback;
+      let requiresManualStartSelection = false;
       if (policy?.productionLocked && !requiredPath) {
-        const shouldLoadSavepoints = !policy.syncTableSetChanged;
         const [savepoints, checkpoints] = await Promise.all([
-          shouldLoadSavepoints ? getStateHistory(row.id, 'savepoint') : Promise.resolve([]),
+          getStateHistory(row.id, 'savepoint'),
           getStateHistory(row.id, 'checkpoint'),
         ]);
         if (sequence !== actionRequestRef.current) return;
@@ -265,8 +292,8 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       setResetFailedStateRecovery(requiresManualStartSelection);
       setStateHistory(initialHistory);
       actionForm.setFieldsValue({
-        startType: initialStartType, statePath: initialStatePath, consumePointMode: 'default',
-        recoveryFallbackMode: initialFallbackMode, sourceStartupTime: undefined,
+        startType: initialStartType, statePath: initialStatePath,
+        recoveryFallbackMode: initialFallbackMode,
       });
       setActionTask({ row, startPolicy: policy });
     } catch (error) {
@@ -291,8 +318,6 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       await startSyncTask(actionTask.row.id, {
         startType: values.startType,
         ...(values.startType !== 'direct' && values.statePath ? { statePath: values.statePath } : {}),
-        ...(values.consumePointMode === 'timestamp' && values.sourceStartupTime
-          ? { sourceStartupTimestampMillis: values.sourceStartupTime.valueOf() } : {}),
       }, false);
       message.success('同步任务已提交');
       setActionTask(undefined); await load();
@@ -300,24 +325,22 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     finally { submitActionRef.current = false; setActionLoading(false); }
   };
 
-  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint' | 'timestamp') => {
+  const selectStartMethod = async (method: 'direct' | 'checkpoint' | 'savepoint') => {
     if (!actionTask) return;
     const selectionVersion = ++actionSelectionVersionRef.current;
-    const startType = method === 'timestamp' ? 'direct' : method;
+    const startType = method;
     const requiredStartType = actionTask.startPolicy?.requiredStartType;
     const requiredStatePath = actionTask.startPolicy?.requiredStatePath;
     const showStateRecoveryReset = Boolean(actionTask.startPolicy?.productionLocked
       && requiredStartType === 'savepoint' && requiredStatePath);
     const fallback = Boolean((actionTask.startPolicy?.syncTableSetChanged || showStateRecoveryReset)
-      && (method === 'checkpoint' || method === 'timestamp'));
+      && method === 'checkpoint');
     setResetFailedStateRecovery(fallback);
     setStateHistory([]);
     actionForm.setFieldsValue({
       startType,
-      consumePointMode: method === 'timestamp' ? 'timestamp' : 'default',
       recoveryFallbackMode: fallback ? method : undefined,
       statePath: method === 'savepoint' ? actionTask.startPolicy?.requiredStatePath : undefined,
-      sourceStartupTime: undefined,
     });
     if (startType === 'direct' || (startType === 'savepoint' && actionTask.startPolicy?.requiredStatePath)) return;
     try {
@@ -339,8 +362,8 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     if (!checked) {
       setResetFailedStateRecovery(false);
       actionForm.setFieldsValue({
-        startType: 'savepoint', statePath: requiredPath, consumePointMode: 'default',
-        recoveryFallbackMode: undefined, sourceStartupTime: undefined,
+        startType: 'savepoint', statePath: requiredPath,
+        recoveryFallbackMode: undefined,
       });
       if (requiredPath) setStateHistory([{ label: requiredPath, path: requiredPath }]);
       return;
@@ -348,8 +371,8 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     setResetFailedStateRecovery(true);
     setStateHistory([]);
     actionForm.setFieldsValue({
-      startType: 'direct', statePath: undefined, consumePointMode: 'default',
-      recoveryFallbackMode: undefined, sourceStartupTime: undefined,
+      startType: 'direct', statePath: undefined,
+      recoveryFallbackMode: undefined,
     });
   };
 
@@ -382,7 +405,11 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     { title: '任务 ID', dataIndex: 'id', width: 100, fixed: 'left' as const, sorter: true },
     { title: '任务名称', dataIndex: 'name', width: 220, fixed: 'left' as const, ellipsis: true, sorter: true, render: (value: string) => <Typography.Link>{value}</Typography.Link> },
     { title: '任务描述', dataIndex: 'description', width: 260, ellipsis: { showTitle: false }, render: (value: string) => <Tooltip title={value}><span>{value || '-'}</span></Tooltip> },
-    { title: '任务状态', dataIndex: 'status', width: 110, sorter: true, render: (value: string, row: SyncTaskListItem) => <Tooltip title={row.runtimeFailureMessage}><Tag color={statusColor[value]}>{statusLabel[value] ?? value}</Tag></Tooltip> },
+    { title: '任务状态', dataIndex: 'taskStatus', width: 120, sorter: true, render: (_: unknown, row: SyncTaskListItem) => {
+      const active = ACTIVE.includes(row.instanceStatus ?? row.status) || ACTIVE.includes(row.runtimeStatus ?? '');
+      return <Tooltip title={active ? '存在活动正式实例，请先完成 Savepoint 停止' : undefined}><span onClick={(event) => event.stopPropagation()}><Switch checked={row.taskStatus === 1} checkedChildren="上线" unCheckedChildren="下线" disabled={active} loading={statusLoadingIds.has(row.id)} onChange={(checked) => void changeOnlineStatus(row, checked)} /></span></Tooltip>;
+    } },
+    { title: '运行状态', dataIndex: 'instanceStatus', width: 120, sorter: true, render: (value: string, row: SyncTaskListItem) => <Tooltip title={row.runtimeFailureMessage}><Tag color={statusColor[value]}>{statusLabel[value] ?? value}</Tag></Tooltip> },
     { title: '映射', width: 180, render: (_: unknown, row: SyncTaskListItem) => (row.mapping?.length ?? row.mappingCount ?? 0) > 0
       ? <Button className="realtime-mapping-link" type="link" size="small" icon={<UnorderedListOutlined />} onClick={(event) => { event.stopPropagation(); void openMappings(row); }}>{`查看全部 ${row.mapping?.length ?? row.mappingCount} 组`}</Button>
       : '-' },
@@ -393,9 +420,9 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     { title: '最近操作人', dataIndex: 'lastOperator', width: 120, render: (value: string) => value || '-' },
     { title: '最近操作时间', dataIndex: 'lastOperationTime', width: 175, sorter: true, render: (value: string) => value || '-' },
     {
-      title: '操作', key: 'actions', fixed: 'right' as const, width: 260,
+      title: '操作', key: 'actions', fixed: 'right' as const, width: 300,
       render: (_: unknown, row: SyncTaskListItem) => {
-        const status = row.runtimeStatus || row.status;
+        const status = row.instanceStatus || row.status;
         const running = status === 'running';
         const restarting = status === 'restarting';
         const operating = status === 'submitting' || status === 'stopping' || restarting;
@@ -404,11 +431,12 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
           <Space size={12} onClick={(event) => event.stopPropagation()}>
             {running || restarting
               ? <Tooltip title={row.managed === false ? '历史导入实例只读，不能在本平台停止' : undefined}><Typography.Link disabled={row.managed === false} onClick={() => { if (row.managed === false) return; setAllowDirectStop(false); setTaskStopTarget(row); }}>停止</Typography.Link></Tooltip>
-              : <Typography.Link disabled={operating} onClick={() => !operating && void openAction(row)}>启动</Typography.Link>}
+              : <Typography.Link disabled={operating || row.taskStatus !== 1} onClick={() => !operating && row.taskStatus === 1 && void openAction(row)}>启动</Typography.Link>}
+            <Typography.Link onClick={() => openView(row)}>查看</Typography.Link>
+            <Typography.Link disabled={active || row.taskStatus === 1} onClick={() => !active && row.taskStatus !== 1 && openEdit(row)}>编辑</Typography.Link>
             <Typography.Link onClick={() => void openDebug(row)}>调试</Typography.Link>
-            <Typography.Link disabled={active} onClick={() => !active && openEdit(row)}>编辑</Typography.Link>
-            <Typography.Link type="danger" disabled={active} onClick={() => {
-              if (active) return;
+            <Typography.Link type="danger" disabled={active || row.taskStatus === 1} onClick={() => {
+              if (active || row.taskStatus === 1) return;
               Modal.confirm({
                 title: `确认删除任务 ${row.name}？`,
                 content: '删除后任务将从列表移除并停止后续同步；目标 Paimon 表和历史数据不会删除。',
@@ -426,14 +454,14 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         );
       },
     },
-  ], [load]);
+  ], [load, statusLoadingIds]);
 
   const handleTableChange: TableProps<SyncTaskListItem>['onChange'] = (_pagination, _filters, sorter) => {
     const selected = Array.isArray(sorter) ? sorter[0] : sorter;
     if (!selected?.order) {
       setSortField('lastOperationTime'); setSortOrder('desc'); setPage(1); return;
     }
-    const fields: Record<string, string> = { id: 'id', name: 'name', status: 'status', runtimeSeconds: 'runtime', lastOperationTime: 'lastOperationTime' };
+    const fields: Record<string, string> = { id: 'id', name: 'name', taskStatus: 'taskStatus', instanceStatus: 'instanceStatus', runtimeSeconds: 'runtime', lastOperationTime: 'lastOperationTime' };
     setSortField(fields[String(selected.field)] ?? 'lastOperationTime');
     setSortOrder(selected.order === 'ascend' ? 'asc' : 'desc');
     setPage(1);
@@ -452,9 +480,13 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         <div className="realtime-sync-filter-section">
           <div className="realtime-sync-query-filter">
             <div className="realtime-sync-filter-item"><label>任务关键字：</label><Input allowClear placeholder="任务ID / 名称 / 描述" value={query.keyword} onChange={(event) => setQuery({ ...query, keyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
-            <div className="realtime-sync-filter-item"><label>任务类型：</label><Select aria-label="任务类型" value="sync" disabled options={[{ label: '实时同步任务', value: 'sync' }]} /></div>
-            <div className="realtime-sync-filter-item"><label>任务状态：</label><Select value={query.status} onChange={(status) => setQuery({ ...query, status })} options={[{ label: '全部', value: 'all' }, ...Object.entries(statusLabel).filter(([key]) => ['not_running', 'submitting', 'running', 'stopping', 'restarting', 'failed'].includes(key)).map(([value, label]) => ({ value, label }))]} /></div>
-            <div className="realtime-sync-filter-item"><label>Paimon 表：</label><Input allowClear placeholder="库名、表名或完整表名" value={query.paimonTableKeyword} onChange={(event) => setQuery({ ...query, paimonTableKeyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
+            <div className="realtime-sync-filter-item"><label>任务状态：</label><Select value={query.taskStatus} onChange={(taskStatus) => setQuery({ ...query, taskStatus })} options={[{ label: '全部', value: 'all' }, { label: '上线', value: '1' }, { label: '下线', value: '0' }]} /></div>
+            <div className="realtime-sync-filter-item"><label>运行状态：</label><Select value={query.instanceStatus} onChange={(instanceStatus) => setQuery({ ...query, instanceStatus })} options={[{ label: '全部', value: 'all' }, ...Object.entries(statusLabel).filter(([key]) => ['not_running', 'submitting', 'running', 'stopping', 'restarting', 'failed'].includes(key)).map(([value, label]) => ({ value, label }))]} /></div>
+            {filtersExpanded && <>
+              <div className="realtime-sync-filter-item"><label>Paimon 表：</label><Input allowClear placeholder="库名、表名或完整表名" value={query.paimonTableKeyword} onChange={(event) => setQuery({ ...query, paimonTableKeyword: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
+              <div className="realtime-sync-filter-item"><label>责任人：</label><Select showSearch optionFilterProp="label" value={query.owner || 'all'} onChange={(owner) => setQuery({ ...query, owner: owner === 'all' ? '' : owner })} options={[{ label: '全部', value: 'all' }, ...ownerOptions]} placeholder="请输入成员名称进行搜索" /></div>
+              <div className="realtime-sync-filter-item"><label>最近操作人：</label><Input allowClear placeholder="输入操作人" value={query.lastOperator} onChange={(event) => setQuery({ ...query, lastOperator: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
+            </>}
             <Space className="realtime-sync-filter-actions">
               <Button onClick={() => { setQuery(emptyQuery); setSubmittedQuery(emptyQuery); setSortField('lastOperationTime'); setSortOrder('desc'); setPage(1); }}>重置</Button>
               <Button type="primary" icon={<SearchOutlined />} onClick={() => { setSubmittedQuery(query); setPage(1); }}>查询</Button>
@@ -462,10 +494,6 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
               <Tooltip title="刷新"><Button aria-label="刷新" icon={<ReloadOutlined />} onClick={() => void load()} /></Tooltip>
               <Tooltip title="新建同步任务"><Button aria-label="新建同步任务" type="primary" icon={<PlusOutlined />} onClick={() => openEdit()} /></Tooltip>
             </Space>
-            {filtersExpanded && <>
-              <div className="realtime-sync-filter-item"><label>责任人：</label><Select showSearch optionFilterProp="label" value={query.owner || 'all'} onChange={(owner) => setQuery({ ...query, owner: owner === 'all' ? '' : owner })} options={[{ label: '全部', value: 'all' }, ...ownerOptions]} placeholder="请输入成员名称进行搜索" /></div>
-              <div className="realtime-sync-filter-item"><label>最近操作人：</label><Input allowClear placeholder="输入操作人" value={query.lastOperator} onChange={(event) => setQuery({ ...query, lastOperator: event.target.value })} onPressEnter={() => { setSubmittedQuery(query); setPage(1); }} /></div>
-            </>}
           </div>
         </div>
         <div className="realtime-sync-table-section">
@@ -487,13 +515,12 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       <Modal title={`启动任务（任务：${actionTask?.row.name ?? ''}）`} open={Boolean(actionTask)} onCancel={() => { ++actionSelectionVersionRef.current; setActionTask(undefined); setResetFailedStateRecovery(false); }} onOk={() => void submitAction()} okText="确认启动" cancelText="取消" confirmLoading={actionLoading} okButtonProps={{ disabled: actionConfirmationDisabled }} destroyOnHidden>
         <Form form={actionForm} layout="vertical">
           <Form.Item name="startType" hidden><Input /></Form.Item>
-          <Form.Item name="consumePointMode" hidden><Input /></Form.Item>
           <Form.Item name="recoveryFallbackMode" hidden><Input /></Form.Item>
           <Form.Item label="启动方式" required>
             <Select
               aria-label="启动方式"
               value={resetFailedStateRecovery && !actionRecoveryFallbackMode
-                ? undefined : actionConsumePointMode === 'timestamp' ? 'timestamp' : actionStartType}
+                ? undefined : actionStartType}
               placeholder="请选择启动方式"
               loading={actionLoading}
               disabled={actionLoading || (actionShowStateRecoveryReset && !resetFailedStateRecovery)}
@@ -501,14 +528,6 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
               options={syncStartMethodOptions(actionTask?.startPolicy)}
             />
           </Form.Item>
-          {actionConsumePointMode === 'timestamp' && (
-            <>
-              <Form.Item name="sourceStartupTime" label="消费起始时间" rules={[{ required: true, message: '请选择消费起始时间' }, { validator: (_, value) => !value || value.valueOf() <= Date.now() ? Promise.resolve() : Promise.reject(new Error('消费起始时间不能晚于当前时间')) }]}>
-                <DatePicker showTime style={{ width: '100%' }} placeholder="请选择过去的时间" />
-              </Form.Item>
-              <Alert showIcon type="warning" message="本次从指定时间戳开始消费，目标 Paimon 表数据不会清空" description="选择较早时间可能重复消费，选择较晚时间可能跳过事件；时间早于 MySQL Binlog 保留范围时任务会失败。" />
-            </>
-          )}
           {actionShowStateRecoveryReset && (
             <Form.Item label="恢复失败处理">
               <Checkbox checked={resetFailedStateRecovery} onChange={(event) => toggleStateRecoveryFallback(event.target.checked)}>
@@ -519,11 +538,11 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
           <Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' && (
             <>
               <Form.Item name="statePath" label="历史状态" rules={[{ required: true, message: '请选择历史状态' }]}><Select aria-label="历史状态" disabled={actionStartType === 'savepoint' && Boolean(actionRequiredStatePath) && !resetFailedStateRecovery} loading={actionLoading} placeholder="请选择历史状态" notFoundContent={actionStartType === 'checkpoint' ? '暂无可用 Checkpoint' : '暂无可用历史状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item>
-              {actionTask?.startPolicy?.requiredStatePath && !resetFailedStateRecovery && <Alert showIcon type="info" message="将从最近一次正式 Savepoint 恢复" description={actionTask.startPolicy.syncTableSetChanged ? '同步表集合已发生变化，本次只能使用该 Savepoint；恢复失败时可改用 Checkpoint 或按时间戳重置。' : '正式任务后续启动默认延续最近一次成功停止的状态。'} />}
+              {actionTask?.startPolicy?.requiredStatePath && !resetFailedStateRecovery && <Alert showIcon type="info" message="将从最近一次正式 Savepoint 恢复" description="正式任务后续启动可从任务目录中的有效 Savepoint 或 Checkpoint 恢复。" />}
             </>
           )}</Form.Item>
-          {actionTask?.startPolicy?.syncTableSetChanged && actionConsumePointMode === 'default' && (
-            <Alert showIcon type={actionTask.startPolicy.requiredStatePath ? 'info' : 'warning'} message="同步表集合已发生变化" description={resetFailedStateRecovery ? '请选择从 Checkpoint 恢复，或从指定时间戳开始消费。' : '默认从最近一次正式停止产生的 Savepoint 恢复；无法恢复时可选择从 Checkpoint 恢复或从指定时间戳开始消费。'} style={{ marginBottom: 16 }} />
+          {actionTask?.startPolicy?.syncTableSetChanged && (
+            <Alert showIcon type="warning" message="同步表集合已发生变化" description="请选择任务目录中有效的 Savepoint 或 Checkpoint 恢复。" style={{ marginBottom: 16 }} />
           )}
         </Form>
       </Modal>
@@ -546,7 +565,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         </Form>
       </Modal>
 
-      <SyncTaskDetailDrawer task={detail} loading={detailLoading} initialTab={requestedTab} onClose={() => setDetail(undefined)} />
+      <SyncTaskDetailDrawer task={detail} loading={detailLoading} initialTab={requestedTab} onClose={closeDetail} />
     </div>
   );
 }

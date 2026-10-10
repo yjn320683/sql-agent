@@ -65,6 +65,45 @@ class RealtimeSyncRepositoryTest {
     }
 
     @Test
+    void onlineStatusChangesWithoutChangingRuntimeStatus() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L)))
+                .thenReturn(List.of(Map.of("taskStatus", 1, "instanceStatus", "not_running")));
+        when(jdbc.queryForObject(org.mockito.ArgumentMatchers.contains("execution_mode='PRODUCTION'"),
+                eq(Integer.class), eq(8L))).thenReturn(0);
+        when(jdbc.update(org.mockito.ArgumentMatchers.startsWith("UPDATE rt_task SET task_status="),
+                eq(0), eq(8L), eq(1))).thenReturn(1);
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties());
+
+        Map<String, Object> result = repository.updateOnlineStatus(8L, 0, "tester");
+
+        assertEquals(0, result.get("taskStatus"));
+        assertEquals("not_running", result.get("instanceStatus"));
+        verify(jdbc).update(org.mockito.ArgumentMatchers.contains("INSERT INTO rt_task_change_log"),
+                eq(8L), org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull(),
+                org.mockito.ArgumentMatchers.isNull(), org.mockito.ArgumentMatchers.isNull(),
+                eq("tester"), eq("下线"), eq("下线任务"));
+    }
+
+    @Test
+    void activeProductionInstanceBlocksOnlineStatusChange() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L)))
+                .thenReturn(List.of(Map.of("taskStatus", 1, "instanceStatus", "running")));
+        when(jdbc.queryForObject(org.mockito.ArgumentMatchers.contains("execution_mode='PRODUCTION'"),
+                eq(Integer.class), eq(8L))).thenReturn(1);
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties());
+
+        assertThrows(IllegalStateException.class, () -> repository.updateOnlineStatus(8L, 0, "tester"));
+        verify(jdbc, org.mockito.Mockito.never()).update(
+                org.mockito.ArgumentMatchers.startsWith("UPDATE rt_task SET task_status="),
+                org.mockito.ArgumentMatchers.any(), org.mockito.ArgumentMatchers.any(),
+                org.mockito.ArgumentMatchers.any());
+    }
+
+    @Test
     void changeActionsMatchReferenceProjectLabels() {
         assertEquals("创建", RealtimeSyncRepository.normalizeChangeAction("CREATE"));
         assertEquals("编辑", RealtimeSyncRepository.normalizeChangeAction("EDIT"));

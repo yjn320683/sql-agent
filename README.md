@@ -1,6 +1,6 @@
 # SQL Agent
 
-SQL Agent 是数开平台 Claude Code Agent 项目，包含 `front`、`backend`、`agent`、`mcpserver`、`datacompare` 和 `parse-sql` 六个模块。
+SQL Agent 是数开平台 Claude Code Agent 项目，包含前端、后端、Agent、MCP、验数、SQL 解析、数据地图和实时任务模块。
 
 ## 模块
 
@@ -10,6 +10,14 @@ SQL Agent 是数开平台 Claude Code Agent 项目，包含 `front`、`backend`�
 - `mcpserver`：HiveServer2、Metastore、WebHDFS、YARN、MapReduce JobHistory 和 Data Map 只读工具，由 agent 通过 stdio 拉起。
 - `datacompare`：独立 Maven 验数模块，作为 backend 依赖随同一个进程部署，通过 HiveServer2 执行版本验数和 Hive 表对比。
 - `parse-sql`：纯 Java/ANTLR Hive SQL 表级解析依赖，供 backend 和 datacompare 共用，不提供启动入口，不单独部署。
+- `data-map`：数据地图和血缘相关能力。
+- `realtime-backend`：实时任务 API、配置、运行观测和状态对账，作为 backend 依赖部署。
+- `realtime-common`：实时任务提交协议与共享校验逻辑。
+- `realtime-task-submit`：独立 Flink 任务提交 JAR。
+
+实时同步任务参考 `/opt/project/gs/realtime-data-dev`。近期启停与状态恢复逻辑对照参考项目 `0f51d85d`：正式 Savepoint 停止通过 Flink CLI `stop -p` 执行；同步任务从任务状态目录选择有效的 Checkpoint/Savepoint，禁用时间戳启动。CLI 未返回路径时，只有停止前基线之外出现唯一完整 Savepoint，才补记恢复路径。
+
+实时任务主表的状态列按参考项目使用 `task_status`（上下线）、`instance_status`（运行态）和 `deleted_flag`（逻辑删除）。已部署旧表先执行 `realtime-backend/src/main/resources/db/upgrade-20261010-task-online-status.sql`，再执行 `realtime-backend/src/main/resources/db/upgrade-20261010-align-task-status.sql`；第二个脚本也支持尚未执行第一个脚本的旧表。新建库使用 `realtime_sync_schema.sql`。
 
 ## 本地验证
 

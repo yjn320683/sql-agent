@@ -7870,6 +7870,7 @@ body.is-resizing-inspector {
 .realtime-sync-filter-section {
   padding: 14px 12px;
   border-bottom: 0;
+  overflow-x: auto;
 }
 
 .realtime-sync-table-section {
@@ -7949,7 +7950,9 @@ body.is-resizing-inspector {
 
 .realtime-sync-query-filter {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr)) auto;
+  width: 100%;
+  min-width: 1140px;
+  grid-template-columns: minmax(280px, 1.2fr) minmax(220px, .85fr) minmax(220px, .85fr) auto;
   gap: 16px 20px;
   align-items: center;
 }
@@ -7975,6 +7978,8 @@ body.is-resizing-inspector {
 }
 
 .realtime-sync-filter-actions {
+  grid-column: 4;
+  grid-row: 1;
   justify-self: end;
   white-space: nowrap;
 }
@@ -9334,15 +9339,6 @@ body.is-resizing-inspector {
 @media (max-width: 1400px) {
   .realtime-filter-grid {
     grid-template-columns: repeat(4, minmax(150px, 1fr));
-  }
-
-  .realtime-sync-query-filter {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
-  .realtime-sync-filter-actions {
-    justify-self: stretch;
-    justify-content: flex-end;
   }
 
 }

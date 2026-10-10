@@ -96,9 +96,9 @@ public class OverviewService {
                 + "WHERE archived=0 AND (updated_by=? OR created_by=?) ORDER BY update_time DESC LIMIT 8", actor, actor));
         rows.addAll(jdbc.queryForList("SELECT CONCAT('realtime-task-',t.id) itemKey,'REALTIME_TASK' objectType,t.id objectId,"
                 + "t.task_name title,CONCAT(CASE t.task_type WHEN 'sync' THEN '同步' WHEN 'compute' THEN '计算' ELSE '出仓' END,"
-                + "' · 负责人：',t.owner) subtitle,t.status,t.update_time occurredAt,CONCAT(CASE t.task_type WHEN 'sync' "
+                + "' · 负责人：',t.owner) subtitle,t.instance_status status,t.update_time occurredAt,CONCAT(CASE t.task_type WHEN 'sync' "
                 + "THEN '/realtime/sync-tasks' WHEN 'compute' THEN '/realtime/compute' ELSE '/realtime/export' END,"
-                + "'?taskId=',t.id) route FROM rt_task t WHERE t.status<>'deleted' AND (t.owner=? OR EXISTS "
+                + "'?taskId=',t.id) route FROM rt_task t WHERE t.deleted_flag=0 AND (t.owner=? OR EXISTS "
                 + "(SELECT 1 FROM rt_task_change_log l WHERE l.task_id=t.id AND l.operator=?)) "
                 + "ORDER BY t.update_time DESC LIMIT 8", actor, actor));
         rows.sort(Comparator.comparing(this::timeOf, Comparator.nullsLast(Comparator.reverseOrder())));
@@ -113,12 +113,12 @@ public class OverviewService {
                 + "FROM sql_task t JOIN sql_task_execution e ON e.task_id=t.id AND e.submitted_at>=DATE_SUB(NOW(),INTERVAL 30 DAY) "
                 + "WHERE t.archived=0 GROUP BY t.id,t.name,t.enabled ORDER BY frequency DESC,occurredAt DESC LIMIT 8"));
         rows.addAll(jdbc.queryForList("SELECT CONCAT('realtime-task-',t.id) itemKey,'REALTIME_TASK' objectType,t.id objectId,"
-                + "t.task_name title,CONCAT(COUNT(i.id),' 次运行') subtitle,t.status,MAX(i.create_time) occurredAt,"
+                + "t.task_name title,CONCAT(COUNT(i.id),' 次运行') subtitle,t.instance_status status,MAX(i.create_time) occurredAt,"
                 + "CONCAT(CASE t.task_type WHEN 'sync' THEN '/realtime/sync-tasks' WHEN 'compute' THEN '/realtime/compute' "
                 + "ELSE '/realtime/export' END,'?taskId=',t.id) route,COUNT(i.id) frequency FROM rt_task t "
                 + "JOIN rt_task_instance i ON i.task_id=t.id AND i.execution_mode='PRODUCTION' "
-                + "AND i.create_time>=DATE_SUB(NOW(),INTERVAL 30 DAY) WHERE t.status<>'deleted' "
-                + "GROUP BY t.id,t.task_name,t.task_type,t.status ORDER BY frequency DESC,occurredAt DESC LIMIT 8"));
+                + "AND i.create_time>=DATE_SUB(NOW(),INTERVAL 30 DAY) WHERE t.deleted_flag=0 "
+                + "GROUP BY t.id,t.task_name,t.task_type,t.instance_status ORDER BY frequency DESC,occurredAt DESC LIMIT 8"));
         rows.sort(Comparator.comparingLong(this::frequencyOf).reversed()
                 .thenComparing(this::timeOf, Comparator.nullsLast(Comparator.reverseOrder())));
         return rows.subList(0, Math.min(10, rows.size()));

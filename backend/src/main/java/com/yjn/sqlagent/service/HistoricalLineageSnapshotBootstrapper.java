@@ -94,7 +94,7 @@ public class HistoricalLineageSnapshotBootstrapper implements LineageSnapshotBoo
                 "SELECT t.id taskId,t.task_type taskType,v.id versionId,v.version_no versionNo,v.config "
                         + "FROM rt_task t JOIN rt_task_version v ON v.id=(SELECT v2.id FROM rt_task_version v2 "
                         + "WHERE v2.task_id=t.id ORDER BY v2.version_no DESC,v2.id DESC LIMIT 1) "
-                        + "WHERE t.status<>'deleted' AND NOT EXISTS (SELECT 1 FROM task_lineage_snapshot s "
+                        + "WHERE t.deleted_flag=0 AND NOT EXISTS (SELECT 1 FROM task_lineage_snapshot s "
                         + "WHERE s.task_scope='REALTIME' AND s.task_id=t.id AND s.version_no=v.version_no) "
                         + "ORDER BY t.id LIMIT ?", limit);
         int completed = 0;

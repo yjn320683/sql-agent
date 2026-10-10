@@ -19,6 +19,7 @@ import javax.validation.Valid;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -60,6 +61,7 @@ public class RealtimeUnifiedTaskController {
         Map<String, String> query = new LinkedHashMap<>();
         put(query, "page", input.get("pageNo")); put(query, "pageSize", input.get("pageSize"));
         put(query, "keyword", input.get("keyword")); put(query, "status", input.get("status"));
+        put(query, "taskStatus", input.get("taskStatus")); put(query, "instanceStatus", input.get("instanceStatus"));
         put(query, "owner", input.get("owner")); put(query, "lastOperator", input.get("lastOperator"));
         put(query, "sourceServerId", input.get("sourceServerId"));
         String source = filterKeyword(input.get("sourceKeyword"), "来源关键字");
@@ -118,6 +120,16 @@ public class RealtimeUnifiedTaskController {
     @PostMapping("/{id}/delete")
     public RealtimeResponse<Void> delete(@PathVariable long id) {
         String actor=actors.requireActor(); String type=taskType(id); if("sync".equals(type))repository.deleteTask(id,actor);else definitionRepository.delete(id,actor);return RealtimeResponse.success(null);
+    }
+
+    @PutMapping("/{id}/task-status")
+    public RealtimeResponse<Map<String, Object>> updateTaskStatus(@PathVariable long id,
+            @RequestBody Map<String, Object> input) {
+        String actor = actors.requireActor();
+        taskType(id);
+        Object value = input.get("taskStatus");
+        if (!(value instanceof Number)) throw new IllegalArgumentException("任务状态只能为 0 或 1");
+        return RealtimeResponse.success(repository.updateOnlineStatus(id, ((Number) value).intValue(), actor));
     }
 
     @GetMapping("/{id}/detail")
@@ -201,10 +213,9 @@ public class RealtimeUnifiedTaskController {
             Map<String, Object> startPolicy = new LinkedHashMap<>();
             startPolicy.put("productionLocked", Boolean.TRUE.equals(policy.get("productionLocked")));
             startPolicy.put("syncTableSetChanged", Boolean.TRUE.equals(policy.get("syncTableSetChanged")));
-            startPolicy.put("requiredStartType", policy.get("requiredStartType"));
-            startPolicy.put("requiredStatePath", policy.get("requiredStatePath"));
-            startPolicy.put("canResetConsumptionPoint", Boolean.TRUE.equals(policy.get("productionLocked"))
-                    && text(policy.get("requiredStartType")).isEmpty());
+            startPolicy.put("requiredStartType", null);
+            startPolicy.put("requiredStatePath", null);
+            startPolicy.put("canResetConsumptionPoint", false);
             result.put("startPolicy", startPolicy);
         }
         return RealtimeResponse.success(result);
@@ -387,6 +398,9 @@ public class RealtimeUnifiedTaskController {
     }
     private String enableBlockedReason(long taskId) {
         String type = taskType(taskId);
+        if (!repository.isOnline(taskId)) {
+            return "任务已下线，请先上线再启动";
+        }
         if (repository.hasActiveProductionInstance(taskId)) return "任务已有活动正式实例，不能重复启用";
         Long latestVersionId = repository.latestVersionId(taskId);
         Map<String, Object> latestDebug = null;
@@ -404,52 +418,23 @@ public class RealtimeUnifiedTaskController {
         boolean successful = "killed_success".equals(status)
                 || (!"sync".equals(type) && "finished".equals(status));
         if (!successful) return "最新调试实例未成功，请重新调试";
-        // 同步表集合变化但没有 Savepoint 时仍允许打开启动弹窗，
-        // 用户可显式选择异常实例 Checkpoint 或按时间戳重置消费点。
+        // 恢复点由启动弹窗查询任务存储目录，实例记录不决定可选路径。
         return "";
     }
     private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
         Map<String, Object> policy = repository.editPolicy(taskId);
         if (action.getSourceStartupTimestampMillis() != null) {
-            if (!Boolean.TRUE.equals(policy.get("productionLocked"))) {
-                throw new IllegalArgumentException("首次正式启动必须执行 initial 全量快照，不能按时间戳重置消费点");
-            }
+            throw new IllegalArgumentException("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复");
+        }
+        if (List.of("checkpoint", "savepoint").contains(text(action.getStartType()).toLowerCase())) {
             return;
         }
-        if ("checkpoint".equalsIgnoreCase(text(action.getStartType()))) {
-            if (!belongsToProductionCheckpoint(taskId, text(action.getStatePath()))) {
-                throw new IllegalArgumentException("请选择当前任务正式实例的有效 Checkpoint");
-            }
-            return;
+        if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
+            throw new IllegalStateException("增删同步表后必须从有效的 Savepoint 或 Checkpoint 恢复");
         }
-        String requiredPath = text(policy.get("requiredStatePath"));
-        if (requiredPath.isEmpty()) {
-            if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
-                throw new IllegalStateException("增删同步表后必须使用指定 Savepoint、Checkpoint 或按时间戳重置消费点启动");
-            }
-            if (Boolean.TRUE.equals(policy.get("productionLocked"))
-                    && "direct".equalsIgnoreCase(text(action.getStartType()))) {
-                throw new IllegalArgumentException(
-                        "任务已存在正式实例，不能再次首次全量同步；请从 Savepoint、Checkpoint 或指定时间戳启动");
-            }
-            return;
+        if (Boolean.TRUE.equals(policy.get("productionLocked"))) {
+            throw new IllegalArgumentException("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint 或 Checkpoint 启动");
         }
-        if (!"savepoint".equalsIgnoreCase(text(action.getStartType()))) {
-            throw new IllegalArgumentException("存在可恢复的正式 Savepoint，必须从该 Savepoint 启动或显式重置消费点");
-        }
-        if (!requiredPath.equals(text(action.getStatePath()))) {
-            throw new IllegalArgumentException("只能使用最近一次正式停止产生的 Savepoint：" + requiredPath);
-        }
-    }
-    private boolean belongsToProductionCheckpoint(long taskId, String path) {
-        if (path.isEmpty()) return false;
-        for (Map<String, Object> instance : repository.instances(taskId)) {
-            if (!"PRODUCTION".equalsIgnoreCase(text(instance.get("executionMode")))) continue;
-            String jobId = text(instance.get("jobId"));
-            if (jobId.isEmpty()) continue;
-            for (String part : path.replace('\\', '/').split("/")) if (jobId.equals(part)) return true;
-        }
-        return false;
     }
     private Map<String, Object> capabilities() {
         Map<String, Object> result = new LinkedHashMap<>();

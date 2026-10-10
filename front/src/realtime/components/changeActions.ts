@@ -2,6 +2,8 @@ const actionAliases: Record<string, string> = {
   CREATE: '创建',
   EDIT: '编辑',
   DELETE: '删除',
+  ONLINE: '上线',
+  OFFLINE: '下线',
   START: '启动',
   STOP: '停止',
   STATUS_SYNC: '状态同步',
@@ -19,7 +21,7 @@ export const normalizeChangeAction = (action?: string) => {
   return (actionAliases[value] ?? actionAliases[value.toUpperCase()] ?? value) || '-';
 };
 
-const actionOrder = ['创建', '编辑', '删除', '启动', '停止', '状态同步'];
+const actionOrder = ['创建', '编辑', '上线', '下线', '删除', '启动', '停止', '状态同步'];
 
 export const availableChangeActions = (actions: Array<string | undefined>) => {
   const existing = new Set(actions.map(normalizeChangeAction).filter((value) => actionOrder.includes(value)));
