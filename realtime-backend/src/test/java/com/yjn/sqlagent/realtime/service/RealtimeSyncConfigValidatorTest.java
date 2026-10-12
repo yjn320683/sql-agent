@@ -70,9 +70,14 @@ class RealtimeSyncConfigValidatorTest {
     void rejectsMissingKeyAndPartitionCoveringAllKeys() {
         when(servers.schemas(3L, List.of("orders"))).thenReturn(
                 Map.of("orders", schema("orders", List.of())));
-        assertEquals("MySQL CDC 源表无主键，请配置私有主键：orders",
+        assertEquals("MySQL CDC 源表无物理主键，当前 mysql_sync_database 暂不支持：orders",
                 assertThrows(IllegalArgumentException.class,
                         () -> validator.validate("mysql-cdc", 3L, validConfig())).getMessage());
+        Map<String, Object> customKey = validConfig();
+        cdc(customKey).put("tableConfigs", Map.of("orders", Map.of("primaryKeys", List.of("id"))));
+        assertEquals("MySQL CDC 源表无物理主键，当前 mysql_sync_database 暂不支持：orders",
+                assertThrows(IllegalArgumentException.class,
+                        () -> validator.validate("mysql-cdc", 3L, customKey)).getMessage());
 
         when(servers.schemas(3L, List.of("orders"))).thenReturn(
                 Map.of("orders", schema("orders", List.of("id"))));

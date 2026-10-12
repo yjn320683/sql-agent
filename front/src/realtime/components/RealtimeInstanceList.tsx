@@ -6,7 +6,7 @@ import InstanceListToolbar, { type InstanceSearchField, type InstanceSortOrder }
 import InstanceLogPanel from './InstanceLogPanel';
 import TaskInstanceProgressCell from './TaskInstanceProgressCell';
 
-const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
+const ACTIVE = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
 const RECOVERABLE = ['failed', 'canceled', 'finished', 'killed_success'];
 
 export const realtimeInstanceStatusLabel: Record<string, string> = {
@@ -45,6 +45,7 @@ interface Props {
   header?: ReactNode;
   syncPlaceholders?: boolean;
   showDebugReport?: boolean;
+  showModeFilter?: boolean;
   stoppableStatuses?: string[];
   onRefresh: () => void;
   onInspect: (instance: TaskInstance) => void;
@@ -55,38 +56,42 @@ interface Props {
 
 /** 三类实时任务共用实例筛选、排序、日志和操作规则；类型私有操作通过 renderExtraActions 注入。 */
 export default function RealtimeInstanceList({ taskId, instances, loading, stoppingInstanceId, header,
-  syncPlaceholders = false, showDebugReport = false, stoppableStatuses = ACTIVE,
+  syncPlaceholders = false, showDebugReport = false, showModeFilter = false, stoppableStatuses = ACTIVE,
   onRefresh, onInspect, onRecover, onStop, renderExtraActions }: Props) {
   const [keyword, setKeyword] = useState('');
   const [status, setStatus] = useState('all');
+  const [modeFilter, setModeFilter] = useState('all');
   const [searchField, setSearchField] = useState<InstanceSearchField>('all');
   const [sortOrder, setSortOrder] = useState<InstanceSortOrder>('startedAtDesc');
   const [logInstance, setLogInstance] = useState<TaskInstance>();
 
-  useEffect(() => { setKeyword(''); setStatus('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setLogInstance(undefined); }, [taskId]);
+  useEffect(() => { setKeyword(''); setStatus('all'); setModeFilter('all'); setSearchField('all'); setSortOrder('startedAtDesc'); setLogInstance(undefined); }, [taskId]);
   useEffect(() => {
     if (!logInstance) return;
     const latest = instances.find((item) => item.id === logInstance.id);
     if (latest && latest !== logInstance) setLogInstance(latest);
   }, [instances, logInstance]);
 
-  const rows = useMemo(() => filterAndSortInstances(instances, keyword, searchField, status, sortOrder),
-    [instances, keyword, searchField, sortOrder, status]);
+  const rows = useMemo(() => filterAndSortInstances(instances.filter((item) => modeFilter === 'all'
+    || item.executionMode === modeFilter), keyword, searchField, status, sortOrder),
+    [instances, keyword, searchField, sortOrder, status, modeFilter]);
   if (logInstance) return <InstanceLogPanel taskId={taskId} instance={logInstance} backLabel="返回实例列表" onBack={() => setLogInstance(undefined)} />;
 
   const pending = (value: string | undefined, row: TaskInstance, activeText: string) => value || (syncPlaceholders && ACTIVE.includes(row.status) ? activeText : '-');
   return <>{header}
     <InstanceListToolbar keyword={keyword} searchField={searchField} status={status} sortOrder={sortOrder}
+      mode={showModeFilter ? modeFilter : undefined} onModeChange={showModeFilter ? setModeFilter : undefined}
       statusOptions={[{ label: '全部状态', value: 'all' }, ...Object.entries(realtimeInstanceStatusLabel).map(([value, label]) => ({ value, label }))]}
       loading={Boolean(loading)} refreshLabel="刷新实例" onKeywordChange={setKeyword} onSearchFieldChange={setSearchField}
       onStatusChange={setStatus} onSortOrderChange={setSortOrder}
-      onReset={() => { setKeyword(''); setSearchField('all'); setStatus('all'); setSortOrder('startedAtDesc'); }} onRefresh={onRefresh} />
+      onReset={() => { setKeyword(''); setSearchField('all'); setStatus('all'); setModeFilter('all'); setSortOrder('startedAtDesc'); }} onRefresh={onRefresh} />
     <Table rowKey="id" size="small" loading={loading} dataSource={rows}
       pagination={{ pageSize: 6, showSizeChanger: true, pageSizeOptions: [6, 10, 20], showTotal: (value) => `共 ${value} 条` }}
       locale={{ emptyText: '暂无运行实例' }} scroll={{ x: showDebugReport ? 1940 : 1870 }} columns={[
         { title: '实例 ID', dataIndex: 'id', width: 90, fixed: 'left' as const },
         { title: '状态', dataIndex: 'status', width: 130, fixed: 'left' as const, render: (value: string) => <Tag color={statusColor[value]}>{realtimeInstanceStatusLabel[value] ?? value}</Tag> },
-        { title: '运行模式', dataIndex: 'executionMode', width: 110, render: (value: string) => <Tag color={value === 'DEBUG' ? 'blue' : undefined}>{value === 'DEBUG' ? '调试' : '正式'}</Tag> },
+        { title: showModeFilter ? '是否调试' : '运行模式', dataIndex: 'executionMode', width: 110,
+          render: (value: string) => <Tag color={value === 'DEBUG' ? 'blue' : undefined}>{showModeFilter ? (value === 'DEBUG' ? '是' : '否') : (value === 'DEBUG' ? '调试' : '正式')}</Tag> },
         { title: '进度', width: 190, render: (_: unknown, row: TaskInstance) => <TaskInstanceProgressCell taskId={taskId} instance={row} /> },
         { title: 'JobID', dataIndex: 'jobId', width: 260, ellipsis: true, render: (value: string, row: TaskInstance) => pending(value, row, '同步中') },
         { title: 'YARN Application ID', dataIndex: 'yarnApplicationId', width: 220, ellipsis: true, render: (value: string, row: TaskInstance) => pending(value, row, '提交中') },
@@ -97,10 +102,10 @@ export default function RealtimeInstanceList({ taskId, instances, loading, stopp
         { title: '开始时间', dataIndex: 'startedAt', width: 180, render: (value: string) => value || '-' },
         { title: '结束时间', dataIndex: 'endedAt', width: 180, render: (value: string, row: TaskInstance) => value || (ACTIVE.includes(row.status) ? '运行中' : '-') },
         { title: '操作', fixed: 'right' as const, width: renderExtraActions ? 330 : 280, render: (_: unknown, row: TaskInstance) => <Space size={12}>
-          <Typography.Link onClick={() => onInspect(row)}>实例配置</Typography.Link><Typography.Link onClick={() => setLogInstance(row)}>日志</Typography.Link>
+          <Typography.Link onClick={() => onInspect(row)}>{row.executionMode === 'DEBUG' ? '调试配置' : '实例配置'}</Typography.Link><Typography.Link onClick={() => setLogInstance(row)}>日志</Typography.Link>
           {renderExtraActions?.(row)}
           {row.executionMode !== 'DEBUG' && RECOVERABLE.includes(row.status) && <Typography.Link disabled={!row.managed} onClick={() => onRecover(row)}>恢复</Typography.Link>}
-          {row.executionMode !== 'DEBUG' && stoppableStatuses.includes(row.status) && <Typography.Link type="danger" disabled={!row.managed || stoppingInstanceId === row.id} onClick={() => onStop(row)}>停止</Typography.Link>}
+          {stoppableStatuses.includes(row.status) && <Typography.Link type="danger" disabled={!row.managed || stoppingInstanceId === row.id} onClick={() => onStop(row)}>停止</Typography.Link>}
         </Space> },
       ]} />
   </>;

@@ -35,6 +35,14 @@ app:
     paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:./lib/paimon-flink-action-1.4.2.jar}
     paimon-warehouse: ${PAIMON_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:hdfs://127.0.0.1:8020/data/warehouse/paimon_debug}
+    ddl-report-url: ${SYNC_DDL_REPORT_URL:}
+    ddl-report-token: ${SYNC_DDL_REPORT_TOKEN:}
+    ddl-reporter-compatible: ${SYNC_DDL_REPORTER_COMPATIBLE:false}
+    ddl-reporter-action-sha256: ${SYNC_DDL_ACTION_SHA256:}
+    ddl-reporter-cdc-jar-path: ${SYNC_DDL_CDC_JAR_PATH:}
+    ddl-reporter-cdc-sha256: ${SYNC_DDL_CDC_SHA256:}
+    ddl-reporter-flink-jar-path: ${SYNC_DDL_FLINK_JAR_PATH:}
+    ddl-reporter-flink-sha256: ${SYNC_DDL_FLINK_SHA256:}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:hdfs://127.0.0.1:8020/flink/checkpoints/sql-agent}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:hdfs://127.0.0.1:8020/flink/savepoints/sql-agent}
     catalog-conf:
@@ -43,6 +51,9 @@ app:
       hive.metastore.uri.selection: SEQUENTIAL
     mysql-default-conf:
       server-time-zone: Asia/Shanghai
+  sync:
+    ddl-exception:
+      report-token: ${SYNC_DDL_REPORT_TOKEN:}
   task-execution-log:
     dir: ${TASK_EXECUTION_LOG_DIR:./logs/task-executions}
   sql-log:

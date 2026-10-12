@@ -33,6 +33,8 @@ interface Props {
   loading: boolean;
   refreshLabel: string;
   primaryAction?: ReactNode;
+  mode?: string;
+  onModeChange?: (value: string) => void;
   onKeywordChange: (value: string) => void;
   onSearchFieldChange: (value: InstanceSearchField) => void;
   onStatusChange: (value: string) => void;
@@ -42,7 +44,8 @@ interface Props {
 }
 
 export default function InstanceListToolbar(props: Props) {
-  const changed = Boolean(props.keyword.trim()) || props.searchField !== 'all' || props.status !== 'all' || props.sortOrder !== 'startedAtDesc';
+  const changed = Boolean(props.keyword.trim()) || props.searchField !== 'all' || props.status !== 'all'
+    || props.sortOrder !== 'startedAtDesc' || Boolean(props.mode && props.mode !== 'all');
   return <div className="instance-list-toolbar">
     <div className="instance-list-toolbar-query">
       <Space.Compact className="instance-list-search-group">
@@ -50,6 +53,9 @@ export default function InstanceListToolbar(props: Props) {
         <Input allowClear aria-label="实例搜索关键词" prefix={<SearchOutlined />} placeholder={searchPlaceholders[props.searchField]} value={props.keyword} onChange={(event) => props.onKeywordChange(event.target.value)} />
       </Space.Compact>
       <Select aria-label="实例状态" className="instance-list-status-filter" value={props.status} options={props.statusOptions} onChange={props.onStatusChange} />
+      {props.onModeChange && <Select aria-label="是否调试" className="instance-list-status-filter" value={props.mode ?? 'all'}
+        options={[{ label: '全部实例', value: 'all' }, { label: '正式', value: 'PRODUCTION' }, { label: '调试', value: 'DEBUG' }]}
+        onChange={props.onModeChange} />}
       <Select aria-label="实例排序" className="instance-list-sort" value={props.sortOrder} options={sortOptions} onChange={props.onSortOrderChange} />
     </div>
     <div className="instance-list-toolbar-actions">

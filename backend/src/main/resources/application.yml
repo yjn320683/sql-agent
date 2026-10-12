@@ -47,8 +47,19 @@ app:
     paimon-action-jar-path: ${PAIMON_ACTION_JAR_PATH:}
     paimon-warehouse: ${PAIMON_WAREHOUSE:}
     paimon-debug-warehouse: ${PAIMON_DEBUG_WAREHOUSE:}
+    ddl-report-url: ${SYNC_DDL_REPORT_URL:}
+    ddl-report-token: ${SYNC_DDL_REPORT_TOKEN:}
+    ddl-reporter-compatible: ${SYNC_DDL_REPORTER_COMPATIBLE:false}
+    ddl-reporter-action-sha256: ${SYNC_DDL_ACTION_SHA256:}
+    ddl-reporter-cdc-jar-path: ${SYNC_DDL_CDC_JAR_PATH:}
+    ddl-reporter-cdc-sha256: ${SYNC_DDL_CDC_SHA256:}
+    ddl-reporter-flink-jar-path: ${SYNC_DDL_FLINK_JAR_PATH:}
+    ddl-reporter-flink-sha256: ${SYNC_DDL_FLINK_SHA256:}
     checkpoint-dir: ${FLINK_CHECKPOINT_DIR:}
     savepoint-dir: ${FLINK_SAVEPOINT_DIR:}
     sync-delay-ms: ${REALTIME_SYNC_DELAY_MS:10000}
     state-sync-enabled: ${REALTIME_STATE_SYNC_ENABLED:true}
     debug-success-min-running-minutes: ${REALTIME_DEBUG_SUCCESS_MIN_RUNNING_MINUTES:2}
+  sync:
+    ddl-exception:
+      report-token: ${SYNC_DDL_REPORT_TOKEN:}

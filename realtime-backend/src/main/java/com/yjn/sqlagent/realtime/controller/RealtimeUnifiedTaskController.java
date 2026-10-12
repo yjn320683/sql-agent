@@ -249,7 +249,8 @@ public class RealtimeUnifiedTaskController {
             @RequestParam(defaultValue = "PRODUCTION") String executionMode) {
         actors.requireActor(); List<Map<String, Object>> result = new ArrayList<>();
         for (Map<String, Object> instance : repository.instances(id)) {
-            if (executionMode.equalsIgnoreCase(text(instance.get("executionMode")))) result.add(instance);
+            if ("ALL".equalsIgnoreCase(executionMode)
+                    || executionMode.equalsIgnoreCase(text(instance.get("executionMode")))) result.add(instance);
         }
         return RealtimeResponse.success(result);
     }
@@ -257,7 +258,11 @@ public class RealtimeUnifiedTaskController {
     @GetMapping("/{id}/instances/{instanceId}/config")
     public RealtimeResponse<Object> config(@PathVariable long id, @PathVariable long instanceId) {
         actors.requireActor();
-        return RealtimeResponse.success(unifiedInstanceConfig(id, repository.requiredInstance(id, instanceId).get("config")));
+        if ("sync".equalsIgnoreCase(taskType(id))) {
+            return RealtimeResponse.success(repository.requiredInstanceConfig(id, instanceId));
+        }
+        return RealtimeResponse.success(unifiedInstanceConfig(id,
+                repository.requiredInstance(id, instanceId).get("config")));
     }
     @GetMapping("/{id}/instances/{instanceId}/startup-log") public RealtimeResponse<Map<String, Object>> startup(@PathVariable long id, @PathVariable long instanceId) { actors.requireActor(); return RealtimeResponse.success(Map.of("startupLog", text(repository.requiredInstance(id, instanceId).get("startupLog")))); }
     @GetMapping("/{id}/instances/{instanceId}/runtime-log") public RealtimeResponse<Object> runtimeLog(@PathVariable long id, @PathVariable long instanceId, @RequestParam(required = false) String component, @RequestParam(required = false) String taskManagerId) { actors.requireActor(); String selected = "taskmanager".equalsIgnoreCase(component) && !text(taskManagerId).isEmpty() ? "taskmanager:" + taskManagerId : component; return RealtimeResponse.success(runtime.logs(id, instanceId, selected, null)); }
@@ -373,9 +378,6 @@ public class RealtimeUnifiedTaskController {
         if (!(value instanceof Map)) return value;
         @SuppressWarnings("unchecked") Map<String, Object> source = new LinkedHashMap<>((Map<String, Object>) value);
         if (source.containsKey("alarmConfig") && source.containsKey("flinkConf")) {
-            if (text(source.get("sourceServerName")).isEmpty()) {
-                source.put("sourceServerName", repository.sourceServerName(taskId));
-            }
             return source;
         }
         Object nested = source.get("task");
@@ -385,9 +387,6 @@ public class RealtimeUnifiedTaskController {
         }
         if (!source.containsKey("taskConfig")) return value;
         Map<String, Object> result = unifiedDetail(source);
-        if (text(result.get("sourceServerName")).isEmpty()) {
-            result.put("sourceServerName", repository.sourceServerName(taskId));
-        }
         return result;
     }
     private long latestManagedActive(long taskId, String mode) {
@@ -455,7 +454,19 @@ public class RealtimeUnifiedTaskController {
         return normalized;
     }
     private void put(Map<String, String> target, String key, Object value) { if (value != null && !text(value).isEmpty()) target.put(key, text(value)); }
-    private Double memoryGb(Object value) { String text = text(value).toLowerCase().replace("gb", "").replace("g", ""); try { return text.isEmpty() ? null : Double.valueOf(text); } catch (NumberFormatException ex) { return null; } }
+    private Double memoryGb(Object value) {
+        java.util.regex.Matcher match = java.util.regex.Pattern.compile(
+                "(?i)^([0-9]+(?:\\.[0-9]+)?)\\s*(B|K(?:I?B)?|M(?:I?B)?|G(?:I?B)?|T(?:I?B)?)?$")
+                .matcher(text(value));
+        if (!match.matches()) return null;
+        String unit = match.group(2) == null ? "G" : match.group(2).toUpperCase(java.util.Locale.ROOT);
+        double amount = Double.parseDouble(match.group(1));
+        if (unit.startsWith("B")) return amount / (1024d * 1024d * 1024d);
+        if (unit.startsWith("K")) return amount / (1024d * 1024d);
+        if (unit.startsWith("M")) return amount / 1024d;
+        if (unit.startsWith("T")) return amount * 1024d;
+        return amount;
+    }
     private int selectedTableCount(com.yjn.sqlagent.realtime.model.SyncTaskRequest request) {
         if (request == null || request.getTaskConfig() == null) return 0;
         Object cdcValue = request.getTaskConfig().get("cdcConfig");

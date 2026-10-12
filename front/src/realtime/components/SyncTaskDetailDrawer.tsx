@@ -1,8 +1,8 @@
 import { CheckOutlined, ReloadOutlined } from '@ant-design/icons';
 import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDirtyRecords, listSyncSchemaChanges, listVersions, resolveSyncDirtyRecord, stopInstance } from '../api';
-import type { RealtimeAlert, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
+import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDdlExceptions, listSyncDirtyRecords, listSyncSchemaChanges, listVersions, resolveSyncDirtyRecord, stopInstance } from '../api';
+import type { RealtimeAlert, SyncDdlException, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
 import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
 import RealtimeDiagnosticPanel from './RealtimeDiagnosticPanel';
@@ -10,6 +10,7 @@ import RealtimeRecoveryModal from './RealtimeRecoveryModal';
 import { normalizeChangeAction } from './changeActions';
 import { selectRuntimeInstance } from './runtimeSelection';
 import SyncTaskConfigDetail from './SyncTaskConfigDetail';
+import SyncTaskSnapshotModal from './SyncTaskSnapshotModal';
 import { syncStartMethodLabel } from './syncStartMethod';
 import RealtimeTaskDetailDrawer from './RealtimeTaskDetailDrawer';
 import RealtimeAlertTable from './RealtimeAlertTable';
@@ -26,8 +27,8 @@ interface Props {
   onClose: () => void;
 }
 
-const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
-const STOPPABLE = ['submitting', 'running', 'restarting'];
+const ACTIVE = ['submitting', 'running', 'debug_success_running', 'stopping', 'restarting'];
+const STOPPABLE = ['submitting', 'running', 'debug_success_running', 'restarting'];
 const statusLabel: Record<string, string> = {
   submitting: '提交中', running: '运行中', debug_success_running: '运行中(调试成功)', stopping: '停止中', restarting: '重启中',
   canceled: '已取消', killed_success: '已停止(调试成功)', finished: '已完成', failed: '失败', not_running: '未运行',
@@ -56,7 +57,7 @@ const stopMethodLabels: Record<string, string> = {
   yarn_kill: 'YARN application kill', none: '无活动实例',
 };
 
-export const ChangeDetailContent = ({ detail, sourceServerName }: { detail: Record<string, unknown>; sourceServerName?: string }) => {
+export const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown> }) => {
   const kind = String(detail.detailKind ?? '').toLowerCase();
   const operation = objectValue(detail.operation);
   const request = objectValue(operation.request);
@@ -67,10 +68,10 @@ export const ChangeDetailContent = ({ detail, sourceServerName }: { detail: Reco
     const changedPaths = diffs.map((diff) => String(diff.path ?? '')).filter(Boolean);
     return <div className="task-change-detail-split">
       <section className="task-change-detail-pane"><Typography.Title level={5}>变更前</Typography.Title>
-        {detail.beforeConfig ? <SyncTaskConfigDetail value={detail.beforeConfig} highlightPaths={changedPaths} compareMode sourceServerName={sourceServerName} /> : <Empty description="缺少变更前版本" />}
+        {detail.beforeConfig ? <SyncTaskConfigDetail value={detail.beforeConfig} highlightPaths={changedPaths} compareMode /> : <Empty description="缺少变更前版本" />}
       </section>
       <section className="task-change-detail-pane"><Typography.Title level={5}>变更后</Typography.Title>
-        {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} highlightPaths={changedPaths} compareMode sourceServerName={sourceServerName} /> : <Empty description="缺少变更后版本" />}
+        {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} highlightPaths={changedPaths} compareMode /> : <Empty description="缺少变更后版本" />}
       </section>
     </div>;
   }
@@ -86,7 +87,7 @@ export const ChangeDetailContent = ({ detail, sourceServerName }: { detail: Reco
       <Descriptions.Item label="历史状态" span={2}>{displayValue(request.statePath)}</Descriptions.Item>
       <Descriptions.Item label="YARN Application ID" span={2}>{displayValue(result.yarnApplicationId ?? instance.yarnApplicationId)}</Descriptions.Item>
     </Descriptions>
-    {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} sourceServerName={sourceServerName} /> : <Empty description="缺少启动使用参数" />}
+    {detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} /> : <Empty description="缺少启动使用参数" />}
   </Space>;
   if (kind === 'stop') return <Space direction="vertical" size={16} style={{ width: '100%' }}>
     <Descriptions bordered size="small" column={2} className="task-change-operation-descriptions">
@@ -106,7 +107,7 @@ export const ChangeDetailContent = ({ detail, sourceServerName }: { detail: Reco
     {Boolean(operation.errorMessage) && <Alert type="error" showIcon message={displayValue(operation.errorMessage)} />}
     {Boolean(result.output) && <Input.TextArea value={displayValue(result.output)} readOnly rows={12} wrap="off" />}
   </Space>;
-  if (kind === 'create') return detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} sourceServerName={sourceServerName} /> : <Empty description="缺少创建版本" />;
+  if (kind === 'create') return detail.afterConfig ? <SyncTaskConfigDetail value={detail.afterConfig} /> : <Empty description="缺少创建版本" />;
   return <Typography.Paragraph>{displayValue(detail.detail ?? detail.summary)}</Typography.Paragraph>;
 };
 
@@ -125,7 +126,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   const [stoppingInstanceId, setStoppingInstanceId] = useState<number>();
   const [recoverySource, setRecoverySource] = useState<TaskInstance>();
   const [stopTarget, setStopTarget] = useState<TaskInstance>();
-  const [inspector, setInspector] = useState<{ title: string; kind?: InstanceInspectorKind; value: unknown }>();
+  const [inspector, setInspector] = useState<{ title: string; kind?: InstanceInspectorKind; value: unknown; instanceId?: number; loadError?: string }>();
   const [inspectorLoading, setInspectorLoading] = useState(false);
   const [changeDetail, setChangeDetail] = useState<Record<string, unknown>>();
   const [changeDetailLoadingId, setChangeDetailLoadingId] = useState<number>();
@@ -138,23 +139,23 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   const [dirtyPageNo, setDirtyPageNo] = useState(1);
   const [unresolvedOnly, setUnresolvedOnly] = useState(true);
   const [schemaChanges, setSchemaChanges] = useState<SyncSchemaChange[]>([]);
+  const [ddlExceptions, setDdlExceptions] = useState<SyncDdlException[]>([]);
   const [dataLinkLoading, setDataLinkLoading] = useState(false);
   const [handlingId, setHandlingId] = useState<number>();
   const instanceRequestSequenceRef = useRef(0);
   const tabRequestSequenceRef = useRef(0);
   const inspectorRequestSequenceRef = useRef(0);
   const changeDetailRequestRef = useRef(0);
-  const runtimeInstance = useMemo(() => selectRuntimeInstance(instances), [instances]);
+  const runtimeInstance = useMemo(() => selectRuntimeInstance(instances.filter((item) => item.executionMode !== 'DEBUG')), [instances]);
 
   const reloadInstances = useCallback(async (silent = false) => {
     if (!task) return;
     const sequence = ++instanceRequestSequenceRef.current;
     if (!silent) setDataLoading(true);
     try {
-      const allInstances = await listInstances(task.id);
+      const allInstances = await listInstances(task.id, 'ALL');
       if (sequence !== instanceRequestSequenceRef.current) return;
-      const production = allInstances.filter((item) => item.executionMode !== 'DEBUG');
-      setInstances(production);
+      setInstances(allInstances);
     } catch (error) { if (sequence === instanceRequestSequenceRef.current) message.error((error as Error).message); }
     finally { if (!silent && sequence === instanceRequestSequenceRef.current) setDataLoading(false); }
   }, [task?.id]);
@@ -189,6 +190,15 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
       finally { if (sequence === tabRequestSequenceRef.current) setVersionsLoading(false); }
       return;
     }
+    if (activeDrawerTab === 'ddl') {
+      setDataLinkLoading(true);
+      try {
+        const rows = await listSyncDdlExceptions(task.id);
+        if (sequence === tabRequestSequenceRef.current) setDdlExceptions(rows);
+      } catch (error) { if (sequence === tabRequestSequenceRef.current) message.error((error as Error).message); }
+      finally { if (sequence === tabRequestSequenceRef.current) setDataLinkLoading(false); }
+      return;
+    }
     if (activeDrawerTab === 'data-link') {
       setDataLinkLoading(true);
       try {
@@ -209,7 +219,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     if (!task) return;
     instanceRequestSequenceRef.current += 1; tabRequestSequenceRef.current += 1; inspectorRequestSequenceRef.current += 1;
     setInstances([]); setAlerts([]); setChanges([]); setVersions([]); setDirtyRecords([]); setDirtyTotal(0); setSchemaChanges([]);
-    setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setActiveDrawerTab(initialTab === 'detail' ? 'instances' : initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
+    setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setDdlExceptions([]); setActiveDrawerTab(initialTab === 'detail' ? 'instances' : initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
   }, [initialTab, task?.id]);
 
   useEffect(() => { void reloadInstances(); }, [reloadInstances]);
@@ -240,21 +250,32 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     if (!task) return;
     const sequence = ++inspectorRequestSequenceRef.current;
     const names: Record<InstanceInspectorKind, string> = { config: '实例配置', 'startup-log': '启动日志', 'runtime-log': '运行日志', runtime: '运行指标', resources: '资源', checkpoints: 'Checkpoint', 'log-components': '日志组件' };
-    setInspector({ title: kind === 'config' ? `实例配置 - 实例 ${instance.id}` : `实例 ${instance.id} - ${names[kind]}`, kind, value: undefined });
+    setInspector({ title: kind === 'config' ? `${instance.executionMode === 'DEBUG' ? '调试配置' : '实例配置'} - 实例 ${instance.id}` : `实例 ${instance.id} - ${names[kind]}`, kind, value: undefined, instanceId: instance.id });
     setInspectorLoading(true);
     try {
       const value = await getInstanceInfo(task.id, instance.id, kind);
       if (sequence === inspectorRequestSequenceRef.current) setInspector((current) => current ? { ...current, value } : current);
-    } catch (error) { if (sequence === inspectorRequestSequenceRef.current) message.error((error as Error).message); }
+    } catch (error) { if (sequence === inspectorRequestSequenceRef.current) {
+      message.error((error as Error).message);
+      setInspector((current) => current?.kind === 'config' ? { ...current, loadError: (error as Error).message } : current);
+    } }
     finally { if (sequence === inspectorRequestSequenceRef.current) setInspectorLoading(false); }
   };
 
   const inspectVersion = async (row: Record<string, unknown>) => {
     if (!task) return;
+    const sequence = ++inspectorRequestSequenceRef.current;
     const versionId = Number(row.id);
+    setInspector({ title: `版本 ${String(row.versionNo ?? versionId)} - 配置快照`, kind: 'config', value: undefined });
+    setInspectorLoading(true);
     try {
-      setInspector({ title: `版本 ${String(row.versionNo ?? versionId)} - 配置快照`, kind: 'config', value: await getVersionConfig(task.id, versionId) });
-    } catch (error) { message.error((error as Error).message); }
+      const value = await getVersionConfig(task.id, versionId);
+      if (sequence === inspectorRequestSequenceRef.current) setInspector((current) => current ? { ...current, value } : current);
+    } catch (error) { if (sequence === inspectorRequestSequenceRef.current) {
+      message.error((error as Error).message);
+      setInspector((current) => current?.kind === 'config' ? { ...current, loadError: (error as Error).message } : current);
+    } }
+    finally { if (sequence === inspectorRequestSequenceRef.current) setInspectorLoading(false); }
   };
 
   const showChangeDetail = async (row: TaskChangeLog) => {
@@ -301,8 +322,18 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     } catch (error) { message.error((error as Error).message); }
   };
 
-  const stopProductionInstance = (instance: TaskInstance) => {
+  const stopProductionInstance = async (instance: TaskInstance) => {
     if (!task || !instance.managed) return;
+    if (instance.executionMode === 'DEBUG') {
+      try {
+        setStoppingInstanceId(instance.id);
+        await stopInstance(task.id, instance.id, 'direct');
+        message.success('调试实例停止请求已提交');
+        await reloadInstances();
+      } catch (error) { message.error((error as Error).message); }
+      finally { setStoppingInstanceId(undefined); }
+      return;
+    }
     setStopTarget(instance);
   };
 
@@ -370,7 +401,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   const snapshotRemaining = syncProgress?.snapshotRemaining;
   const snapshotTotal = snapshotFinished != null && snapshotRemaining != null ? snapshotFinished + snapshotRemaining : undefined;
   const snapshotPercent = snapshotTotal && snapshotFinished != null ? Math.round(snapshotFinished / snapshotTotal * 100) : undefined;
-  const instanceContent = <RealtimeInstanceList taskId={task.id} instances={instances} loading={dataLoading}
+  const instanceContent = <RealtimeInstanceList taskId={task.id} instances={instances} loading={dataLoading} showModeFilter
     stoppingInstanceId={stoppingInstanceId} syncPlaceholders stoppableStatuses={STOPPABLE}
     onRefresh={() => void reloadInstances()} onInspect={(row) => void inspect(row, 'config')}
     onRecover={setRecoverySource} onStop={stopProductionInstance}
@@ -379,6 +410,21 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   return <>
     <RealtimeTaskDetailDrawer title={task.name} loading={loading} activeKey={activeDrawerTab} onTabChange={setActiveDrawerTab} onClose={onClose} tabs={[
         { key: 'instances', label: '实例列表', children: instanceContent },
+        { key: 'verification', label: '验数记录', children: <Table rowKey="id" size="small" dataSource={[]} pagination={false} locale={{ emptyText: '暂无验数记录' }} scroll={{ x: 1820 }} columns={[
+          { title: 'ID', dataIndex: 'id', width: 90 },
+          { title: '调试记录ID', dataIndex: 'debugRecordId', width: 190, ellipsis: true },
+          { title: '线上表', dataIndex: 'onlineTable', width: 220, ellipsis: true },
+          { title: '调试表', dataIndex: 'debugTable', width: 220, ellipsis: true },
+          { title: '校验状态', dataIndex: 'checkStatus', width: 110 },
+          { title: '是否分区表', dataIndex: 'partitioned', width: 120 },
+          { title: '元数据是否一致', dataIndex: 'metadataMatched', width: 140 },
+          { title: '行数是否一致', dataIndex: 'rowCountMatched', width: 130 },
+          { title: 'CRC32值是否一致', dataIndex: 'crc32Matched', width: 150 },
+          { title: '配置规则', dataIndex: 'rule', width: 120 },
+          { title: '创建时间', dataIndex: 'createdAt', width: 170 },
+          { title: '更新时间', dataIndex: 'updatedAt', width: 170 },
+          { title: '操作人', dataIndex: 'operator', width: 120 },
+        ]} /> },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} taskType="sync" instance={runtimeInstance} active={activeDrawerTab === 'runtime'} checkpointIntervalSeconds={task.taskConfig.checkpointInterval} /> },
         { key: 'diagnostics', label: '诊断', children: <RealtimeDiagnosticPanel taskId={task.id} instances={instances} onRecover={setRecoverySource} /> },
         { key: 'data-link', label: '数据链路', children: <div className="sync-data-link-panel">
@@ -405,6 +451,14 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
           ]} />
         </div> },
         { key: 'alerts', label: `告警记录（${alerts.length}）`, children: <RealtimeAlertTable alerts={alerts} loading={alertsLoading} /> },
+        { key: 'ddl', label: `DDL 异常（${ddlExceptions.filter((item) => item.status === 'ACTIVE').length}）`, children: <Table<SyncDdlException>
+          rowKey="id" size="small" loading={dataLinkLoading} dataSource={ddlExceptions} pagination={{ pageSize: 10 }}
+          locale={{ emptyText: '暂无 DDL 异常' }} columns={[
+            { title: '上报时间', dataIndex: 'createTime', width: 180 },
+            { title: '源表', width: 260, render: (_, row) => `${row.databaseName}.${row.tableName}` },
+            { title: 'DDL', dataIndex: 'ddlSql', ellipsis: true },
+            { title: '状态', dataIndex: 'status', width: 120, render: (value: string) => <Tag color={value === 'ACTIVE' ? 'error' : 'success'}>{value === 'ACTIVE' ? '待剔除' : '已完成'}</Tag> },
+          ]} /> },
         { key: 'changes', label: `变更记录（${changes.length}）`, children: <RealtimeChangeLogTable changes={changes} loading={changesLoading} detailLoadingId={changeDetailLoadingId} onOpenDetail={(row) => void showChangeDetail(row)} /> },
         { key: 'versions', label: `版本记录（${versions.length}）`, children: <Table size="small" rowKey={(row) => String(row.id)} loading={versionsLoading} pagination={false} dataSource={versions} locale={{ emptyText: '暂无版本记录' }} columns={[{ title: '版本', dataIndex: 'versionNo', width: 100 }, { title: '操作人', dataIndex: 'operator', width: 160 }, { title: '创建时间', dataIndex: 'createTime', width: 200 }, { title: '配置快照', render: (_: unknown, row: Record<string, unknown>) => <Typography.Link onClick={() => void inspectVersion(row)}>查看版本配置</Typography.Link> }]} /> },
       ]} />
@@ -418,9 +472,12 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
         ? <div className="task-change-detail-loading"><Spin size="large" /><Typography.Text type="secondary">变更明细加载中</Typography.Text></div>
         : changeDetailError
           ? <Alert type="error" showIcon message="变更明细加载失败" description={changeDetailError} />
-          : changeDetail ? <ChangeDetailContent detail={changeDetail} sourceServerName={task.sourceServerName} /> : null}
+          : changeDetail ? <ChangeDetailContent detail={changeDetail} /> : null}
     </Drawer>
-    <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} loading={inspectorLoading} renderConfig={(value) => <SyncTaskConfigDetail value={value} sourceServerName={task.sourceServerName} showNavigation navigationPrefix="sync-production-instance" />} onClose={() => { inspectorRequestSequenceRef.current += 1; setInspector(undefined); setInspectorLoading(false); }} />
+    {inspector?.kind === 'config' ? <SyncTaskSnapshotModal open title={inspector.title} value={inspector.value} loadError={inspector.loadError}
+      loading={inspectorLoading} snapshotKey={`${task.id}-${inspector.title}`} expectedTaskId={task.id} expectedInstanceId={inspector.instanceId}
+      onClose={() => { inspectorRequestSequenceRef.current += 1; setInspector(undefined); setInspectorLoading(false); }} />
+      : <InstanceInspectorModal open={Boolean(inspector)} title={inspector?.title} kind={inspector?.kind} value={inspector?.value} loading={inspectorLoading} onClose={() => { inspectorRequestSequenceRef.current += 1; setInspector(undefined); setInspectorLoading(false); }} />}
     <RealtimeRecoveryModal taskId={task.id} source={recoverySource} onClose={() => setRecoverySource(undefined)} onRecovered={() => { setRecoverySource(undefined); void reloadInstances(); }} />
   </>;
 }

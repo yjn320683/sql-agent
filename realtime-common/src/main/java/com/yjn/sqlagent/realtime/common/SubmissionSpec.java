@@ -78,6 +78,9 @@ public class SubmissionSpec {
         private String paimonActionJarPath;
         private String paimonWarehouse;
         private String paimonDebugWarehouse;
+        private String ddlReportUrl;
+        private String ddlReportToken;
+        private boolean ddlReporterCompatible;
         private String targetDatabase;
         private Map<String, String> catalogConf = new LinkedHashMap<>();
         private Map<String, String> defaultTableConf = new LinkedHashMap<>();
@@ -89,6 +92,12 @@ public class SubmissionSpec {
         public void setPaimonWarehouse(String value) { this.paimonWarehouse = value; }
         public String getPaimonDebugWarehouse() { return paimonDebugWarehouse; }
         public void setPaimonDebugWarehouse(String value) { this.paimonDebugWarehouse = value; }
+        public String getDdlReportUrl() { return ddlReportUrl; }
+        public void setDdlReportUrl(String value) { ddlReportUrl = value; }
+        public String getDdlReportToken() { return ddlReportToken; }
+        public void setDdlReportToken(String value) { ddlReportToken = value; }
+        public boolean isDdlReporterCompatible() { return ddlReporterCompatible; }
+        public void setDdlReporterCompatible(boolean value) { ddlReporterCompatible = value; }
         public String getTargetDatabase() { return targetDatabase; }
         public void setTargetDatabase(String value) { this.targetDatabase = value; }
         public Map<String, String> getCatalogConf() { return new LinkedHashMap<>(catalogConf); }

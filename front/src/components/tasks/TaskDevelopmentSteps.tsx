@@ -14,21 +14,22 @@ interface Props {
   className?: string;
   collapsed: boolean;
   current: number;
+  hideToggle?: boolean;
   items: TaskDevelopmentStepItem[];
   onChange: (current: number) => void;
-  onCollapsedChange: (collapsed: boolean) => void;
+  onCollapsedChange?: (collapsed: boolean) => void;
 }
 
-export default function TaskDevelopmentSteps({ className, collapsed, current, items, onChange, onCollapsedChange }: Props) {
+export default function TaskDevelopmentSteps({ className, collapsed, current, hideToggle = false, items, onChange, onCollapsedChange }: Props) {
   const toggle = () => {
     const next = !collapsed;
     window.localStorage.setItem(taskStepsCollapsedKey, String(next));
-    onCollapsedChange(next);
+    onCollapsedChange?.(next);
   };
 
   return (
-    <aside className={['task-development-steps', className, collapsed ? 'collapsed' : ''].filter(Boolean).join(' ')}>
-      <Tooltip title={collapsed ? '展开步骤导航' : '收起步骤导航'} placement="right">
+    <aside className={['task-development-steps', className, collapsed ? 'collapsed' : '', hideToggle ? 'no-toggle' : ''].filter(Boolean).join(' ')}>
+      {!hideToggle && <Tooltip title={collapsed ? '展开步骤导航' : '收起步骤导航'} placement="right">
         <button
           type="button"
           className="task-development-steps-toggle"
@@ -38,7 +39,7 @@ export default function TaskDevelopmentSteps({ className, collapsed, current, it
         >
           {collapsed ? <RightOutlined /> : <LeftOutlined />}
         </button>
-      </Tooltip>
+      </Tooltip>}
       <Steps direction="vertical" current={current} items={items} onChange={onChange} />
     </aside>
   );

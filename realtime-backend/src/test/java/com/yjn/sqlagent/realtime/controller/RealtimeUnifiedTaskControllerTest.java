@@ -98,7 +98,7 @@ class RealtimeUnifiedTaskControllerTest {
         task.put("id", 8L); task.put("sourceServerId", 7L); task.put("sourceType", "mysql-cdc");
         task.put("taskConfig", new LinkedHashMap<>(Map.of(
                 "alarmType", "task-failed", "alarmGroup", "group-a", "parallelism", 2,
-                "checkpointInterval", 30, "taskManagerMemory", "3GB", "jobManagerMemory", "1GB",
+                "checkpointInterval", 30, "taskManagerMemory", "1536MB", "jobManagerMemory", "2GiB",
                 "flinkConfOverrides", Map.of("execution.checkpointing.mode", "EXACTLY_ONCE"),
                 "cdcConfig", Map.of("selectedTables", List.of("orders")))));
         when(repository.taskType(8L)).thenReturn("sync");
@@ -108,11 +108,38 @@ class RealtimeUnifiedTaskControllerTest {
         @SuppressWarnings("unchecked") Map<String, Object> config = (Map<String, Object>) detail.get("taskConfig");
         assertEquals(Map.of("alarmType", "task-failed", "alarmGroup", "group-a"), detail.get("alarmConfig"));
         assertEquals(2, ((Map<?, ?>) detail.get("flinkConf")).get("parallelism"));
+        assertEquals(1.5, ((Map<?, ?>) detail.get("flinkConf")).get("taskManagerMemoryGb"));
+        assertEquals(2.0, ((Map<?, ?>) detail.get("flinkConf")).get("jobManagerMemoryGb"));
         assertFalse(config.containsKey("alarmType"));
         assertFalse(config.containsKey("parallelism"));
         assertEquals(7L, config.get("sourceServerId"));
         verify(repository).requiredSyncTask(8L);
         verify(repository, never()).requiredTask(8L);
+    }
+
+    @Test
+    void instanceConfigUsesOnlyRequiredHistoricalSnapshot() {
+        when(repository.taskType(8L)).thenReturn("sync");
+        when(repository.requiredInstanceConfig(8L, 250L)).thenReturn(Map.of(
+                "name", "历史名称", "sourceServerId", 7L, "sourceType", "mysql-cdc",
+                "taskConfig", Map.of("taskManagerMemory", "1536MB",
+                        "cdcConfig", Map.of("selectedTables", List.of("orders")))));
+        @SuppressWarnings("unchecked") Map<String, Object> config = (Map<String, Object>) controller.config(8L, 250L).getData();
+        assertEquals("历史名称", config.get("name"));
+        assertFalse(config.containsKey("sourceServerName"));
+        assertEquals("1536MB", ((Map<?, ?>) config.get("taskConfig")).get("taskManagerMemory"));
+        assertFalse(config.containsKey("flinkConf"));
+        verify(repository, never()).requiredTask(8L);
+        verify(repository, never()).requiredSyncTask(8L);
+    }
+
+    @Test
+    void allInstanceModeIncludesProductionAndDebug() {
+        when(repository.instances(8L)).thenReturn(List.of(
+                Map.of("id", 250L, "executionMode", "PRODUCTION"),
+                Map.of("id", 251L, "executionMode", "DEBUG")));
+        assertEquals(2, controller.instances(8L, "ALL").getData().size());
+        assertEquals(1, controller.instances(8L, "PRODUCTION").getData().size());
     }
 
     @Test

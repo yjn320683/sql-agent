@@ -23,7 +23,7 @@ class RealtimeSchemaContractTest {
             "rt_realtime_table", "rt_realtime_table_column", "rt_task_table_reference",
             "rt_compute_task_config", "rt_export_task_config", "rt_export_task_table_mapping",
             "rt_sync_progress_snapshot", "rt_sync_dirty_record", "rt_schema_change_event",
-            "rt_realtime_table_schema_version");
+            "rt_realtime_table_schema_version", "rt_sync_ddl_exception");
 
     @Test
     void schemaContainsUnifiedRealtimeTablesAndPrunedFields() throws Exception {
@@ -33,7 +33,7 @@ class RealtimeSchemaContractTest {
         while (matcher.find()) tables.add(matcher.group(1));
 
         assertEquals(REQUIRED_TABLES, tables.stream().collect(Collectors.toSet()));
-        assertEquals(25, tables.size());
+        assertEquals(26, tables.size());
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_lineage_snapshot"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS task_lineage_relation"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_realtime_table_schema_version"));
@@ -56,6 +56,8 @@ class RealtimeSchemaContractTest {
         assertFalse(schema.contains("debug_enabled"));
         assertFalse(schema.contains("object_type"));
         assertTrue(schema.contains("INSERT IGNORE INTO rt_task_param"));
+        assertTrue(schema.contains("editable_flag TINYINT(1) NOT NULL DEFAULT 1"));
+        assertTrue(schema.contains("UPDATE rt_task_param SET editable_flag=0"));
         assertTrue(schema.contains("'sync','mysql_conf','scan.snapshot.fetch.size'"));
         assertTrue(schema.contains("'sync','table_conf','changelog-producer'"));
         assertTrue(schema.contains("'sync','flink_conf','high-availability.type'"));
@@ -68,6 +70,9 @@ class RealtimeSchemaContractTest {
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_progress_snapshot"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_sync_dirty_record"));
         assertTrue(schema.contains("CREATE TABLE IF NOT EXISTS rt_schema_change_event"));
+        assertTrue(schema.contains("UNIQUE KEY uk_sync_ddl_event (task_id, event_id)"));
+        assertTrue(resource("db/upgrade-20261012-sync-ddl-exception.sql")
+                .contains("CREATE TABLE IF NOT EXISTS rt_sync_ddl_exception"));
         assertTrue(schema.contains("uk_alert_active_fingerprint"));
         assertTrue(schema.contains("'CHECKPOINT_FAILURE','Checkpoint 连续失败'"));
     }

@@ -52,7 +52,7 @@ describe('实时同步变更记录详情', () => {
       beforeConfig: snapshot('trade'),
       afterConfig: snapshot('retail'),
       diffs: [{ path: 'taskConfig.cdcConfig.domainPrefix', label: '目标 Paimon 表所属域' }],
-    }} sourceServerName="订单库" />);
+    }} />);
 
     expect(html).toContain('task-change-detail-split');
     expect(html).toContain('变更前');
@@ -60,6 +60,7 @@ describe('实时同步变更记录详情', () => {
     expect(html).toContain('公共配置');
     expect(html).toContain('目标Paimon表所属域');
     expect(html).toContain('task-detail-field-changed');
+    expect(html).not.toContain('订单库');
     expect(html).not.toContain('本次变更字段');
   });
 

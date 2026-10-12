@@ -45,8 +45,9 @@ public class RealtimeSyncPrivateController {
         if (!text(server.get("databaseName")).equals(database.trim())) {
             throw new IllegalArgumentException("源库必须与所选 Server 配置一致");
         }
+        List<String> tables = servers.tables(sourceServerId);
         return RealtimeResponse.success(repository.sourceTableOptions(
-                sourceServerId, servers.tables(sourceServerId), excludeTaskId));
+                sourceServerId, tables, servers.schemas(sourceServerId, tables), excludeTaskId));
     }
 
     @PostMapping("/{id}/debug-command-preview")

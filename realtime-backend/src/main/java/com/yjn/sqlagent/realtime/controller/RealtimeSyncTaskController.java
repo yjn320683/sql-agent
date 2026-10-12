@@ -159,7 +159,9 @@ public class RealtimeSyncTaskController {
     public RealtimeResponse<List<Map<String, Object>>> sourceTables(@RequestParam long serverId,
             @RequestParam(required = false) Long excludeTaskId) {
         actors.requireActor();
-        return RealtimeResponse.success(repository.sourceTableOptions(serverId, servers.tables(serverId), excludeTaskId));
+        List<String> tables = servers.tables(serverId);
+        return RealtimeResponse.success(repository.sourceTableOptions(
+                serverId, tables, servers.schemas(serverId, tables), excludeTaskId));
     }
 
     @GetMapping("/{id}/state-history")
@@ -185,7 +187,7 @@ public class RealtimeSyncTaskController {
 
     @GetMapping("/{id}/instances/{instanceId}/config")
     public RealtimeResponse<Object> instanceConfig(@PathVariable long id, @PathVariable long instanceId) {
-        actors.requireActor(); return RealtimeResponse.success(repository.requiredInstance(id, instanceId).get("config"));
+        actors.requireActor(); return RealtimeResponse.success(repository.requiredInstanceConfig(id, instanceId));
     }
 
     @GetMapping("/{id}/instances/{instanceId}/startup-log")

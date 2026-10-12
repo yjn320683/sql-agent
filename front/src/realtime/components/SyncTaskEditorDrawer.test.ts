@@ -1,5 +1,15 @@
 import { describe, expect, it } from 'vitest';
-import { createAsyncLimiter } from './SyncTaskEditorDrawer';
+import { createAsyncLimiter, memoryToGb } from './SyncTaskEditorDrawer';
+
+describe('实时同步内存展示', () => {
+  it('把后端允许的 MB 和二进制单位换算为 GB', () => {
+    expect(memoryToGb('1536MB')).toBe(1.5);
+    expect(memoryToGb('2GiB')).toBe(2);
+    expect(memoryToGb('1048576KiB')).toBe(1);
+    expect(memoryToGb('2GB')).toBe(2);
+    expect(memoryToGb('invalid')).toBeUndefined();
+  });
+});
 
 describe('实时同步多表 Schema 请求限制', () => {
   it('最多同时读取六张表，并继续执行排队任务', async () => {

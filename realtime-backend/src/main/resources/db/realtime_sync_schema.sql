@@ -252,6 +252,7 @@ CREATE TABLE IF NOT EXISTS rt_task_param (
   step_value DECIMAL(18,6) NULL,
   precision_value INT NULL,
   required_flag TINYINT(1) NOT NULL DEFAULT 0,
+  editable_flag TINYINT(1) NOT NULL DEFAULT 1,
   enabled_flag TINYINT(1) NOT NULL DEFAULT 1,
   sort_order DECIMAL(10,4) NOT NULL DEFAULT 0,
   create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
@@ -548,6 +549,10 @@ UPDATE rt_task_param
  SET key_desc='目标 Paimon 表 Changelog Producer',
      param_value='[{"label":"none","value":"none"},{"label":"input（平台默认）","value":"input","default":true},{"label":"lookup","value":"lookup"},{"label":"full-compaction","value":"full-compaction"}]'
  WHERE task_type='sync' AND param_type='table_conf' AND param_key='changelog-producer';
+UPDATE rt_task_param SET editable_flag=0
+ WHERE task_type='sync' AND param_type='table_conf' AND param_key='changelog-producer';
+UPDATE rt_task_param SET required_flag=1,param_value='__meta_op_ts'
+ WHERE task_type='sync' AND param_type='table_conf' AND param_key='sequence.field';
 
 CREATE TABLE IF NOT EXISTS rt_sync_progress_snapshot (
   id BIGINT NOT NULL AUTO_INCREMENT,
@@ -611,3 +616,18 @@ CREATE TABLE IF NOT EXISTS rt_schema_change_event (
   UNIQUE KEY uk_schema_change_signature (task_id,realtime_table_id,change_signature),
   KEY idx_schema_change_task_status (task_id,status,detected_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时同步Schema演进事件';
+
+CREATE TABLE IF NOT EXISTS rt_sync_ddl_exception (
+  id BIGINT NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  event_id CHAR(36) NOT NULL,
+  task_id BIGINT NOT NULL,
+  server_id BIGINT NOT NULL,
+  database_name VARCHAR(128) NOT NULL,
+  table_name VARCHAR(128) NOT NULL,
+  ddl_sql TEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+  UNIQUE KEY uk_sync_ddl_event (task_id, event_id),
+  KEY idx_sync_ddl_active (task_id, status, update_time)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;

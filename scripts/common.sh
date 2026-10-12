@@ -114,14 +114,23 @@ is_backend_running() {
     return 1
   fi
   command_line="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
+  [[ "${command_line}" == *"$(backend_jar)"* ||
+     "${command_line}" == *"${HOST_LOG_DIR:-${DEPLOY_ROOT}/logs}/backend-runtime/sql-agent-backend-"* ]]
+}
+
+backend_running_from_build_jar() {
+  local pid command_line
+  is_backend_running || return 1
+  pid="$(backend_pid)"
+  command_line="$(ps -p "${pid}" -o args= 2>/dev/null || true)"
   [[ "${command_line}" == *"$(backend_jar)"* ]]
 }
 
 build_application() {
   echo "构建前端静态资源..."
   (cd "${FRONT_DIR}" && npm ci --no-audit --no-fund && npm run build)
-  echo "打包 backend（包含 datacompare、parse-sql 模块）..."
-  (cd "${APP_DIR}" && mvn -q -pl backend -am -DskipTests package)
+  echo "打包 backend 与实时任务提交器（包含依赖模块）..."
+  (cd "${APP_DIR}" && mvn -q -pl backend,realtime-task-submit -am -DskipTests package)
 }
 
 wait_agent_ready() {
@@ -149,7 +158,7 @@ wait_http_ready() {
 }
 
 start_backend() {
-  local config_dir jar_file log_file java_bin pid
+  local config_dir jar_file runtime_dir runtime_jar runtime_tmp jar_sha log_file java_bin pid
   local -a java_opts=() command
   config_dir="$(backend_config_dir)"
   jar_file="$(backend_jar)"
@@ -173,13 +182,32 @@ start_backend() {
     return
   fi
 
+  # Maven rewrites target/*.jar during a deployment. Run from an immutable copy
+  # so an in-place build cannot invalidate the running Spring Boot classloader.
+  runtime_dir="${HOST_LOG_DIR:-${DEPLOY_ROOT}/logs}/backend-runtime"
+  mkdir -p "${runtime_dir}"
+  if command -v sha256sum >/dev/null 2>&1; then
+    jar_sha="$(sha256sum "${jar_file}" | cut -d' ' -f1)"
+  else
+    jar_sha="$(shasum -a 256 "${jar_file}" | cut -d' ' -f1)"
+  fi
+  runtime_jar="${runtime_dir}/sql-agent-backend-${jar_sha}.jar"
+  if [[ ! -f "${runtime_jar}" ]]; then
+    runtime_tmp="${runtime_jar}.tmp.$$"
+    cp "${jar_file}" "${runtime_tmp}"
+    mv "${runtime_tmp}" "${runtime_jar}"
+  elif ! cmp -s "${jar_file}" "${runtime_jar}"; then
+    echo "运行副本校验失败：${runtime_jar}"
+    return 1
+  fi
+
   echo "启动 backend..."
   command=("${java_bin}")
   if [[ -n "${BACKEND_JAVA_OPTS:-}" ]]; then
     command+=("${java_opts[@]}")
   fi
   command+=(
-    -jar "${jar_file}"
+    -jar "${runtime_jar}"
     --spring.profiles.active=local
   )
   if [[ -n "${config_dir}" ]]; then

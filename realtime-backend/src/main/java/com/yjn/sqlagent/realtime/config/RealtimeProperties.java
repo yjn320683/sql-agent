@@ -25,6 +25,14 @@ public class RealtimeProperties {
     private String paimonActionJarPath = "";
     private String paimonWarehouse = "";
     private String paimonDebugWarehouse = "";
+    private String ddlReportUrl = "";
+    private String ddlReportToken = "";
+    private boolean ddlReporterCompatible;
+    private String ddlReporterActionSha256 = "";
+    private String ddlReporterCdcJarPath = "";
+    private String ddlReporterCdcSha256 = "";
+    private String ddlReporterFlinkJarPath = "";
+    private String ddlReporterFlinkSha256 = "";
     private String checkpointDir = "";
     private String savepointDir = "";
     private long syncDelayMs = 10000L;
@@ -67,6 +75,22 @@ public class RealtimeProperties {
     public void setPaimonWarehouse(String value) { paimonWarehouse = value; }
     public String getPaimonDebugWarehouse() { return paimonDebugWarehouse; }
     public void setPaimonDebugWarehouse(String value) { paimonDebugWarehouse = value; }
+    public String getDdlReportUrl() { return ddlReportUrl; }
+    public void setDdlReportUrl(String value) { ddlReportUrl = value; }
+    public String getDdlReportToken() { return ddlReportToken; }
+    public void setDdlReportToken(String value) { ddlReportToken = value; }
+    public boolean isDdlReporterCompatible() { return ddlReporterCompatible; }
+    public void setDdlReporterCompatible(boolean value) { ddlReporterCompatible = value; }
+    public String getDdlReporterActionSha256() { return ddlReporterActionSha256; }
+    public void setDdlReporterActionSha256(String value) { ddlReporterActionSha256 = value; }
+    public String getDdlReporterCdcJarPath() { return ddlReporterCdcJarPath; }
+    public void setDdlReporterCdcJarPath(String value) { ddlReporterCdcJarPath = value; }
+    public String getDdlReporterCdcSha256() { return ddlReporterCdcSha256; }
+    public void setDdlReporterCdcSha256(String value) { ddlReporterCdcSha256 = value; }
+    public String getDdlReporterFlinkJarPath() { return ddlReporterFlinkJarPath; }
+    public void setDdlReporterFlinkJarPath(String value) { ddlReporterFlinkJarPath = value; }
+    public String getDdlReporterFlinkSha256() { return ddlReporterFlinkSha256; }
+    public void setDdlReporterFlinkSha256(String value) { ddlReporterFlinkSha256 = value; }
     public String getPaimonDebugTargetDatabase() { return SYNC_TASK_DEBUG_TARGET_DATABASE; }
     public void setPaimonDebugTargetDatabase(String value) { /* 平台固定值，保留绑定兼容。 */ }
     public String getTargetDatabase() { return SYNC_TASK_TARGET_DATABASE; }

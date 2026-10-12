@@ -1,5 +1,5 @@
 import { DeleteOutlined, PlusOutlined, QuestionCircleOutlined, SearchOutlined } from '@ant-design/icons';
-import { Button, Form, Input, InputNumber, Popover, Select, Space, Tooltip, Typography } from 'antd';
+import { Button, Form, Input, InputNumber, Popover, Select, Space, Tooltip } from 'antd';
 import { useMemo, useState } from 'react';
 import type { TaskParam } from '../types';
 
@@ -98,31 +98,27 @@ export default function SyncMoreConfigRows({ paramType, formNamePath, taskParams
   const byKey = useMemo(() => new Map(params.map((item) => [item.paramKey, item])), [params]);
   const rows = Object.entries(current).filter(([key]) => !taskParams.some((item) => item.paramType === paramType && Boolean(item.required) && item.paramKey === key));
   const selected = new Set(rows.map(([key]) => key));
-  const available = params.filter((item) => !selected.has(item.paramKey) && `${item.paramKey} ${item.keyDesc ?? ''}`.toLowerCase().includes(search.trim().toLowerCase()));
+  const available = params.filter((item) => item.editable !== false && !selected.has(item.paramKey) && `${item.paramKey} ${item.keyDesc ?? ''}`.toLowerCase().includes(search.trim().toLowerCase()));
 
   const update = (next: Record<string, unknown>) => {
+    if (readOnly) return;
     form.setFieldValue(formNamePath, next);
     setRevision((value) => value + 1);
   };
-
-  if (readOnly) return rows.length ? <>{rows.map(([key, value]) => <div className="sync-more-config-row" key={key}>
-    <div className="sync-more-config-label"><span>{byKey.get(key)?.keyDesc || key}</span><Tooltip title={key}><QuestionCircleOutlined /></Tooltip></div>
-    <Typography.Text ellipsis={{ tooltip: String(value) }}>{String(value)}</Typography.Text>
-  </div>)}</> : null;
 
   return <div className="sync-more-config-rows">
     {rows.map(([key]) => {
       const param = byKey.get(key);
       return <div className="sync-more-config-row" key={key}>
-        <div className="sync-more-config-label"><span>{param?.keyDesc || '已停用/未知参数'}</span><Tooltip title={`${param?.keyDesc || '已停用/未知参数'}（${key}）`}><QuestionCircleOutlined /></Tooltip></div>
+        <div className="sync-more-config-label"><span>{param?.keyDesc || key}</span><Tooltip title={`${param?.keyDesc || '已停用/未知参数'}（${key}）`}><QuestionCircleOutlined /></Tooltip></div>
         <Space.Compact block>
-          <SyncParamInput param={param} name={[...formNamePath, key]} disabled={!param} />
-          <Button aria-label={`删除配置 ${key}`} icon={<DeleteOutlined />} onClick={() => { const next = { ...current }; delete next[key]; update(next); }} />
+          <SyncParamInput param={param} name={[...formNamePath, key]} disabled={readOnly || !param || param.editable === false} />
+          <Button aria-label={`删除配置 ${key}`} icon={<DeleteOutlined />} disabled={readOnly || param?.editable === false} onClick={() => { const next = { ...current }; delete next[key]; update(next); }} />
         </Space.Compact>
       </div>;
     })}
     <Popover
-      open={open}
+      open={readOnly ? false : open}
       trigger="click"
       placement="bottomRight"
       onOpenChange={(value) => { setOpen(value); if (!value) setSearch(''); }}
@@ -133,7 +129,7 @@ export default function SyncMoreConfigRows({ paramType, formNamePath, taskParams
         </button>) : <div className="sync-more-config-empty">暂无匹配配置</div>}</div>
       </div>}
     >
-      <Button className="sync-more-config-trigger" icon={<PlusOutlined />} disabled={!params.some((item) => !selected.has(item.paramKey))}>更多配置</Button>
+      <Button className="sync-more-config-trigger" icon={<PlusOutlined />} disabled={readOnly || !params.some((item) => item.editable !== false && !selected.has(item.paramKey))}>更多配置</Button>
     </Popover>
   </div>;
 }

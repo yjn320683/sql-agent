@@ -48,7 +48,7 @@ import type {
   TaskParam,
   SyncTaskStartPolicy,
 } from '../types';
-import SyncDebugDrawer from '../components/SyncDebugDrawer';
+import SyncDebugModal from '../components/SyncDebugModal';
 import SyncTaskDetailDrawer from '../components/SyncTaskDetailDrawer';
 import { showStateRecoveryFallback, syncStartMethodOptions } from '../components/syncStartMethod';
 
@@ -501,8 +501,10 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
         </div>
       </section>
 
-      <SyncDebugDrawer task={debugTask} open={Boolean(debugTask)} params={debugParams} servers={debugServers}
-        supportLoading={debugSupportLoading} onClose={() => setDebugTask(undefined)} />
+      <SyncDebugModal task={debugTask} open={Boolean(debugTask)} params={debugParams} servers={debugServers}
+        supportLoading={debugSupportLoading} onClose={() => setDebugTask(undefined)} onStarted={() => {
+          setDetail(debugTask); setDebugTask(undefined); void load();
+        }} />
 
       <Modal className="sync-mapping-modal" title={`同步表映射 - ${mappingTask?.name ?? ''}`} open={Boolean(mappingTask)} onCancel={() => setMappingTask(undefined)} footer={null} width={900} destroyOnHidden>
         <Table rowKey="id" size="small" pagination={false} scroll={{ y: 480 }} locale={{ emptyText: '暂无同步表映射' }} dataSource={mappingRows} columns={[

@@ -98,6 +98,19 @@ export interface SyncTask extends SyncTaskSave {
   };
 }
 
+export interface SyncDdlException {
+  id: number;
+  eventId: string;
+  taskId: number;
+  serverId: number;
+  databaseName: string;
+  tableName: string;
+  ddlSql: string;
+  status: 'ACTIVE' | 'RESOLVED';
+  createTime: string;
+  updateTime: string;
+}
+
 export interface SyncTaskListItem {
   id: number;
   name: string;
@@ -428,7 +441,7 @@ export interface TaskMapping {
 }
 
 export interface TaskParam {
-  id: number;
+  id?: number;
   paramType: 'mysql_conf' | 'table_conf' | 'flink_conf';
   paramKey: string;
   keyDesc: string;
@@ -436,6 +449,8 @@ export interface TaskParam {
   valueType: string;
   inputType: string;
   required?: number | boolean;
+  editable?: boolean;
+  enabled?: boolean;
   minValue?: number;
   maxValue?: number;
   stepValue?: number;
@@ -469,7 +484,7 @@ export interface RealtimeAlertRule {
 export interface TaskChangeLog { id: number; taskId: number; taskName: string; operationId?: number; beforeVersionId?: number; afterVersionId?: number; taskInstanceId?: number; operator: string; action: string; detail?: string; summary?: string; detailKind?: 'create' | 'edit' | 'start' | 'stop' | 'text'; createTime: string }
 export interface MysqlColumn { name: string; type: string; nullable: boolean; comment?: string }
 export interface MysqlTableSchema { table: string; columns: MysqlColumn[]; primaryKeys: string[] }
-export interface SyncSourceTableOption { tableName: string; occupied: boolean; occupiedTaskId?: number; occupiedTaskName?: string }
+export interface SyncSourceTableOption { tableName: string; occupied: boolean; hasPrimaryKey?: boolean; occupiedTaskId?: number; occupiedTaskName?: string }
 
 export type ManagedTaskType = 'compute' | 'export';
 export interface RealtimeTableColumn {

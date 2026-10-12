@@ -1,7 +1,6 @@
 package com.yjn.sqlagent.realtime.service;
 
 import java.util.ArrayList;
-import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
@@ -16,31 +15,37 @@ public class RealtimeSyncTargetValidationService {
         this.catalog = catalog;
     }
 
-    /** 仅检查相对当前保存配置新增的源表，保留表不会被重复拦截。 */
+    /** 仅检查新增或改换目标的映射；目标库、表前缀变化同样可能覆盖已有物理表。 */
     public void validateAddedTargets(Map<String, Object> persistedConfig,
             Map<String, Object> requestedConfig) {
         if (requestedConfig == null) return;
         Map<String, Object> requestedCdc = map(requestedConfig.get("cdcConfig"));
         List<String> requestedSources = strings(requestedCdc.get("selectedTables"));
-        Set<String> persistedSources = new LinkedHashSet<>(strings(
-                map(persistedConfig == null ? null : persistedConfig.get("cdcConfig"))
-                        .get("selectedTables")));
+        Map<String, Object> persistedCdc = map(persistedConfig == null ? null : persistedConfig.get("cdcConfig"));
+        List<String> persistedSources = strings(persistedCdc.get("selectedTables"));
+        List<String> persistedTargets = targetTables(persistedCdc);
         List<String> requestedTargets = targetTables(requestedCdc);
         if (requestedSources.size() != requestedTargets.size()) {
             throw new IllegalArgumentException("源表列表与目标Paimon表列表不一致");
         }
 
+        String database = first(requestedConfig.get("targetDatabase"), requestedCdc.get("targetDatabase"));
+        String persistedDatabase = first(persistedConfig == null ? null : persistedConfig.get("targetDatabase"),
+                persistedCdc.get("targetDatabase"));
         List<Integer> addedIndexes = new ArrayList<>();
         List<String> addedTargets = new ArrayList<>();
         for (int index = 0; index < requestedSources.size(); index++) {
-            if (!persistedSources.contains(requestedSources.get(index))) {
+            int previous = persistedSources.indexOf(requestedSources.get(index));
+            boolean sameTarget = previous >= 0 && previous < persistedTargets.size()
+                    && database.equals(persistedDatabase)
+                    && requestedTargets.get(index).equals(persistedTargets.get(previous));
+            if (!sameTarget) {
                 addedIndexes.add(index);
                 addedTargets.add(requestedTargets.get(index));
             }
         }
         if (addedIndexes.isEmpty()) return;
 
-        String database = first(requestedConfig.get("targetDatabase"), requestedCdc.get("targetDatabase"));
         if (database.isEmpty()) throw new IllegalArgumentException("目标 Paimon 库不能为空");
         Set<String> existing = catalog.existingTables(database, addedTargets);
         List<String> conflicts = new ArrayList<>();

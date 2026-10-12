@@ -19,6 +19,10 @@ fi
 ensure_host_dirs
 print_deploy_context
 update_latest_code
+if backend_running_from_build_jar; then
+  echo "当前 Backend 直接运行构建产物，先迁移到独立运行副本，避免构建时覆盖正在加载的 JAR。"
+  restart_backend
+fi
 echo "并行构建 agent 镜像与 front/backend..."
 run_compose build agent &
 agent_build_pid=$!

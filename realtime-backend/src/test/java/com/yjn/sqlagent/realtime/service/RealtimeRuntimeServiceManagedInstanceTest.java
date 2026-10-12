@@ -17,8 +17,10 @@ import static org.mockito.Mockito.when;
 
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.yjn.sqlagent.realtime.config.RealtimeProperties;
+import com.yjn.sqlagent.realtime.common.SubmissionSpec;
 import com.yjn.sqlagent.realtime.model.TaskActionRequest;
 import com.yjn.sqlagent.realtime.model.SyncTaskRequest;
+import com.yjn.sqlagent.realtime.model.UnifiedTaskRequest;
 import com.yjn.sqlagent.realtime.repository.RealtimeSyncRepository;
 import java.util.Collections;
 import java.util.List;
@@ -26,6 +28,7 @@ import java.util.Map;
 import java.util.concurrent.atomic.AtomicReference;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.attribute.PosixFilePermissions;
 import org.mockito.ArgumentCaptor;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
@@ -749,6 +752,55 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         assertTrue(json.contains("flink run -t yarn-application"));
         assertTrue(json.contains("-Dyarn.application.queue=root.default"));
         assertFalse(json.contains("run-application"));
+    }
+
+    @Test
+    void ddlReporterArtifactCheckAppliesOnlyToSyncTasks() {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setDdlReportUrl("http://localhost/internal/ddl");
+        properties.setDdlReportToken("test-token");
+        properties.setDdlReporterCompatible(true);
+        RealtimeRuntimeService previewService = new RealtimeRuntimeService(repository, properties, new ObjectMapper());
+        UnifiedTaskRequest compute = new UnifiedTaskRequest();
+        compute.setTaskType("compute");
+        compute.setName("compute_task");
+
+        assertEquals("compute", previewService.previewUnifiedRequest(compute, 8L).get("runner"));
+        SubmissionSpec computeSpec = org.springframework.test.util.ReflectionTestUtils.invokeMethod(
+                previewService, "spec", Map.of("id", 8L, "name", "compute_task", "taskType", "compute",
+                        "taskConfig", Map.of()), null, null, new TaskActionRequest(), "PRODUCTION");
+        assertNotNull(computeSpec);
+        assertEquals(null, computeSpec.getRuntimeConfig().getDdlReportUrl());
+        assertEquals(null, computeSpec.getRuntimeConfig().getDdlReportToken());
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_task",
+                "taskConfig", Map.of("cdcConfig", Map.of())));
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> previewService.previewSaved(8L, new TaskActionRequest(), false));
+        assertTrue(error.getMessage().contains("DDL reporter Action"));
+    }
+
+    @Test
+    void submissionFileContainingReporterTokenIsOwnerOnlyEvenWhenReplacingExistingFile(@TempDir Path tempDir)
+            throws Exception {
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setSubmissionDir(tempDir.toString());
+        RealtimeRuntimeService runtime = new RealtimeRuntimeService(repository, properties, new ObjectMapper());
+        SubmissionSpec spec = new SubmissionSpec();
+        spec.setTaskId(8L);
+        spec.setTaskInstanceId(25L);
+        spec.getRuntimeConfig().setDdlReportToken("private-test-token");
+        Path file = tempDir.resolve("tasks/8/instances/25/job-config.json");
+        Files.createDirectories(file.getParent());
+        Files.writeString(file, "stale");
+        Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-r--r--"));
+
+        org.springframework.test.util.ReflectionTestUtils.invokeMethod(runtime, "store", spec);
+
+        assertEquals("rw-------", PosixFilePermissions.toString(Files.getPosixFilePermissions(file)));
+        assertTrue(Files.readString(file).contains("private-test-token"));
+        try (java.util.stream.Stream<Path> files = Files.list(file.getParent())) {
+            assertEquals(1L, files.count());
+        }
     }
 
     @Test

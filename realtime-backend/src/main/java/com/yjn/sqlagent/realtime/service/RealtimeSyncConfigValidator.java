@@ -155,8 +155,8 @@ public class RealtimeSyncConfigValidator {
             }
         }
         List<String> sourcePrimaryKeys = strings(schema.get("primaryKeys"), false, table + " 源表主键");
-        if (sourcePrimaryKeys.isEmpty() && customPrimaryKeys.isEmpty()) {
-            throw new IllegalArgumentException("MySQL CDC 源表无主键，请配置私有主键：" + table);
+        if (sourcePrimaryKeys.isEmpty()) {
+            throw new IllegalArgumentException("MySQL CDC 源表无物理主键，当前 mysql_sync_database 暂不支持：" + table);
         }
         List<String> effectivePrimaryKeys = customPrimaryKeys.isEmpty() ? sourcePrimaryKeys : customPrimaryKeys;
         validateFields(table, "主键", customPrimaryKeys, finalFields);

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { applySyncSchemaChange, assignAssetDomain, canEnableSyncTask, compareRealtimeTableSchemaVersions, createBusinessDomain, createSyncTask, getAssetDomainAssignment, getInstanceDebugReport, getInstanceProgress, getMysqlTableDdl, getRealtimeTableSchemaVersion, getRecoveryOptions, getStateHistory, getSyncProgress, getSyncTask, listAlertRules, listAlerts, listAlertsPage, listBusinessDomainAssets, listBusinessDomains, listManagedTasks, listRealtimeTableSchemaVersions, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, muteAlert, recoverInstance, resolveSyncDirtyRecord, startSyncTask, unassignAssetDomain, unmuteAlert, updateBusinessDomain, updateBusinessDomainStatus, validateRealtimeTableSafeUpdate } from './api';
+import { applySyncSchemaChange, assignAssetDomain, canEnableSyncTask, compareRealtimeTableSchemaVersions, createBusinessDomain, createSyncTask, getAssetDomainAssignment, getInstanceDebugReport, getInstanceProgress, getMysqlTableDdl, getRealtimeTableSchemaVersion, getRecoveryOptions, getStateHistory, getSyncProgress, getSyncTask, listAlertRules, listAlerts, listAlertsPage, listBusinessDomainAssets, listBusinessDomains, listManagedTasks, listRealtimeTableSchemaVersions, listSyncDirtyRecords, listSyncSchemaChanges, listSyncTasks, listTaskParams, muteAlert, recoverInstance, resolveSyncDirtyRecord, startSyncTask, unassignAssetDomain, unmuteAlert, updateBusinessDomain, updateBusinessDomainStatus, validateRealtimeTableSafeUpdate } from './api';
 import type { SyncTaskSave } from './types';
 
 const response = (data: unknown) => Promise.resolve({
@@ -23,6 +23,25 @@ const task: SyncTaskSave = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('实时同步统一接口契约', () => {
+  it('兼容实时后端的参数元数据字段，并保留本地旧格式', async () => {
+    vi.stubGlobal('fetch', vi.fn(() => response([
+      { paramType: 'mysql_conf', paramKey: 'scan.snapshot.fetch.size', keyDesc: '快照批次', inputType: 'input_number', value: 1024, requiredFlag: true, editableFlag: true, enabledFlag: true },
+      { paramType: 'mysql_conf', paramKey: 'scan.startup.mode', keyDesc: '启动模式', inputType: 'select', value: [{ label: '初始', value: 'initial', default: true }], requiredFlag: false, editableFlag: false, enabledFlag: true },
+      { paramType: 'table_conf', paramKey: 'changelog-producer', keyDesc: 'Changelog Producer', inputType: 'select', value: [{ label: 'input', value: 'input', default: true }], requiredFlag: 1, editableFlag: 0, enabledFlag: 1 },
+      { paramType: 'mysql_conf', paramKey: 'old.option', value: 'x', enabledFlag: false },
+      { paramType: 'mysql_conf', paramKey: 'disabled.option', value: 'x', enabledFlag: 0 },
+      { paramType: 'flink_conf', paramKey: 'legacy.option', paramValue: 'old', required: true, inputType: 'input' },
+    ])));
+
+    const params = await listTaskParams();
+
+    expect(params).toHaveLength(4);
+    expect(params[0]).toMatchObject({ required: true, editable: true, paramValue: '1024' });
+    expect(params[1]).toMatchObject({ required: false, editable: false, paramValue: '[{"label":"初始","value":"initial","default":true}]' });
+    expect(params[2]).toMatchObject({ required: true, editable: false, paramValue: '[{"label":"input","value":"input","default":true}]' });
+    expect(params[3]).toMatchObject({ required: true, paramValue: 'old' });
+  });
+
   it('列表把参考项目搜索条件发送到统一分页接口', async () => {
     const fetchMock = vi.fn(() => response({ records: [], total: 0, pageNo: 1, pageSize: 20 }));
     vi.stubGlobal('fetch', fetchMock);
@@ -30,7 +49,7 @@ describe('实时同步统一接口契约', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/v1/api/tasks/page');
     expect(JSON.parse(String(init.body))).toMatchObject({
-      taskType: 'sync', pageNo: 3, pageSize: 50, keyword: 'order', status: 'running',
+      taskType: 'sync', pageNo: 3, pageSize: 50, keyword: 'order', instanceStatus: 'running',
       owner: 'owner-a', lastOperator: 'operator-b', paimonTableKeyword: 'orders',
       sortField: 'name', sortOrder: 'asc',
     });
@@ -122,7 +141,7 @@ describe('实时同步统一接口契约', () => {
     const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit];
     expect(url).toBe('/v1/api/tasks/page');
     expect(JSON.parse(String(init.body))).toEqual({
-      taskType: 'compute', pageNo: 2, pageSize: 50, keyword: 'agg', status: 'running',
+      taskType: 'compute', pageNo: 2, pageSize: 50, keyword: 'agg', instanceStatus: 'running',
       owner: 'owner-a', lastOperator: 'operator-b', sourceKeyword: 'ods.orders',
     });
   });

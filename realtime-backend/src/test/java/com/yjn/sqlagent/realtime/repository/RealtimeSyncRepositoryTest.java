@@ -1,11 +1,13 @@
 package com.yjn.sqlagent.realtime.repository;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.ArgumentMatchers.eq;
 import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.inOrder;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -18,6 +20,7 @@ import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 import org.junit.jupiter.api.Test;
 import org.mockito.ArgumentCaptor;
+import org.mockito.InOrder;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.jdbc.datasource.DriverManagerDataSource;
 
@@ -36,6 +39,179 @@ class RealtimeSyncRepositoryTest {
         assertEquals(1536, RealtimeSyncRepository.memoryMb("1.5GB"));
         assertEquals(512, RealtimeSyncRepository.memoryMb("512mb"));
         assertEquals(null, RealtimeSyncRepository.memoryMb("unknown"));
+    }
+
+    @Test
+    void cleanSavepointRequiresExplicitValidSelectedTables() {
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                mock(JdbcTemplate.class), new ObjectMapper(), new RealtimeProperties());
+        assertTrue(!repository.cleanSavepointExcludesTable(null, "orders"));
+        assertTrue(!repository.cleanSavepointExcludesTable("not-json", "orders"));
+        assertTrue(!repository.cleanSavepointExcludesTable(
+                Map.of("taskConfig", Map.of("cdcConfig", Map.of("selectedTables", List.of()))), "orders"));
+        assertTrue(!repository.cleanSavepointExcludesTable(
+                Map.of("taskConfig", Map.of("cdcConfig", Map.of("selectedTables", List.of("orders")))), "orders"));
+        assertTrue(repository.cleanSavepointExcludesTable(
+                Map.of("taskConfig", Map.of("cdcConfig", Map.of("selectedTables", List.of("other")))), "orders"));
+    }
+
+    @Test
+    void instanceConfigDoesNotInventStartupModeWhenOperationIsMissing() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:h2:mem:sync_snapshot_start;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE rt_task_operation(task_id BIGINT,task_instance_id BIGINT,"
+                + "operation_type VARCHAR(32),request_json CLOB,id BIGINT)");
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredInstance(long taskId, long instanceId) {
+                return Map.of("config", Map.of("id", taskId, "taskType", "sync", "taskConfig",
+                        Map.of("cdcConfig", Map.of("selectedTables", List.of("orders")))));
+            }
+        };
+
+        Map<String, Object> snapshot = repository.requiredInstanceConfig(8L, 25L);
+
+        assertEquals(25L, snapshot.get("instanceId"));
+        assertTrue(!snapshot.containsKey("startType"));
+        assertTrue(!snapshot.containsKey("statePath"));
+        assertEquals(List.of("orders"), ((Map<?, ?>) ((Map<?, ?>) snapshot.get("taskConfig"))
+                .get("cdcConfig")).get("selectedTables"));
+    }
+
+    @Test
+    void instanceConfigRejectsMissingTaskIdentityAndIncompleteCdcSnapshot() {
+        RealtimeSyncRepository missingIdentity = new RealtimeSyncRepository(
+                mock(JdbcTemplate.class), new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredInstance(long taskId, long instanceId) {
+                return Map.of("config", Map.of("taskType", "sync", "taskConfig",
+                        Map.of("cdcConfig", Map.of("selectedTables", List.of("orders")))));
+            }
+        };
+        assertTrue(assertThrows(IllegalStateException.class,
+                () -> missingIdentity.requiredInstanceConfig(8L, 25L)).getMessage().contains("任务 ID"));
+
+        RealtimeSyncRepository missingTables = new RealtimeSyncRepository(
+                mock(JdbcTemplate.class), new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredInstance(long taskId, long instanceId) {
+                return Map.of("config", Map.of("id", taskId, "taskType", "sync", "taskConfig",
+                        Map.of("cdcConfig", Map.of("databaseName", "source"))));
+            }
+        };
+        assertTrue(assertThrows(IllegalStateException.class,
+                () -> missingTables.requiredInstanceConfig(8L, 25L)).getMessage().contains("源表列表"));
+    }
+
+    @Test
+    void ddlRecoveryAcceptsCleanSavepointInSameSecondAsResolution() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:h2:mem:sync_ddl_same_second;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE rt_sync_ddl_exception(task_id BIGINT,server_id BIGINT,database_name VARCHAR(128),"
+                + "table_name VARCHAR(128),status VARCHAR(16),update_time TIMESTAMP)");
+        jdbc.execute("CREATE TABLE rt_task_instance(task_id BIGINT,execution_mode VARCHAR(16),status VARCHAR(16),"
+                + "savepoint_path VARCHAR(255),ended_at TIMESTAMP,effective_config_snapshot_json CLOB)");
+        jdbc.update("INSERT INTO rt_sync_ddl_exception VALUES(8,3,'source','orders','RESOLVED',?)",
+                java.sql.Timestamp.valueOf("2026-10-12 10:00:00"));
+        jdbc.update("INSERT INTO rt_task_instance VALUES(8,'PRODUCTION','finished','hdfs://clean',?,?)",
+                java.sql.Timestamp.valueOf("2026-10-12 10:00:00"),
+                "{\"taskConfig\":{\"cdcConfig\":{\"selectedTables\":[\"other\"]}}}");
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredTask(long taskId) {
+                return Map.of("taskConfig", Map.of("cdcConfig", Map.of("selectedTables", List.of("other"))));
+            }
+        };
+        Map<String, Object> next = Map.of("cdcConfig", Map.of("databaseName", "source",
+                "selectedTables", List.of("other", "orders")));
+
+        assertDoesNotThrow(() -> repository.validateDdlTables(8L, 3L, next));
+        jdbc.update("UPDATE rt_task_instance SET ended_at=?",
+                java.sql.Timestamp.valueOf("2026-10-12 09:59:59"));
+        assertThrows(IllegalStateException.class, () -> repository.validateDdlTables(8L, 3L, next));
+    }
+
+    @Test
+    void activeDdlTableCannotBeRetainedBySwitchingSource() {
+        DriverManagerDataSource dataSource = new DriverManagerDataSource(
+                "jdbc:h2:mem:sync_ddl_switch_source;MODE=MySQL;DB_CLOSE_DELAY=-1", "sa", "");
+        JdbcTemplate jdbc = new JdbcTemplate(dataSource);
+        jdbc.execute("CREATE TABLE rt_sync_ddl_exception(task_id BIGINT,server_id BIGINT,"
+                + "database_name VARCHAR(128),table_name VARCHAR(128),status VARCHAR(16))");
+        jdbc.update("INSERT INTO rt_sync_ddl_exception VALUES(8,3,'old_db','orders','ACTIVE')");
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties());
+        Map<String, Object> changedSource = Map.of("cdcConfig", Map.of(
+                "databaseName", "new_db", "selectedTables", List.of("orders")));
+
+        assertThrows(IllegalStateException.class,
+                () -> repository.validateDdlTables(8L, 4L, changedSource));
+    }
+
+    @Test
+    void ddlReportLocksTaskBeforeDecidingExceptionStatus() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L)))
+                .thenReturn(List.of(Map.of("id", 8L)));
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredTask(long taskId) {
+                return Map.of("taskType", "sync", "sourceServerId", 3L, "taskConfig", Map.of("cdcConfig",
+                        Map.of("databaseName", "source", "selectedTables", List.of("orders"))));
+            }
+        };
+
+        repository.reportDdlException("55cf611c-40d1-4e98-b56c-e2d042157962", 8L,
+                "source", "orders", "ALTER TABLE orders DROP COLUMN old_field");
+
+        InOrder order = inOrder(jdbc);
+        order.verify(jdbc).queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L));
+        order.verify(jdbc).update(org.mockito.ArgumentMatchers.startsWith("INSERT IGNORE INTO rt_sync_ddl_exception"),
+                eq("55cf611c-40d1-4e98-b56c-e2d042157962"), eq(8L), eq(3L), eq("source"), eq("orders"),
+                eq("ALTER TABLE orders DROP COLUMN old_field"), eq("ACTIVE"));
+    }
+
+    @Test
+    void delayedDdlReportFromPreviousDatabaseIsStillRecorded() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L)))
+                .thenReturn(List.of(Map.of("id", 8L)));
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredTask(long taskId) {
+                return Map.of("taskType", "sync", "sourceServerId", 3L, "taskConfig", Map.of("cdcConfig",
+                        Map.of("databaseName", "new_source", "selectedTables", List.of("orders"))));
+            }
+        };
+
+        repository.reportDdlException("55cf611c-40d1-4e98-b56c-e2d042157962", 8L,
+                "old_source", "orders", "ALTER TABLE orders DROP COLUMN old_field");
+
+        verify(jdbc).update(org.mockito.ArgumentMatchers.startsWith("INSERT IGNORE INTO rt_sync_ddl_exception"),
+                eq("55cf611c-40d1-4e98-b56c-e2d042157962"), eq(8L), eq(3L), eq("old_source"), eq("orders"),
+                eq("ALTER TABLE orders DROP COLUMN old_field"), eq("ACTIVE"));
+    }
+
+    @Test
+    void ddlReportTrimsNamesAndLimitsSqlLikeReferenceBackend() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(org.mockito.ArgumentMatchers.contains("FOR UPDATE"), eq(8L)))
+                .thenReturn(List.of(Map.of("id", 8L)));
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(
+                jdbc, new ObjectMapper(), new RealtimeProperties()) {
+            @Override public Map<String, Object> requiredTask(long taskId) {
+                return Map.of("taskType", "sync", "sourceServerId", 3L, "taskConfig", Map.of("cdcConfig",
+                        Map.of("selectedTables", List.of("orders"))));
+            }
+        };
+        String ddl = "X".repeat(17000);
+
+        repository.reportDdlException("55cf611c-40d1-4e98-b56c-e2d042157963", 8L,
+                " source ", " orders ", "  " + ddl + "  ");
+
+        verify(jdbc).update(org.mockito.ArgumentMatchers.startsWith("INSERT IGNORE INTO rt_sync_ddl_exception"),
+                eq("55cf611c-40d1-4e98-b56c-e2d042157963"), eq(8L), eq(3L), eq("source"), eq("orders"),
+                eq(ddl.substring(0, 16000)), eq("ACTIVE"));
     }
 
     @Test

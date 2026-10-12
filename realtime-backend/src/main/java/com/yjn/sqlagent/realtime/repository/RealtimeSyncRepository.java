@@ -281,6 +281,7 @@ public class RealtimeSyncRepository {
     public void updateTask(long taskId, SyncTaskRequest request, String actor) {
         long totalStartedAt = System.nanoTime();
         long stageStartedAt = totalStartedAt;
+        lockTaskForDdl(taskId);
         Map<String, Object> currentTask = requiredTask(taskId);
         if (((Number) currentTask.get("taskStatus")).intValue() == 1) {
             throw new IllegalStateException("上线中的任务不允许编辑，请先下线任务");
@@ -290,6 +291,7 @@ public class RealtimeSyncRepository {
                 text(request.getExpectedUpdateTime()))));
         Long beforeVersion = latestVersionId(taskId);
         Map<String, Object> config = normalizedConfig(request);
+        validateDdlTables(taskId, request.getSourceServerId(), config);
         long normalizeAndPolicyMs = elapsedMs(stageStartedAt);
         stageStartedAt = System.nanoTime();
         int updated;
@@ -321,6 +323,7 @@ public class RealtimeSyncRepository {
         insertChange(taskId, operationId, beforeVersion, afterVersion, null, actor, "EDIT", "编辑同步任务配置");
         completeOperation(operationId, "SUCCESS", json(Map.of("beforeVersionId", beforeVersion,
                 "afterVersionId", afterVersion)), null);
+        resolveRemovedDdlExceptions(taskId, config);
         long versionAndAuditMs = elapsedMs(stageStartedAt);
         LOG.info("sync_persistence operation=update taskId={} tableCount={} normalizeAndPolicyMs={} taskConfigMs={} conflictCheckMs={} mappingPersistenceMs={} versionAndAuditMs={} transactionTotalMs={}",
                 taskId, selectedTables(config).size(), normalizeAndPolicyMs, taskConfigMs, conflictCheckMs,
@@ -354,7 +357,8 @@ public class RealtimeSyncRepository {
                 + " LEFT JOIN rt_server s ON s.id=m.source_server_id WHERE m.task_id=? ORDER BY m.sort_order,m.id", taskId);
     }
 
-    public List<Map<String, Object>> sourceTableOptions(long serverId, List<String> tables, Long excludeTaskId) {
+    public List<Map<String, Object>> sourceTableOptions(long serverId, List<String> tables,
+            Map<String, Map<String, Object>> schemas, Long excludeTaskId) {
         if (tables.isEmpty()) return Collections.emptyList();
         MapSqlParameterSource parameters = new MapSqlParameterSource()
                 .addValue("serverId", serverId).addValue("tables", tables)
@@ -370,6 +374,9 @@ public class RealtimeSyncRepository {
         for (String table : tables) {
             Map<String, Object> row = new LinkedHashMap<>();
             row.put("tableName", table);
+            Map<String, Object> schema = schemas.get(table);
+            row.put("hasPrimaryKey", schema != null && schema.get("primaryKeys") instanceof List
+                    && !((List<?>) schema.get("primaryKeys")).isEmpty());
             Map<String, Object> owner = byTable.get(table);
             row.put("occupied", owner != null);
             if (owner != null) {
@@ -423,6 +430,44 @@ public class RealtimeSyncRepository {
         row.put("config", jsonMap(row.remove("configJson")));
         row.put("debugReport", jsonValue(row.remove("debugReportJson")));
         return row;
+    }
+
+    public Map<String, Object> requiredInstanceConfig(long taskId, long instanceId) {
+        Map<String, Object> instance = requiredInstance(taskId, instanceId);
+        Map<String, Object> snapshot = objectMap(instance.get("config"));
+        if (snapshot.get("request") instanceof Map) snapshot = objectMap(snapshot.get("request"));
+        else if (snapshot.get("task") instanceof Map) snapshot = objectMap(snapshot.get("task"));
+        if (!(snapshot.get("taskConfig") instanceof Map)
+                || ((Map<?, ?>) snapshot.get("taskConfig")).isEmpty()) {
+            throw new IllegalStateException("实例有效配置快照不存在或格式不完整，无法展示实例配置");
+        }
+        if (!"sync".equalsIgnoreCase(text(snapshot.get("taskType")))) {
+            throw new IllegalStateException("实例配置快照任务类型不匹配");
+        }
+        Long snapshotTaskId = longValue(snapshot.get("id") != null
+                ? snapshot.get("id") : snapshot.get("taskId"));
+        if (snapshotTaskId == null || snapshotTaskId != taskId) {
+            throw new IllegalStateException("实例配置快照任务 ID 缺失或不匹配");
+        }
+        Map<String, Object> cdc = objectMap(objectMap(snapshot.get("taskConfig")).get("cdcConfig"));
+        if (!(cdc.get("selectedTables") instanceof List)) {
+            throw new IllegalStateException("实例有效配置快照缺少源表列表");
+        }
+        Map<String, Object> result = new LinkedHashMap<>(snapshot);
+        result.put("instanceId", instanceId);
+        List<String> requests = jdbc.queryForList("SELECT request_json FROM rt_task_operation"
+                + " WHERE task_id=? AND task_instance_id=? AND operation_type IN ('START','DEBUG_START','RECOVER')"
+                + " ORDER BY id DESC LIMIT 1", String.class, taskId, instanceId);
+        Map<String, Object> start = requests.isEmpty() ? Map.of() : jsonMap(requests.get(0));
+        Object startType = start.get("startType") != null ? start.get("startType") : instance.get("recoveryStrategy");
+        if (startType != null) result.put("startType", text(startType));
+        if (start.get("statePath") != null || instance.get("recoveryStatePath") != null) {
+            result.put("statePath", text(start.get("statePath"), text(instance.get("recoveryStatePath"))));
+        }
+        if (start.get("sourceStartupTimestampMillis") != null) {
+            result.put("sourceStartupTimestampMillis", start.get("sourceStartupTimestampMillis"));
+        }
+        return result;
     }
 
     public long insertInstance(long taskId, Long versionId, String mode, String configJson) {
@@ -933,7 +978,8 @@ public class RealtimeSyncRepository {
         return jdbc.queryForList("SELECT id,param_type AS `paramType`,param_key AS `paramKey`,key_desc AS `keyDesc`,"
                 + "param_value AS `paramValue`,value_type AS `valueType`,input_type AS `inputType`,"
                 + "min_value AS `minValue`,max_value AS `maxValue`,step_value AS `stepValue`,"
-                + "precision_value AS `precisionValue`,required_flag AS `required`,sort_order AS `sortOrder` FROM rt_task_param"
+                + "precision_value AS `precisionValue`,required_flag AS `required`,editable_flag AS `editableFlag`,"
+                + "sort_order AS `sortOrder` FROM rt_task_param"
                 + " WHERE task_type='sync' AND enabled_flag=1 ORDER BY param_type,sort_order,id");
     }
 
@@ -1053,9 +1099,102 @@ public class RealtimeSyncRepository {
 
     public Map<String, Object> validatePreview(SyncTaskRequest request, Long excludeTaskId) {
         Map<String, Object> config = normalizedConfig(request);
+        if (excludeTaskId != null) validateDdlTables(excludeTaskId, request.getSourceServerId(), config);
         validateMappingConflicts(excludeTaskId == null ? 0L : excludeTaskId,
                 request.getSourceServerId(), config);
         return config;
+    }
+
+    public List<Map<String, Object>> ddlExceptions(long taskId) {
+        requiredTask(taskId);
+        return jdbc.queryForList("SELECT id,event_id eventId,task_id taskId,server_id serverId,"
+                + "database_name databaseName,table_name tableName,ddl_sql ddlSql,status,"
+                + "create_time createTime,update_time updateTime FROM rt_sync_ddl_exception"
+                + " WHERE task_id=? ORDER BY create_time DESC,id DESC", taskId);
+    }
+
+    @Transactional
+    public void reportDdlException(String eventId, long taskId,
+            String database, String table, String ddlSql) {
+        if (eventId == null || !eventId.matches("[0-9a-fA-F-]{36}") || database == null
+                || database.isBlank() || table == null || table.isBlank() || ddlSql == null || ddlSql.isBlank()) {
+            throw new IllegalArgumentException("DDL 异常上报参数不完整");
+        }
+        String normalizedDatabase = limited(database.trim(), 128);
+        String normalizedTable = limited(table.trim(), 128);
+        String normalizedDdl = limited(ddlSql.trim(), 16000);
+        lockTaskForDdl(taskId);
+        Map<String, Object> task = requiredTask(taskId);
+        Map<String, Object> config = objectMap(task.get("taskConfig"));
+        if (!"sync".equalsIgnoreCase(text(task.get("taskType")))) {
+            throw new IllegalArgumentException("DDL 异常任务类型不匹配");
+        }
+        Long serverId = longValue(task.get("sourceServerId"));
+        if (serverId == null || serverId <= 0) throw new IllegalStateException("同步任务缺少源 Server");
+        String status = selectedTables(config).contains(normalizedTable) ? "ACTIVE" : "RESOLVED";
+        jdbc.update("INSERT IGNORE INTO rt_sync_ddl_exception"
+                + "(event_id,task_id,server_id,database_name,table_name,ddl_sql,status)"
+                + " VALUES(?,?,?,?,?,?,?)", eventId, taskId, serverId,
+                normalizedDatabase, normalizedTable, normalizedDdl, status);
+    }
+
+    void validateDdlTables(long taskId, long serverId, Map<String, Object> config) {
+        List<String> selected = selectedTables(config);
+        if (selected.isEmpty()) return;
+        Map<String, Object> cdc = objectMap(config.get("cdcConfig"));
+        List<String> active = jdbc.queryForList("SELECT DISTINCT table_name FROM rt_sync_ddl_exception"
+                + " WHERE task_id=? AND status='ACTIVE'", String.class, taskId);
+        List<String> blocked = active.stream().filter(selected::contains).collect(java.util.stream.Collectors.toList());
+        if (!blocked.isEmpty()) throw new IllegalStateException("存在待处理 DDL 异常表，请先剔除后保存：" + String.join("、", blocked));
+        Map<String, Object> current = objectMap(requiredTask(taskId).get("taskConfig"));
+        List<String> existing = selectedTables(current);
+        for (String table : selected) {
+            if (existing.contains(table)) continue;
+            List<Map<String, Object>> resolved = jdbc.queryForList("SELECT MAX(update_time) resolvedAt"
+                    + " FROM rt_sync_ddl_exception WHERE task_id=? AND server_id=? AND database_name=?"
+                    + " AND table_name=? AND status='RESOLVED'", taskId, serverId,
+                    text(cdc.get("databaseName")), table);
+            Object resolvedAt = resolved.isEmpty() ? null : resolved.get(0).get("resolvedAt");
+            if (resolvedAt == null) continue;
+            List<Map<String, Object>> savepoints = jdbc.queryForList("SELECT effective_config_snapshot_json configJson"
+                    + " FROM rt_task_instance WHERE task_id=? AND execution_mode='PRODUCTION'"
+                    + " AND status='finished' AND savepoint_path IS NOT NULL AND savepoint_path<>'' AND ended_at>=?",
+                    taskId, resolvedAt);
+            boolean isolated = savepoints.stream().anyMatch(row -> cleanSavepointExcludesTable(row.get("configJson"), table));
+            if (!isolated) throw new IllegalStateException("DDL 异常表 " + table
+                    + " 重新加入前必须先生成一份不含该表的新 Savepoint，并清理旧目标表");
+        }
+    }
+
+    private void lockTaskForDdl(long taskId) {
+        if (jdbc.queryForList("SELECT id FROM rt_task WHERE id=? AND deleted_flag=0 FOR UPDATE", taskId).isEmpty()) {
+            throw new IllegalArgumentException("同步任务不存在：" + taskId);
+        }
+    }
+
+    boolean cleanSavepointExcludesTable(Object snapshotValue, String table) {
+        try {
+            Map<String, Object> cdc = objectMap(taskConfigFromSnapshot(snapshotValue).get("cdcConfig"));
+            Object selected = cdc.get("selectedTables");
+            if (!(selected instanceof List) || ((List<?>) selected).isEmpty()) return false;
+            for (Object item : (List<?>) selected) {
+                if (!(item instanceof String) || ((String) item).isBlank()) return false;
+            }
+            return !((List<?>) selected).contains(table);
+        } catch (IllegalStateException exception) {
+            return false;
+        }
+    }
+
+    private void resolveRemovedDdlExceptions(long taskId, Map<String, Object> config) {
+        List<String> selected = selectedTables(config);
+        List<Map<String, Object>> active = jdbc.queryForList("SELECT id,table_name tableName"
+                + " FROM rt_sync_ddl_exception WHERE task_id=? AND status='ACTIVE'", taskId);
+        for (Map<String, Object> row : active) {
+            boolean stillSelected = selected.contains(text(row.get("tableName")));
+            if (!stillSelected) jdbc.update("UPDATE rt_sync_ddl_exception"
+                    + " SET status='RESOLVED',update_time=NOW() WHERE id=?", row.get("id"));
+        }
     }
 
     private void validateConfig(Map<String, Object> config) {

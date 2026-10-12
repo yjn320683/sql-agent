@@ -139,7 +139,7 @@ export default function InstanceLogPanel({ taskId, instance, backLabel, onBack }
       </Space>
       <Button icon={<ReloadOutlined />} loading={activeTab === 'runtime' ? runtimeLoading : lifecycleLoading} onClick={refresh}>刷新日志</Button>
     </div>
-    <Tabs className="ui-flat-tabs task-log-tabs-fill" activeKey={activeTab} onChange={setActiveTab} items={[
+    <Tabs tabPosition="right" className="task-log-tabs-fill" activeKey={activeTab} onChange={setActiveTab} items={[
       { key: 'startup', label: '启动日志', children: consoleView(lifecycle.startup, '暂无启动日志', lifecycleLoading) },
       { key: 'stop', label: '停止日志', children: consoleView(lifecycle.stop, '暂无停止日志', lifecycleLoading) },
       { key: 'runtime', label: '运行日志', children: <div className="task-runtime-log-pane">

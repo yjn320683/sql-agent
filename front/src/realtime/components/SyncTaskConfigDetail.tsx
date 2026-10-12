@@ -3,7 +3,6 @@ import { isValidElement, type ReactNode } from 'react';
 import { StructuredKeyValueTable } from './InstanceInspectorModal';
 import SyncSectionNav from './SyncSectionNav';
 import { syncStartMethodLabel } from './syncStartMethod';
-import { MYSQL_METADATA_COLUMN_PREFIX } from '../types';
 
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
@@ -49,12 +48,11 @@ interface Props {
   value: unknown;
   highlightPaths?: Iterable<string>;
   compareMode?: boolean;
-  sourceServerName?: string;
   showNavigation?: boolean;
   navigationPrefix?: string;
 }
 
-export default function SyncTaskConfigDetail({ value, highlightPaths, compareMode = false, sourceServerName, showNavigation = false, navigationPrefix = 'sync-instance-config' }: Props) {
+export default function SyncTaskConfigDetail({ value, highlightPaths, compareMode = false, showNavigation = false, navigationPrefix = 'sync-instance-config' }: Props) {
   const { root, taskConfig, cdc, alarm, flink } = normalize(value);
   if (!Object.keys(root).length) return <Empty description="暂无配置" />;
   const changedPaths = new Set(highlightPaths ?? []);
@@ -81,7 +79,7 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
     { key: 'alarm', label: '告警配置' },
     { key: 'source', label: '源端与目标' },
     { key: 'private', label: '私有配置' },
-    { key: 'runtime', label: '运行与资源' },
+    { key: 'runtime', label: '运行资源' },
   ];
 
   return <div className={`sync-config-detail-layout${showNavigation && !compareMode ? ' with-navigation' : ''}`}>
@@ -108,7 +106,7 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
       <Typography.Title level={5} className="realtime-config-subtitle">公共配置</Typography.Title>
       <Descriptions bordered size="small" column={columns}>
         {item('源端类型', (root.sourceType ?? taskConfig.sourceType) === 'mysql-cdc' ? 'Mysql CDC' : root.sourceType ?? taskConfig.sourceType, ['taskConfig.sourceType'])}
-        {item('Server', root.sourceServerName ?? sourceServerName ?? root.sourceServerId ?? taskConfig.sourceServerId, ['taskConfig.sourceServerId'])}
+        {item('Server', root.sourceServerName ?? root.sourceServerId ?? taskConfig.sourceServerId, ['taskConfig.sourceServerId'])}
       </Descriptions>
       <Descriptions bordered size="small" column={1} className="realtime-cdc-detail-table">
         {item('源库', cdc.databaseName, ['taskConfig.cdcConfig.databaseName'])}
@@ -119,10 +117,10 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
         {item('目标Paimon表前缀', cdc.tablePrefix, ['taskConfig.cdcConfig.tablePrefix'])}
         {item('目标Paimon表列表', targetTables, ['taskConfig.cdcConfig.targetTableList'])}
         {item('目标Paimon表同步元数据列', cdc.metadataColumns, ['taskConfig.cdcConfig.metadataColumns'])}
-        {item('目标Paimon表同步元数据列前缀', MYSQL_METADATA_COLUMN_PREFIX, ['taskConfig.cdcConfig.metadataColumnPrefix'])}
+        {item('目标Paimon表同步元数据列前缀', cdc.metadataColumnPrefix, ['taskConfig.cdcConfig.metadataColumnPrefix'])}
         {item('目标Paimon表类型映射', cdc.typeMappings, ['taskConfig.cdcConfig.typeMappings'])}
         {Object.keys(asRecord(cdc.tableConfOverrides)).length > 0 && item('目标Paimon表配置', configRows(cdc.tableConfOverrides), ['taskConfig.cdcConfig.tableConfOverrides'])}
-        {item('整库模式', cdc.mode ?? 'combined', ['taskConfig.cdcConfig.mode'])}
+        {item('整库模式', cdc.mode, ['taskConfig.cdcConfig.mode'])}
       </Descriptions>
     </>)}
 
@@ -137,7 +135,7 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
         { title: '状态', width: 100, align: 'center' as const, render: (_: unknown, row: { config: Record<string, unknown> }) => Object.values(row.config).some((entry) => Array.isArray(entry) && entry.length) ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
       ]} />, changed('taskConfig.cdcConfig.tableConfigs') ? 'task-detail-section-changed' : '')}
 
-    {section('runtime', '资源与运行', <Descriptions bordered size="small" column={columns}>
+    {section('runtime', '运行资源', <Descriptions bordered size="small" column={columns}>
       {item('并行度', flink.parallelism, ['flinkConf.parallelism'])}
       {item('Checkpoint 周期', flink.checkpointIntervalSeconds ?? flink.checkpointInterval, ['flinkConf.checkpointIntervalSeconds'])}
       {item('TaskManager 内存', flink.taskManagerMemoryGb ?? flink.taskManagerMemory, ['flinkConf.taskManagerMemoryGb'])}

@@ -18,6 +18,7 @@ import java.net.http.HttpResponse;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
 import java.nio.file.attribute.PosixFilePermissions;
 import java.security.MessageDigest;
 import java.time.Duration;
@@ -1229,6 +1230,16 @@ public class RealtimeRuntimeService {
         runtime.setPaimonActionJarPath(properties.getPaimonActionJarPath());
         runtime.setPaimonWarehouse(properties.getPaimonWarehouse());
         runtime.setPaimonDebugWarehouse(properties.getPaimonDebugWarehouse());
+        if ("sync".equalsIgnoreCase(taskSpec.getTaskType())) {
+            runtime.setDdlReportUrl(properties.getDdlReportUrl());
+            runtime.setDdlReportToken(properties.getDdlReportToken());
+            if (properties.isDdlReporterCompatible()
+                    && !properties.getDdlReportUrl().isBlank()
+                    && !properties.getDdlReportToken().isBlank()) {
+                verifyDdlReporterArtifacts();
+            }
+            runtime.setDdlReporterCompatible(properties.isDdlReporterCompatible());
+        }
         runtime.setTargetDatabase(text(task.get("targetDatabase"), properties.getTargetDatabase()));
         runtime.setCatalogConf(properties.getCatalogConf()); runtime.setDefaultTableConf(properties.getDefaultTableConf());
         runtime.setMysqlDefaultConf(properties.getMysqlDefaultConf()); spec.setRuntimeConfig(runtime);
@@ -1317,9 +1328,15 @@ public class RealtimeRuntimeService {
                     "instances", String.valueOf(spec.getTaskInstanceId()));
             Files.createDirectories(dir);
             Path file = dir.resolve("job-config.json");
-            Files.write(file, bytes);
-            try { Files.setPosixFilePermissions(file, PosixFilePermissions.fromString("rw-------")); }
-            catch (UnsupportedOperationException ignored) { }
+            Path staged = Files.createTempFile(dir, "job-config-", ".tmp",
+                    PosixFilePermissions.asFileAttribute(PosixFilePermissions.fromString("rw-------")));
+            try {
+                Files.write(staged, bytes);
+                try { Files.move(staged, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING); }
+                catch (java.nio.file.AtomicMoveNotSupportedException unsupported) {
+                    Files.move(staged, file, StandardCopyOption.REPLACE_EXISTING);
+                }
+            } finally { Files.deleteIfExists(staged); }
             String prefix = text(properties.getSubmissionUriPrefix());
             if (prefix.isEmpty()) return new StoredSpec(file.toUri().toString(), hash);
             String uri = prefix.replaceAll("/+$", "") + "/tasks/" + spec.getTaskId() + "/instances/"
@@ -1327,7 +1344,7 @@ public class RealtimeRuntimeService {
             String parent = uri.substring(0, uri.lastIndexOf('/'));
             CommandResult mkdir = execute(List.of("hdfs", "dfs", "-mkdir", "-p", parent), 60);
             if (mkdir.exitCode != 0) throw new IllegalStateException("创建 HDFS 提交目录失败：" + mkdir.output);
-            CommandResult put = execute(List.of("hdfs", "dfs", "-put", "-f", file.toString(), uri), 60);
+            CommandResult put = execute(List.of("hdfs", "dfs", "-put", "-p", "-f", file.toString(), uri), 60);
             if (put.exitCode != 0) throw new IllegalStateException("上传 SubmissionSpec 失败：" + put.output);
             CommandResult chmod = execute(List.of("hdfs", "dfs", "-chmod", "600", uri), 60);
             if (chmod.exitCode != 0) throw new IllegalStateException("设置 SubmissionSpec 权限失败：" + chmod.output);
@@ -1925,7 +1942,37 @@ public class RealtimeRuntimeService {
         }
         return result.toString();
     }
-    private String mask(String value) { return value == null ? "" : value.replaceAll("(?i)(password=)[^\\s]+", "$1******"); }
+    private void verifyDdlReporterArtifacts() {
+        verifyDdlArtifact(properties.getPaimonActionJarPath(), properties.getDdlReporterActionSha256(), "Action");
+        verifyDdlArtifact(properties.getDdlReporterCdcJarPath(), properties.getDdlReporterCdcSha256(), "CDC");
+        verifyDdlArtifact(properties.getDdlReporterFlinkJarPath(), properties.getDdlReporterFlinkSha256(), "Flink");
+    }
+
+    private void verifyDdlArtifact(String pathText, String expectedSha256, String label) {
+        if (pathText == null || pathText.isBlank() || expectedSha256 == null
+                || !expectedSha256.matches("(?i)[0-9a-f]{64}")) {
+            throw new IllegalStateException("DDL reporter " + label + " 包路径或 SHA-256 未配置");
+        }
+        Path path = Path.of(pathText);
+        if (!Files.isRegularFile(path)) throw new IllegalStateException("DDL reporter " + label + " 包不存在");
+        try (InputStream stream = Files.newInputStream(path)) {
+            MessageDigest digest = MessageDigest.getInstance("SHA-256");
+            byte[] buffer = new byte[8192];
+            int count;
+            while ((count = stream.read(buffer)) >= 0) digest.update(buffer, 0, count);
+            StringBuilder actual = new StringBuilder();
+            for (byte value : digest.digest()) actual.append(String.format("%02x", value & 0xff));
+            if (!actual.toString().equalsIgnoreCase(expectedSha256)) {
+                throw new IllegalStateException("DDL reporter " + label + " 包 SHA-256 不匹配");
+            }
+        } catch (java.io.IOException | java.security.NoSuchAlgorithmException exception) {
+            throw new IllegalStateException("DDL reporter " + label + " 包校验失败", exception);
+        }
+    }
+
+    private String mask(String value) { return value == null ? "" : value
+            .replaceAll("(?i)(password=)[^\\s]+", "$1******")
+            .replaceAll("(?i)(--ddl_report_token\\s+)[^\\s]+", "$1******"); }
     private String safe(Throwable value) { return mask(value.getMessage() == null ? value.getClass().getSimpleName() : value.getMessage()); }
     private String tail(String value, int max) { return value == null || value.length() <= max ? text(value) : value.substring(value.length() - max); }
     private String append(String left, String right) { return left.isEmpty() ? right : left + "\n" + right; }

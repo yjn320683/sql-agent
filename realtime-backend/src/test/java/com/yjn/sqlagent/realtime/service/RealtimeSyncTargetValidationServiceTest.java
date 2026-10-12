@@ -2,6 +2,7 @@ package com.yjn.sqlagent.realtime.service;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -41,6 +42,39 @@ class RealtimeSyncTargetValidationServiceTest {
 
         verify(catalog, never()).existingTables(
                 org.mockito.ArgumentMatchers.anyString(), org.mockito.ArgumentMatchers.anyList());
+    }
+
+    @Test
+    void checksExistingSourceWhenItsTargetTableChanges() {
+        RealtimePaimonCatalogService catalog = mock(RealtimePaimonCatalogService.class);
+        when(catalog.existingTables("ods_real", List.of("ods_orders_new")))
+                .thenReturn(Set.of("ods_orders_new"));
+        RealtimeSyncTargetValidationService service = new RealtimeSyncTargetValidationService(catalog);
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.validateAddedTargets(
+                        config(List.of("orders"), List.of("ods_orders")),
+                        config(List.of("orders"), List.of("ods_orders_new"))));
+
+        assertTrue(error.getMessage().contains("orders → ods_real.ods_orders_new"));
+        verify(catalog).existingTables("ods_real", List.of("ods_orders_new"));
+    }
+
+    @Test
+    void checksExistingSourceWhenTargetDatabaseChanges() {
+        RealtimePaimonCatalogService catalog = mock(RealtimePaimonCatalogService.class);
+        when(catalog.existingTables("ods_other", List.of("ods_orders")))
+                .thenReturn(Set.of("ods_orders"));
+        RealtimeSyncTargetValidationService service = new RealtimeSyncTargetValidationService(catalog);
+        Map<String, Object> requested = Map.of("targetDatabase", "ods_other", "cdcConfig", Map.of(
+                "selectedTables", List.of("orders"), "targetTableList", List.of("ods_orders"),
+                "targetDatabase", "ods_other"));
+
+        IllegalStateException error = assertThrows(IllegalStateException.class,
+                () -> service.validateAddedTargets(config(List.of("orders"), List.of("ods_orders")), requested));
+
+        assertTrue(error.getMessage().contains("orders → ods_other.ods_orders"));
+        verify(catalog).existingTables("ods_other", List.of("ods_orders"));
     }
 
     @Test

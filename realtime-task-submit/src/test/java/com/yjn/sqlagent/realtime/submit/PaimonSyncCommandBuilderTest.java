@@ -37,6 +37,21 @@ class PaimonSyncCommandBuilderTest {
     }
 
     @Test
+    void ddlReporterArgumentsRequireVerifiedArtifactAndMaskToken() {
+        SubmissionSpec spec = validSpec();
+        spec.getRuntimeConfig().setDdlReportUrl("http://backend/api/internal/sync/ddl-exceptions");
+        spec.getRuntimeConfig().setDdlReportToken("private-token");
+        assertThrows(IllegalStateException.class, () -> new PaimonSyncCommandBuilder().build(spec));
+        spec.getRuntimeConfig().setDdlReporterCompatible(true);
+        PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(spec);
+        assertOption(command.getArguments(), "--task_id", "12");
+        assertOption(command.getArguments(), "--ddl_report_url", "http://backend/api/internal/sync/ddl-exceptions");
+        assertOption(command.getArguments(), "--ddl_report_token", "private-token");
+        assertFalse(command.maskedArguments().contains("private-token"));
+        assertOption(command.maskedArguments(), "--ddl_report_token", "******");
+    }
+
+    @Test
     void allocatesServerIdPerInstanceAndIgnoresConfiguredValue() {
         SubmissionSpec spec = validSpec();
         Map<String, Object> taskConfig = new LinkedHashMap<>(spec.getTask().getTaskConfig());

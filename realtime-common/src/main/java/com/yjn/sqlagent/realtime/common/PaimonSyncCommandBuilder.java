@@ -84,7 +84,24 @@ public class PaimonSyncCommandBuilder {
             tableConf.put("metastore.partitioned-table", "true");
         }
         appendMap(args, "--table_conf", tableConf);
+        appendDdlReporting(args, spec, preview);
         return new Command(required(runtime.getPaimonActionJarPath(), "Paimon Action Jar 未配置"), args);
+    }
+
+    private void appendDdlReporting(List<String> args, SubmissionSpec spec, boolean preview) {
+        SubmissionSpec.RuntimeConfig runtime = spec.getRuntimeConfig();
+        String url = text(runtime.getDdlReportUrl());
+        String token = text(runtime.getDdlReportToken());
+        if (url.isEmpty() && token.isEmpty()) return;
+        if (url.isEmpty() || token.isEmpty()) throw new IllegalArgumentException("DDL 上报地址和 Token 必须同时配置");
+        if (!runtime.isDdlReporterCompatible()) throw new IllegalStateException("当前 Paimon Action/CDC 包尚未验证 DDL reporter 兼容性，禁止携带上报参数启动");
+        String taskId;
+        if (preview && (spec.getTaskId() == null || spec.getTaskId() <= 0)) taskId = "<task-id>";
+        else if (spec.getTaskId() == null || spec.getTaskId() <= 0) throw new IllegalArgumentException("任务 ID 缺失");
+        else taskId = String.valueOf(spec.getTaskId());
+        option(args, "--task_id", taskId);
+        option(args, "--ddl_report_url", url);
+        option(args, "--ddl_report_token", token);
     }
 
     private String serverIdRange(SubmissionSpec spec, boolean preview) {
@@ -227,6 +244,7 @@ public class PaimonSyncCommandBuilder {
         public List<String> maskedArguments() {
             List<String> result = getArguments();
             for (int i = 0; i + 1 < result.size(); i++) {
+                if ("--ddl_report_token".equals(result.get(i))) result.set(i + 1, "******");
                 if ("--mysql_conf".equals(result.get(i)) && result.get(i + 1).startsWith("password=")) {
                     result.set(i + 1, "password=******");
                 }

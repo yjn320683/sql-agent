@@ -119,7 +119,7 @@ export function InstanceConfigView({ value }: { value: unknown }) {
           {item('受管表依赖', tableReferences, 2)}{item('表映射', exportConfig.mappings, 2)}{item('Sink 参数', exportConfig.sink, 2)}
         </Descriptions>
       </Section>}
-      <Section title="资源与运行">
+      <Section title="运行资源">
         <Descriptions bordered size="small" column={2}>
           {item('并行度', flinkConf.parallelism)}{item('Checkpoint 周期', flinkConf.checkpointIntervalSeconds == null ? undefined : `${String(flinkConf.checkpointIntervalSeconds)}s`)}
           {item('TaskManager 内存', flinkConf.taskManagerMemoryGb == null ? undefined : `${String(flinkConf.taskManagerMemoryGb)}GB`)}
@@ -175,7 +175,7 @@ export function InstanceConfigView({ value }: { value: unknown }) {
     </Section>
     {Object.keys(asRecord(cdc.mysqlConfOverrides)).length > 0 && <Section title="Mysql配置"><StructuredKeyValueTable value={cdc.mysqlConfOverrides} /></Section>}
     {Object.keys(asRecord(cdc.tableConfOverrides)).length > 0 && <Section title="目标Paimon表配置"><StructuredKeyValueTable value={cdc.tableConfOverrides} /></Section>}
-    <Section title="资源与运行">
+      <Section title="运行资源">
       <Descriptions bordered size="small" column={2}>
         {item('并行度', taskConfig.parallelism)}{item('Checkpoint 周期', taskConfig.checkpointInterval ? `${taskConfig.checkpointInterval}s` : undefined)}
         {item('TaskManager 内存', taskConfig.taskManagerMemory)}{item('JobManager 内存', taskConfig.jobManagerMemory)}

@@ -18,6 +18,9 @@ SQL Agent 是数开平台 Claude Code Agent 项目，包含前端、后端、Age
 实时同步任务参考 `/opt/project/gs/realtime-data-dev`。近期启停与状态恢复逻辑对照参考项目 `0f51d85d`：正式 Savepoint 停止通过 Flink CLI `stop -p` 执行；同步任务从任务状态目录选择有效的 Checkpoint/Savepoint，禁用时间戳启动。CLI 未返回路径时，只有停止前基线之外出现唯一完整 Savepoint，才补记恢复路径。
 
 实时任务主表的状态列按参考项目使用 `task_status`（上下线）、`instance_status`（运行态）和 `deleted_flag`（逻辑删除）。已部署旧表先执行 `realtime-backend/src/main/resources/db/upgrade-20261010-task-online-status.sql`，再执行 `realtime-backend/src/main/resources/db/upgrade-20261010-align-task-status.sql`；第二个脚本也支持尚未执行第一个脚本的旧表。新建库使用 `realtime_sync_schema.sql`。
+已部署的实时库还需先执行 `realtime-backend/src/main/resources/db/upgrade-20261012-sync-param-editable.sql`，再执行 `realtime-backend/src/main/resources/db/upgrade-20261012-sync-ddl-exception.sql`，然后部署新版后端和前端。前者通过 `rt_task_param.editable_flag` 控制动态参数是否可编辑，后者创建 DDL 异常表；缺少后者时同步任务编辑页会因无法读取异常状态而禁用保存。两个脚本均可重复执行；新建库使用 `realtime_sync_schema.sql`，已包含对应结构。
+
+DDL 异常上报需在实际运行环境配置 `SYNC_DDL_REPORT_URL`（Flink TaskManager 可访问的本后端 `/api/internal/sync/ddl-exceptions` 地址）与 `SYNC_DDL_REPORT_TOKEN`（后端和提交作业共用的非空密钥）。还需确认 Flink lib 中的 Action、定制 CDC、Paimon Flink 三个 JAR 与部署版本一致，填写 `SYNC_DDL_ACTION_SHA256`、`SYNC_DDL_CDC_JAR_PATH`、`SYNC_DDL_CDC_SHA256`、`SYNC_DDL_FLINK_JAR_PATH`、`SYNC_DDL_FLINK_SHA256`，验证后才将 `SYNC_DDL_REPORTER_COMPATIBLE` 设为 `true`。地址或 Token 为空时不会上报；两者仅配置其一或 JAR 校验失败时拒绝带上报参数启动。不要把真实 Token 写入仓库或 URL；提交配置文件按仅所有者可读写权限存放。
 
 ## 本地验证
 
@@ -150,9 +153,11 @@ bash scripts/deploy.sh
 
 ```bash
 cd front && npm run build
-cd .. && mvn -q -pl backend -am -DskipTests package
+cd .. && mvn -q -pl backend,realtime-task-submit -am -DskipTests package
 java -jar backend/target/sql-agent-backend-0.0.1-SNAPSHOT.jar --spring.profiles.active=local
 ```
+
+手工重新打包前，先停止直接运行 `backend/target` JAR 的后端；Maven 会覆盖该文件。`scripts/deploy.sh` 会把后端切换到独立的运行副本，再执行后续构建。
 
 `front` 不单独运行，构建后的 dist 由 backend 提供静态资源。`mcpserver` 由 agent 内 Claude Code 进程通过 stdio 启动。
 

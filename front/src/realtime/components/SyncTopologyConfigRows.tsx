@@ -22,7 +22,6 @@ export default function SyncTopologyConfigRows({
   parallelismPath,
   flinkConfPath,
   readOnly = false,
-  frozenParallelism,
 }: {
   tableConfPath: NamePath;
   parallelismPath: NamePath;
@@ -35,22 +34,15 @@ export default function SyncTopologyConfigRows({
   const bucketPath = [...tableConfPath, 'bucket'];
   const slotsPath = [...flinkConfPath, 'taskmanager.numberOfTaskSlots'];
   const sinkParallelism = Form.useWatch(sinkPath, form);
-  const taskParallelism = Form.useWatch(parallelismPath, form);
 
   useEffect(() => {
-    const raw = readOnly && frozenParallelism !== undefined
-      ? frozenParallelism
-      : readOnly && taskParallelism !== undefined
-        ? taskParallelism : sinkParallelism ?? taskParallelism ?? '3';
-    const parallelism = Number(raw);
+    if (readOnly || sinkParallelism === undefined) return;
+    const parallelism = Number(sinkParallelism);
     if (!Number.isInteger(parallelism) || parallelism < 1 || parallelism > 4) return;
-    if (sinkParallelism === undefined || (readOnly && Number(sinkParallelism) !== parallelism)) {
-      form.setFieldValue(sinkPath, String(parallelism));
-    }
-    form.setFieldValue(bucketPath, String(parallelism));
-    form.setFieldValue(parallelismPath, parallelism);
-    form.setFieldValue(slotsPath, String(parallelism));
-  }, [form, frozenParallelism, readOnly, sinkParallelism, taskParallelism]);
+    if (form.getFieldValue(bucketPath) !== String(parallelism)) form.setFieldValue(bucketPath, String(parallelism));
+    if (form.getFieldValue(parallelismPath) !== parallelism) form.setFieldValue(parallelismPath, parallelism);
+    if (form.getFieldValue(slotsPath) !== String(parallelism)) form.setFieldValue(slotsPath, String(parallelism));
+  }, [form, readOnly, sinkParallelism]);
 
   return <>
     <Form.Item label="目标 Paimon 表 Bucket" name={bucketPath} className="realtime-dynamic-param">

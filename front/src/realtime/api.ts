@@ -11,6 +11,7 @@ import type {
   RealtimeServer,
   RealtimeServerSave,
   SyncTask,
+  SyncDdlException,
   SyncTaskPage,
   SyncTaskSave,
   TaskChangeLog,
@@ -122,11 +123,12 @@ export const stopSyncTask = (id: number, value: { stopType: string }) => request
 export const canEnableSyncTask = (id: number) => requestJson<{ canEnable: boolean; reason?: string; message?: string; startPolicy?: SyncTaskStartPolicy }>(`/v1/api/tasks/${id}/can-enable`, json('POST', {}));
 export const refreshSyncTask = (id: number) => requestJson<TaskInstance>(`/api/realtime/sync-tasks/${id}/refresh-status`, { method: 'POST' });
 export const listMappings = (id: number) => requestJson<TaskMapping[]>(`/api/realtime/sync-tasks/${id}/table-mappings`);
-export const listInstances = (id: number, executionMode: 'PRODUCTION' | 'DEBUG' = 'PRODUCTION') => requestJson<TaskInstance[]>(`/v1/api/tasks/${id}/instances?executionMode=${executionMode}`);
+export const listInstances = (id: number, executionMode: 'PRODUCTION' | 'DEBUG' | 'ALL' = 'PRODUCTION') => requestJson<TaskInstance[]>(`/v1/api/tasks/${id}/instances?executionMode=${executionMode}`);
 export const listVersions = (id: number) => requestJson<Record<string, unknown>[]>(`/v1/api/tasks/${id}/versions`);
 export const getVersionConfig = (id: number, versionId: number) => requestJson<Record<string, unknown>>(`/v1/api/tasks/${id}/versions/${versionId}/config`);
 export const getStateHistory = (id: number, type: string) => requestJson<Record<string, unknown>[]>(`/v1/api/flink-common/${type === 'checkpoint' ? 'listcheckpoint' : 'listsavepoint'}?taskId=${id}`);
 export const getInstanceInfo = (taskId: number, instanceId: number, kind: 'config' | 'startup-log' | 'runtime-log' | 'runtime' | 'resources' | 'checkpoints' | 'log-components') => requestJson<unknown>(`/v1/api/tasks/${taskId}/instances/${instanceId}/${kind}`);
+export const listSyncDdlExceptions = (taskId: number) => requestJson<SyncDdlException[]>(`/v1/api/tasks/${taskId}/sync/ddl-exceptions`);
 export const getInstanceProgress = (taskId: number, instanceId: number) => requestJson<TaskInstanceProgress>(`/v1/api/tasks/${taskId}/instances/${instanceId}/progress`);
 export const getInstanceDiagnosticReport = (taskId: number, instanceId: number, refresh = false) => requestJson<DiagnosticReport>(`/v1/api/tasks/${taskId}/instances/${instanceId}/diagnostic-report${refresh ? '/refresh' : ''}`, { method: refresh ? 'POST' : 'GET' });
 export const getInstanceDebugReport = (taskId: number, instanceId: number) => requestJson<RealtimeDebugReport>(`/v1/api/tasks/${taskId}/instances/${instanceId}/debug-report`);
@@ -179,7 +181,26 @@ export const getMysqlSchema = (id: number, database: string, table: string) => r
 export const getMysqlTableDdl = (id: number, table: string) => requestJson<MysqlTableDdl>(`/api/servers/${id}/mysql/table-ddl?table=${encodeURIComponent(table)}`);
 export const getCommonColumns = (id: number, database: string, tables: string[]) => requestJson<MysqlColumn[]>(`/api/servers/${id}/mysql/common-columns?database=${encodeURIComponent(database)}&${tables.map((table) => `tables=${encodeURIComponent(table)}`).join('&')}`);
 
-export const listTaskParams = () => requestJson<TaskParam[]>('/v1/api/tasks/params?taskType=sync');
+type TaskParamWire = TaskParam & {
+  value?: unknown;
+  requiredFlag?: boolean | number;
+  editableFlag?: boolean | number;
+  enabledFlag?: boolean | number;
+};
+
+const taskParamFlag = (value: boolean | number | undefined, fallback: boolean) =>
+  value === undefined ? fallback : value === true || value === 1;
+
+export const listTaskParams = async (): Promise<TaskParam[]> => {
+  const rows = await requestJson<TaskParamWire[]>('/v1/api/tasks/params?taskType=sync');
+  return rows.filter((row) => taskParamFlag(row.enabled ?? row.enabledFlag, true)).map((row) => ({
+    ...row,
+    required: taskParamFlag(row.required ?? row.requiredFlag, false),
+    editable: taskParamFlag(row.editable ?? row.editableFlag, true),
+    enabled: taskParamFlag(row.enabled ?? row.enabledFlag, true),
+    paramValue: row.paramValue ?? (row.value == null ? undefined : typeof row.value === 'string' ? row.value : JSON.stringify(row.value)),
+  }));
+};
 export const getCdcOptions = () => requestJson<{ targetDatabase: string; debugTargetDatabase: string; defaultProjectId: number; tablePrefixes: PaimonTablePrefixOption[] }>('/api/paimon/cdc-options');
 export const listAlerts = (taskId?: number) => requestJson<RealtimeAlert[]>(`/api/alerts${taskId ? `?taskId=${taskId}` : ''}`);
 export const acknowledgeAlert = (id: number) => requestJson<boolean>(`/api/alerts/${id}/acknowledge`, { method: 'POST' });
