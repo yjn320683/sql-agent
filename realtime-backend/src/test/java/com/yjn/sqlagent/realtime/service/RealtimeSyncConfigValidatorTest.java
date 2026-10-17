@@ -8,6 +8,7 @@ import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import com.yjn.sqlagent.realtime.config.RealtimeProperties;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
@@ -21,9 +22,44 @@ class RealtimeSyncConfigValidatorTest {
     @BeforeEach
     void setUp() {
         servers = mock(RealtimeServerService.class);
-        validator = new RealtimeSyncConfigValidator(servers);
+        RealtimeProperties properties = new RealtimeProperties();
+        properties.setMysqlDefaultConf(Map.of("server-time-zone", "Asia/Shanghai"));
+        validator = new RealtimeSyncConfigValidator(servers, properties);
         when(servers.schemas(3L, List.of("orders"))).thenReturn(
                 Map.of("orders", schema("orders", List.of("id", "tenant_id"))));
+    }
+
+    @Test
+    void validatesBucketsAndDisallowsIncrementalSnapshotFilters() {
+        Map<String, Object> config = validConfig();
+        Map<String, Object> table = new LinkedHashMap<>();
+        cdc(config).put("tableConfigs", Map.of("orders", table));
+        for (Object bucket : List.of(0, 101, 1.5, "abc")) {
+            table.put("bucket", bucket);
+            assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
+        }
+        table.put("bucket", 100);
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+        config.put("syncMode", "incremental");
+        table.put("timeFilter", Map.of("version", 1, "field", "created_at", "sourceType", "timestamp",
+                "start", "2026-10-01 00:00:00", "timeZone", "Asia/Shanghai"));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
+    }
+
+    @Test
+    void supportsConstantAndChainedColumnsButRejectsNonDeterministicPartitions() {
+        Map<String, Object> config = validConfig();
+        Map<String, Object> table = new LinkedHashMap<>();
+        cdc(config).put("tableConfigs", Map.of("orders", table));
+        table.put("computedColumns", List.of("day=date_format(created_at,yyyyMMdd)", "month=substring(day,0,6)", "constant=cast(7,INT)"));
+        table.put("primaryKeys", List.of("id", "tenant_id", "month"));
+        table.put("partitionKeys", List.of("month"));
+        table.put("partitionDefaults", Map.of("version", 1, "values", Map.of("month", "999912")));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+        table.put("computedColumns", List.of("clock=now()", "month=date_format(clock,yyyyMM)"));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
+        table.put("computedColumns", List.of("month=substring(day,0,6)", "day=date_format(created_at,yyyyMMdd)"));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
     }
 
     @Test
@@ -35,6 +71,41 @@ class RealtimeSyncConfigValidatorTest {
                 "partitionKeys", List.of("order_day"))));
 
         assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+    }
+
+    @Test
+    void acceptsCompletePartitionDefaultsAndRejectsInvalidValues() {
+        Map<String, Object> config = validConfig();
+        Map<String, Object> table = new LinkedHashMap<>();
+        table.put("partitionKeys", List.of("tenant_id"));
+        table.put("partitionDefaults", Map.of("version", 1, "values", Map.of("tenant_id", "-1")));
+        cdc(config).put("tableConfigs", Map.of("orders", table));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+
+        table.put("partitionDefaults", Map.of("version", 1, "values", Map.of("tenant_id", "1/2")));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
+    }
+
+    @Test
+    void validatesTimeFilterAgainstSourceColumnAndMapping() {
+        Map<String, Object> config = validConfig();
+        cdc(config).put("tableConfigs", Map.of("orders", Map.of("timeFilter", Map.of(
+                "version", 1, "field", "created_at", "sourceType", "timestamp",
+                "start", "2026-10-01 00:00:00", "timeZone", "Asia/Shanghai"))));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+        cdc(config).put("typeMappings", List.of("to-string"));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
+    }
+
+    @Test
+    void temporalPrecisionRequiresIntegerOrStringSource() {
+        Map<String, Object> config = validConfig();
+        cdc(config).put("tableConfigs", Map.of("orders", Map.of(
+                "computedColumns", List.of("day_id=date_format(id,yyyyMMdd,3)"))));
+        assertDoesNotThrow(() -> validator.validate("mysql-cdc", 3L, config));
+        cdc(config).put("tableConfigs", Map.of("orders", Map.of(
+                "computedColumns", List.of("day_id=date_format(created_at,yyyyMMdd,3)"))));
+        assertThrows(IllegalArgumentException.class, () -> validator.validate("mysql-cdc", 3L, config));
     }
 
     @Test

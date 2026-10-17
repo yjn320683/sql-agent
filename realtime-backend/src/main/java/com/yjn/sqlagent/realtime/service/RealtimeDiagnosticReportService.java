@@ -38,7 +38,10 @@ public class RealtimeDiagnosticReportService {
         repository.requiredInstance(taskId, instanceId);
         if (!refresh) {
             DiagnosticReport existing = store.latest(TARGET_KIND, instanceId);
-            if (existing != null) return existing;
+            if (existing != null) {
+                collectDdlExceptions(taskId, existing);
+                return existing;
+            }
         }
         return store.save(generate(taskId, instanceId));
     }
@@ -77,9 +80,44 @@ public class RealtimeDiagnosticReportService {
         collectRuntime(taskId, instanceId, instance, report);
         collectAlerts(taskId, instanceId, report);
         classify(report, status, joinedEvidence(report).toLowerCase(Locale.ROOT));
+        // DDL 上报只有任务归属，必须在实例根因判定之后加入，避免误归因。
+        collectDdlExceptions(taskId, report);
         report.setComplete(report.getMissingEvidence().isEmpty());
         report.setStatus(report.isComplete() ? "COMPLETE" : "PARTIAL");
         return report;
+    }
+
+    private void collectDdlExceptions(long taskId, DiagnosticReport report) {
+        report.getEvidence().removeIf(item -> item.getId().startsWith("task-ddl-"));
+        report.getFindings().removeIf(item -> "TASK_DDL_ACTIVE".equals(item.getCode()));
+        report.getMissingEvidence().removeIf(item -> item.startsWith("任务级 DDL 异常证据不可用："));
+        try {
+            List<Map<String, Object>> rows = jdbc.queryForList("SELECT id,database_name databaseName,"
+                    + "table_name tableName,ddl_sql ddlSql,create_time createTime FROM rt_sync_ddl_exception "
+                    + "WHERE task_id=? AND status='ACTIVE' ORDER BY create_time DESC,id DESC LIMIT 20", taskId);
+            if (!rows.isEmpty()) {
+                java.util.ArrayList<String> refs = new java.util.ArrayList<>();
+                for (Map<String, Object> row : rows) {
+                    String id = "task-ddl-" + row.get("id");
+                    refs.add(id);
+                    add(report, id, "DDL", "rt_sync_ddl_exception（任务级）",
+                            text(row.get("databaseName")) + "." + text(row.get("tableName")),
+                            "上报时间：" + text(row.get("createTime")) + "；状态：待剔除\n" + text(row.get("ddlSql")), null);
+                }
+                Finding finding = new Finding();
+                finding.setCode("TASK_DDL_ACTIVE"); finding.setSeverity("WARNING");
+                finding.setTitle("任务存在待处理 DDL 异常");
+                finding.setCause("来自 Paimon/CDC 的实际异常上报，展示最近最多 20 条待处理记录。上报未包含实例 ID，无法确认属于当前诊断实例。");
+                finding.setImpact("需在 DDL 异常中核对并处理异常表；这些记录不直接作为当前实例失败的根因。");
+                finding.setEvidenceRefs(refs);
+                finding.setActions(List.of(action("VIEW_DDL", "查看 DDL 异常", "打开当前任务的 DDL 异常记录")));
+                report.getFindings().add(finding);
+            }
+        } catch (RuntimeException ex) {
+            report.getMissingEvidence().add("任务级 DDL 异常证据不可用：" + safe(ex.getMessage()));
+        }
+        report.setComplete(report.getMissingEvidence().isEmpty());
+        report.setStatus(report.isComplete() ? "COMPLETE" : "PARTIAL");
     }
 
     private void collectRuntime(long taskId, long instanceId, Map<String, Object> instance, DiagnosticReport report) {

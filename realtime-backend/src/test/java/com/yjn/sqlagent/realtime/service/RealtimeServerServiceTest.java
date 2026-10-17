@@ -26,6 +26,29 @@ import org.junit.jupiter.api.Test;
 
 class RealtimeServerServiceTest {
 
+    @ParameterizedTest
+    @ValueSource(strings = {"datetime(3)", "timestamp(6)"})
+    void schemaPreservesTemporalPrecisionForSnapshotFilters(String fullType) throws Exception {
+        RealtimeSyncRepository repository = mock(RealtimeSyncRepository.class);
+        Map<String, Object> server = Map.of("databaseName", "sales");
+        when(repository.requiredServer(3L, true)).thenReturn(server);
+        Connection connection = mock(Connection.class);
+        PreparedStatement columns = mock(PreparedStatement.class);
+        PreparedStatement keys = mock(PreparedStatement.class);
+        ResultSet rows = schemaRows(List.of("orders"));
+        when(rows.getString("DATA_TYPE")).thenReturn(fullType.substring(0, fullType.indexOf('(')));
+        when(rows.getString("COLUMN_TYPE")).thenReturn(fullType);
+        when(connection.prepareStatement(anyString())).thenReturn(columns, keys);
+        when(columns.executeQuery()).thenReturn(rows);
+        ResultSet keyRows = primaryKeyRows(List.of("orders"));
+        when(keys.executeQuery()).thenReturn(keyRows);
+        RealtimeServerService service = org.mockito.Mockito.spy(new RealtimeServerService(repository));
+        doReturn(connection).when(service).connection(server);
+        Map<String, Object> schema = service.schemas(3L, List.of("orders")).get("orders");
+        Map<?, ?> column = (Map<?, ?>) ((List<?>) schema.get("columns")).get(0);
+        assertEquals(fullType, column.get("type"));
+    }
+
     @Test
     void tableDdlUsesConfiguredDatabaseConnectionAndQuotesTableName() throws Exception {
         RealtimeSyncRepository repository = mock(RealtimeSyncRepository.class);

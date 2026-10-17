@@ -36,6 +36,13 @@ public class RealtimeSyncPrivateController {
         this.actors = actors;
     }
 
+    @GetMapping("/sync/source-server-availability")
+    public RealtimeResponse<List<Map<String, Object>>> sourceServerAvailability(
+            @RequestParam(required = false) Long excludeTaskId) {
+        actors.requireActor();
+        return RealtimeResponse.success(repository.sourceServerAvailability(excludeTaskId));
+    }
+
     @GetMapping("/sync/source-tables")
     public RealtimeResponse<List<Map<String, Object>>> sourceTables(
             @RequestParam long sourceServerId, @RequestParam String database,

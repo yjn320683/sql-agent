@@ -19,6 +19,7 @@ docs/
 !/docs/testing/results/2026-09-18-usability-batches-1-10-self-test.md
 
 node_modules/
+.vite/
 dist/
 target/
 build/

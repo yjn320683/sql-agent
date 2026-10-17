@@ -262,6 +262,13 @@ CREATE TABLE IF NOT EXISTS rt_task_param (
   KEY idx_task_param_type (task_type, param_type, enabled_flag, sort_order)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COMMENT='实时任务动态参数';
 
+CREATE TABLE IF NOT EXISTS rt_sync_server_task_limit (
+  source_server_id BIGINT NOT NULL,
+  sync_mode VARCHAR(32) NOT NULL DEFAULT 'full_incremental',
+  max_task_count INT NOT NULL DEFAULT 1,
+  PRIMARY KEY (source_server_id, sync_mode)
+);
+
 CREATE TABLE IF NOT EXISTS rt_server (
   id BIGINT NOT NULL AUTO_INCREMENT,
   name VARCHAR(128) NOT NULL,

@@ -167,8 +167,11 @@ public class RealtimeServerService {
                         Map<String, Object> column = new LinkedHashMap<>();
                         column.put("name", rows.getString("COLUMN_NAME"));
                         column.put("ordinalPosition", rows.getInt("ORDINAL_POSITION"));
-                        column.put("type", rows.getString("DATA_TYPE"));
+                        String dataType = rows.getString("DATA_TYPE");
                         String fullType = rows.getString("COLUMN_TYPE");
+                        // 时间过滤快照必须保留源字段精度，否则 CDC 会把 DATETIME(3) 误判为类型变化。
+                        boolean temporal = "datetime".equalsIgnoreCase(dataType) || "timestamp".equalsIgnoreCase(dataType);
+                        column.put("type", temporal && fullType != null && !fullType.isBlank() ? fullType : dataType);
                         column.put("fullType", fullType);
                         column.put("characterMaximumLength", rows.getObject("CHARACTER_MAXIMUM_LENGTH"));
                         column.put("numericPrecision", rows.getObject("NUMERIC_PRECISION"));

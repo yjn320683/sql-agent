@@ -1,8 +1,7 @@
-import { CheckOutlined, ReloadOutlined } from '@ant-design/icons';
-import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Pagination, Select, Space, Spin, Table, Tabs, Tag, Typography, message } from 'antd';
+import { Alert, Button, Descriptions, Drawer, Empty, Input, Modal, Space, Spin, Table, Tag, Typography, message } from 'antd';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { applySyncSchemaChange, getChangeLogDetail, getInstanceInfo, getSyncProgress, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDdlExceptions, listSyncDirtyRecords, listSyncSchemaChanges, listVersions, resolveSyncDirtyRecord, stopInstance } from '../api';
-import type { RealtimeAlert, SyncDdlException, SyncDirtyRecord, SyncProgressSnapshot, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
+import { getChangeLogDetail, getInstanceInfo, getVersionConfig, listAlerts, listChangeLogs, listInstances, listSyncDdlExceptions, listVersions, stopInstance } from '../api';
+import type { RealtimeAlert, SyncDdlException, SyncSchemaChange, SyncTask, TaskChangeLog, TaskInstance, TaskMapping } from '../types';
 import InstanceInspectorModal, { type InstanceInspectorKind } from './InstanceInspectorModal';
 import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
 import RealtimeDiagnosticPanel from './RealtimeDiagnosticPanel';
@@ -17,8 +16,6 @@ import RealtimeAlertTable from './RealtimeAlertTable';
 import RealtimeInstanceStopModal from './RealtimeInstanceStopModal';
 import RealtimeInstanceList from './RealtimeInstanceList';
 import RealtimeChangeLogTable from './RealtimeChangeLogTable';
-import { analyzeAssetImpact } from '../../api/assets';
-import { ImpactSummary } from './RealtimeTableLifecyclePanels';
 
 interface Props {
   task?: SyncTask;
@@ -80,6 +77,7 @@ export const ChangeDetailContent = ({ detail }: { detail: Record<string, unknown
       <Descriptions.Item label="启动方式">{syncStartMethodLabel(
         request.startType ?? result.startType,
         request.sourceStartupTimestampMillis ?? result.sourceStartupTimestampMillis,
+        request.mysqlStartupMode ?? result.mysqlStartupMode,
       )}</Descriptions.Item>
       <Descriptions.Item label="实例 ID">{displayValue(detail.taskInstanceId ?? instance.id)}</Descriptions.Item>
       <Descriptions.Item label="实例状态"><Tag color={statusColor[String(instance.status ?? '')]}>{statusLabel[String(instance.status ?? '')] ?? displayValue(instance.status)}</Tag></Descriptions.Item>
@@ -133,15 +131,8 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
   const [activeChangeLog, setActiveChangeLog] = useState<TaskChangeLog>();
   const [changeDetailError, setChangeDetailError] = useState('');
   const [activeDrawerTab, setActiveDrawerTab] = useState('instances');
-  const [syncProgress, setSyncProgress] = useState<SyncProgressSnapshot>();
-  const [dirtyRecords, setDirtyRecords] = useState<SyncDirtyRecord[]>([]);
-  const [dirtyTotal, setDirtyTotal] = useState(0);
-  const [dirtyPageNo, setDirtyPageNo] = useState(1);
-  const [unresolvedOnly, setUnresolvedOnly] = useState(true);
-  const [schemaChanges, setSchemaChanges] = useState<SyncSchemaChange[]>([]);
   const [ddlExceptions, setDdlExceptions] = useState<SyncDdlException[]>([]);
   const [dataLinkLoading, setDataLinkLoading] = useState(false);
-  const [handlingId, setHandlingId] = useState<number>();
   const instanceRequestSequenceRef = useRef(0);
   const tabRequestSequenceRef = useRef(0);
   const inspectorRequestSequenceRef = useRef(0);
@@ -199,27 +190,13 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
       finally { if (sequence === tabRequestSequenceRef.current) setDataLinkLoading(false); }
       return;
     }
-    if (activeDrawerTab === 'data-link') {
-      setDataLinkLoading(true);
-      try {
-        const [dirtyPage, schemaEvents, progress] = await Promise.all([
-          listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20),
-          listSyncSchemaChanges(task.id),
-          runtimeInstance ? getSyncProgress(task.id, runtimeInstance.id, false).catch(() => undefined) : Promise.resolve(undefined),
-        ]);
-        if (sequence !== tabRequestSequenceRef.current) return;
-        setDirtyRecords(dirtyPage.items); setDirtyTotal(dirtyPage.total);
-        setSchemaChanges(schemaEvents); setSyncProgress(progress);
-      } catch (error) { if (sequence === tabRequestSequenceRef.current) message.error((error as Error).message); }
-      finally { if (sequence === tabRequestSequenceRef.current) setDataLinkLoading(false); }
-    }
-  }, [activeDrawerTab, dirtyPageNo, runtimeInstance?.id, task?.id, unresolvedOnly]);
+  }, [activeDrawerTab, task?.id]);
 
   useEffect(() => {
     if (!task) return;
     instanceRequestSequenceRef.current += 1; tabRequestSequenceRef.current += 1; inspectorRequestSequenceRef.current += 1;
-    setInstances([]); setAlerts([]); setChanges([]); setVersions([]); setDirtyRecords([]); setDirtyTotal(0); setSchemaChanges([]);
-    setSyncProgress(undefined); setUnresolvedOnly(true); setDirtyPageNo(1); setDdlExceptions([]); setActiveDrawerTab(initialTab === 'detail' ? 'instances' : initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
+    setInstances([]); setAlerts([]); setChanges([]); setVersions([]);
+    setDdlExceptions([]); setActiveDrawerTab(initialTab === 'data-link' ? 'runtime' : initialTab === 'detail' ? 'instances' : initialTab); setActiveChangeLog(undefined); setChangeDetail(undefined); setChangeDetailError(''); setInspector(undefined); setInspectorLoading(false);
   }, [initialTab, task?.id]);
 
   useEffect(() => { void reloadInstances(); }, [reloadInstances]);
@@ -237,7 +214,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
       detail: {
         contextType: 'REALTIME_SYNC_TASK',
         entityId: String(task.id),
-        title: `${task.name} · ${activeDrawerTab === 'data-link' ? '脏数据与 Schema 演进' : activeDrawerTab}`,
+        title: `${task.name} · ${activeDrawerTab}`,
         revision: task.updateTime,
       },
     }));
@@ -351,56 +328,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
     finally { setStoppingInstanceId(undefined); }
   };
 
-  const refreshSchemaChanges = async () => {
-    if (!task) return;
-    try { setDataLinkLoading(true); setSchemaChanges(await listSyncSchemaChanges(task.id, true)); message.success('Schema 差异检测完成'); }
-    catch (error) { message.error((error as Error).message); }
-    finally { setDataLinkLoading(false); }
-  };
-
-  const resolveDirty = async (record: SyncDirtyRecord) => {
-    if (!task) return;
-    try {
-      setHandlingId(record.id); await resolveSyncDirtyRecord(task.id, record.id);
-      const page = await listSyncDirtyRecords(task.id, unresolvedOnly, dirtyPageNo, 20); setDirtyRecords(page.items); setDirtyTotal(page.total);
-      message.success('已标记为处理完成');
-    } catch (error) { message.error((error as Error).message); }
-    finally { setHandlingId(undefined); }
-  };
-
-  const applySchema = (event: SyncSchemaChange) => {
-    if (!task) return;
-    Modal.confirm({ title: '应用新增字段？', content: '仅向受管 Paimon 表追加字段，不会删除字段或自动修改不兼容类型。', okText: '应用', cancelText: '取消',
-      onOk: async () => { try { setHandlingId(event.id); await applySyncSchemaChange(task.id, event.id); setSchemaChanges(await listSyncSchemaChanges(task.id)); message.success('Schema 变更已应用'); } catch (error) { message.error((error as Error).message); } finally { setHandlingId(undefined); } },
-    });
-  };
-
-  const showSchemaImpact = async (event: SyncSchemaChange) => {
-    try {
-      const columns = schemaImpactColumns(event);
-      const impact = await analyzeAssetImpact({
-        catalog: 'paimon',
-        database: event.targetDatabase,
-        table: event.targetTable,
-        columns,
-        changeType: event.changeType === 'INCOMPATIBLE' ? 'INCOMPATIBLE_SCHEMA_CHANGE' : 'COMPATIBLE_SCHEMA_CHANGE',
-      });
-      Modal.info({
-        title: `Schema 变更影响 · ${event.targetDatabase}.${event.targetTable}`,
-        content: <ImpactSummary value={impact} />,
-        width: 900,
-        okText: '关闭',
-      });
-    } catch (error) {
-      message.error((error as Error).message);
-    }
-  };
-
   if (!task) return null;
-  const snapshotFinished = syncProgress?.snapshotFinished;
-  const snapshotRemaining = syncProgress?.snapshotRemaining;
-  const snapshotTotal = snapshotFinished != null && snapshotRemaining != null ? snapshotFinished + snapshotRemaining : undefined;
-  const snapshotPercent = snapshotTotal && snapshotFinished != null ? Math.round(snapshotFinished / snapshotTotal * 100) : undefined;
   const instanceContent = <RealtimeInstanceList taskId={task.id} instances={instances} loading={dataLoading} showModeFilter
     stoppingInstanceId={stoppingInstanceId} syncPlaceholders stoppableStatuses={STOPPABLE}
     onRefresh={() => void reloadInstances()} onInspect={(row) => void inspect(row, 'config')}
@@ -426,30 +354,7 @@ export default function SyncTaskDetailDrawer({ task, loading, initialTab = 'inst
           { title: '操作人', dataIndex: 'operator', width: 120 },
         ]} /> },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} taskType="sync" instance={runtimeInstance} active={activeDrawerTab === 'runtime'} checkpointIntervalSeconds={task.taskConfig.checkpointInterval} /> },
-        { key: 'diagnostics', label: '诊断', children: <RealtimeDiagnosticPanel taskId={task.id} instances={instances} onRecover={setRecoverySource} /> },
-        { key: 'data-link', label: '数据链路', children: <div className="sync-data-link-panel">
-          <div className="sync-link-summary">
-            <div><span>当前实例</span><strong>{runtimeInstance?.id ?? '-'}</strong></div>
-            <div><span>全量快照</span><strong>{snapshotPercent == null ? '-' : `${snapshotPercent}%`}</strong></div>
-            <div><span>源端延迟</span><strong>{syncProgress?.sourceLagMs == null ? '-' : `${syncProgress.sourceLagMs} ms`}</strong></div>
-            <div><span>未处理脏数据</span><strong>{dirtyTotal}</strong></div>
-          </div>
-          <Tabs className="ui-flat-tabs" items={[
-            { key: 'dirty', label: `脏数据（${dirtyTotal}）`, children: <><div className="realtime-detail-toolbar"><Space><Select value={unresolvedOnly ? 'unresolved' : 'all'} onChange={(value) => { setUnresolvedOnly(value === 'unresolved'); setDirtyPageNo(1); }} options={[{ label: '仅未处理', value: 'unresolved' }, { label: '全部记录', value: 'all' }]} /><Button icon={<ReloadOutlined />} loading={dataLinkLoading} onClick={() => void loadActiveTab()}>刷新</Button></Space></div><Table<SyncDirtyRecord> rowKey="id" size="small" loading={dataLinkLoading} dataSource={dirtyRecords} pagination={false} scroll={{ x: 1280 }} locale={{ emptyText: '暂无脏数据记录' }} columns={[
-              { title: '时间', dataIndex: 'createTime', width: 180 }, { title: '实例', dataIndex: 'taskInstanceId', width: 90, render: displayValue },
-              { title: '源表', width: 260, render: (_, row) => [row.sourceDatabase, row.sourceTable].filter(Boolean).join('.') || '-' },
-              { title: '操作', dataIndex: 'operationType', width: 100, render: displayValue }, { title: '主键', dataIndex: 'primaryKeyValue', width: 160, ellipsis: true, render: displayValue },
-              { title: '错误', dataIndex: 'errorMessage', ellipsis: true }, { title: '状态', dataIndex: 'resolved', width: 100, render: (value) => value ? <Tag color="success">已处理</Tag> : <Tag color="error">未处理</Tag> },
-              { title: '操作', fixed: 'right', width: 170, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `脏数据 #${row.id}`, value: row })}>查看</Typography.Link>{!row.resolved && <Button type="link" size="small" icon={<CheckOutlined />} loading={handlingId === row.id} onClick={() => void resolveDirty(row)}>标记处理</Button>}</Space> },
-            ]} /><Pagination size="small" current={dirtyPageNo} pageSize={20} total={dirtyTotal} showTotal={(value) => `共 ${value} 条`} onChange={setDirtyPageNo} /></> },
-            { key: 'schema', label: `Schema 演进（${schemaChanges.filter((item) => item.status !== 'APPLIED').length}）`, children: <><div className="realtime-detail-toolbar"><Typography.Text type="secondary">自动识别安全新增字段；删列和不兼容类型必须人工处理。</Typography.Text><Button icon={<ReloadOutlined />} loading={dataLinkLoading} onClick={() => void refreshSchemaChanges()}>检测差异</Button></div><Table<SyncSchemaChange> rowKey="id" size="small" loading={dataLinkLoading} dataSource={schemaChanges} pagination={false} scroll={{ x: 1200 }} locale={{ emptyText: '暂无 Schema 变更' }} columns={[
-              { title: '检测时间', dataIndex: 'detectedAt', width: 180 }, { title: '源表', width: 240, render: (_, row) => `${row.sourceDatabase}.${row.sourceTable}` }, { title: '目标表', width: 260, render: (_, row) => `${row.targetDatabase}.${row.targetTable}` },
-              { title: '变更类型', dataIndex: 'changeType', width: 150, render: (value) => value === 'ADD_COLUMNS' ? '新增字段' : value === 'INCOMPATIBLE' ? '类型不兼容' : value },
-              { title: '说明', dataIndex: 'message' }, { title: '状态', dataIndex: 'status', width: 110, render: (value) => <Tag color={value === 'APPLIED' ? 'success' : value === 'BLOCKED' ? 'error' : 'processing'}>{value === 'APPLIED' ? '已应用' : value === 'BLOCKED' ? '需人工处理' : '待应用'}</Tag> },
-              { title: '操作', fixed: 'right', width: 210, render: (_, row) => <Space><Typography.Link onClick={() => setInspector({ title: `Schema 变更 #${row.id}`, value: row.change })}>查看</Typography.Link><Typography.Link onClick={() => void showSchemaImpact(row)}>查看影响</Typography.Link>{row.status === 'PENDING' && row.changeType === 'ADD_COLUMNS' && <Button type="link" size="small" loading={handlingId === row.id} onClick={() => applySchema(row)}>应用</Button>}</Space> },
-            ]} /></> },
-          ]} />
-        </div> },
+        { key: 'diagnostics', label: '诊断', children: <RealtimeDiagnosticPanel taskId={task.id} instances={instances} onRecover={setRecoverySource} onOpenDdl={() => setActiveDrawerTab('ddl')} /> },
         { key: 'alerts', label: `告警记录（${alerts.length}）`, children: <RealtimeAlertTable alerts={alerts} loading={alertsLoading} /> },
         { key: 'ddl', label: `DDL 异常（${ddlExceptions.filter((item) => item.status === 'ACTIVE').length}）`, children: <Table<SyncDdlException>
           rowKey="id" size="small" loading={dataLinkLoading} dataSource={ddlExceptions} pagination={{ pageSize: 10 }}

@@ -64,7 +64,14 @@ public class PaimonSyncCommandBuilder {
         csv(args, "--metadata_column", METADATA_COLUMNS);
         option(args, "--metadata_column_prefix", METADATA_COLUMN_PREFIX);
         validateTableConfigs(tables, objectMap(cdc.get("tableConfigs")));
-        appendTableConfigs(args, tables, objectMap(cdc.get("tableConfigs")));
+        if ("incremental".equals(text(config.get("syncMode")))) {
+            for (Object item : objectMap(cdc.get("tableConfigs")).values()) {
+                if (objectMap(item).get("timeFilter") != null) {
+                    throw new IllegalArgumentException("历史快照时间过滤仅支持全量任务");
+                }
+            }
+        }
+        appendTableConfigs(args, tables, objectMap(cdc.get("tableConfigs")), objectMap(cdc.get("tableConfOverrides")));
         Map<String, String> mysql = new LinkedHashMap<>(runtime.getMysqlDefaultConf());
         mysql.putAll(stringMap(cdc.get("mysqlConfOverrides")));
         mysql.put("server-id", serverIdRange(spec, preview));
@@ -118,13 +125,27 @@ public class PaimonSyncCommandBuilder {
         return start + "-" + (start + 15);
     }
 
-    private void appendTableConfigs(List<String> args, List<String> tables, Map<String, Object> configs) {
+    private void appendTableConfigs(List<String> args, List<String> tables, Map<String, Object> configs,
+            Map<String, Object> tableOptions) {
         for (String table : tables) {
             Map<String, Object> item = objectMap(configs.get(table));
+            if (item.get("bucket") != null) {
+                String bucket = text(item.get("bucket"));
+                if (!bucket.matches("[1-9][0-9]?|100")) throw new IllegalArgumentException("逐表 Bucket 必须为 1～100 的整数");
+                option(args, "--multiple_table_bucket", table + "=" + bucket);
+            }
             csvWithPrefix(args, "--multiple_table_primary_keys", table, strings(item.get("primaryKeys")));
             csvWithPrefix(args, "--multiple_table_partition_keys", table, strings(item.get("partitionKeys")));
             for (String expression : strings(item.get("computedColumns"))) {
                 option(args, "--multiple_table_computed_column", table + "=" + expression);
+            }
+            Map<String, Object> timeFilter = TimeFilterConfig.parse(item.get("timeFilter"));
+            if (!timeFilter.isEmpty()) option(args, TimeFilterConfig.OPTION, TimeFilterConfig.argument(table, timeFilter));
+            Map<String, String> defaults = PartitionDefaultConfig.values(
+                    item.get("partitionDefaults"), strings(item.get("partitionKeys")));
+            if (!defaults.isEmpty()) {
+                PartitionDefaultConfig.validateOptions(tableOptions);
+                option(args, "--multiple_table_partition_defaults", PartitionDefaultConfig.argument(table, defaults));
             }
         }
     }

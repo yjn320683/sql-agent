@@ -18,6 +18,33 @@ import org.mockito.ArgumentCaptor;
 
 class RealtimeDiagnosticReportServiceTest {
     @Test
+    void taskDdlEvidenceDoesNotChangeInstanceRootCauseAndRefreshesCachedReport() {
+        RealtimeSyncRepository repository = mock(RealtimeSyncRepository.class);
+        DiagnosticReportStore store = mock(DiagnosticReportStore.class);
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(repository.requiredInstance(5L, 7L)).thenReturn(Map.of("id", 7L, "status", "canceled"));
+        when(store.save(any())).thenAnswer(invocation -> invocation.getArgument(0));
+        when(jdbc.queryForList(anyString(), anyLong())).thenReturn(java.util.List.of(Map.of(
+                "id", 9L, "databaseName", "db", "tableName", "orders", "ddlSql", "ALTER TABLE orders DROP COLUMN price",
+                "createTime", "2026-10-13 10:00:00")));
+        RealtimeDiagnosticReportService service = new RealtimeDiagnosticReportService(repository,
+                mock(RealtimeRuntimeService.class), store, jdbc, new ObjectMapper());
+        DiagnosticReport report = service.get(5L, 7L, true);
+        assertThat(report.getFailureStage()).isEqualTo("NONE");
+        assertThat(report.getFindings()).singleElement().satisfies(finding -> {
+            assertThat(finding.getCode()).isEqualTo("TASK_DDL_ACTIVE");
+            assertThat(finding.getCause()).contains("未包含实例 ID");
+            assertThat(finding.getActions().get(0).getType()).isEqualTo("VIEW_DDL");
+        });
+        when(store.latest("REALTIME_INSTANCE", 7L)).thenReturn(report);
+        assertThat(service.get(5L, 7L, false).getFindings()).hasSize(1);
+        when(jdbc.queryForList(anyString(), anyLong())).thenReturn(java.util.List.of());
+        DiagnosticReport cleared = service.get(5L, 7L, false);
+        assertThat(cleared.getFindings()).isEmpty();
+        assertThat(cleared.getEvidence()).noneMatch(item -> item.getId().startsWith("task-ddl-"));
+    }
+
+    @Test
     void classifiesConnectionFailureAndMasksPassword() {
         RealtimeSyncRepository repository = mock(RealtimeSyncRepository.class);
         RealtimeRuntimeService runtime = mock(RealtimeRuntimeService.class);

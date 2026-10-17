@@ -228,7 +228,6 @@ public class RealtimeUnifiedTaskController {
         TaskActionRequest action = input == null ? new TaskActionRequest() : input;
         String reason = enableBlockedReason(id);
         if (!reason.isEmpty()) throw new IllegalStateException(reason);
-        if("sync".equals(taskType(id))) validateRequiredRecovery(id, action);
         return RealtimeResponse.success(runtime.start(id, action, actor, false));
     }
 
@@ -419,21 +418,6 @@ public class RealtimeUnifiedTaskController {
         if (!successful) return "最新调试实例未成功，请重新调试";
         // 恢复点由启动弹窗查询任务存储目录，实例记录不决定可选路径。
         return "";
-    }
-    private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
-        Map<String, Object> policy = repository.editPolicy(taskId);
-        if (action.getSourceStartupTimestampMillis() != null) {
-            throw new IllegalArgumentException("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复");
-        }
-        if (List.of("checkpoint", "savepoint").contains(text(action.getStartType()).toLowerCase())) {
-            return;
-        }
-        if (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))) {
-            throw new IllegalStateException("增删同步表后必须从有效的 Savepoint 或 Checkpoint 恢复");
-        }
-        if (Boolean.TRUE.equals(policy.get("productionLocked"))) {
-            throw new IllegalArgumentException("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint 或 Checkpoint 启动");
-        }
     }
     private Map<String, Object> capabilities() {
         Map<String, Object> result = new LinkedHashMap<>();

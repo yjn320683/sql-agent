@@ -76,6 +76,7 @@ public class RealtimeRuntimeService {
     public Map<String, Object> previewSaved(long taskId, TaskActionRequest action, boolean debug) {
         Map<String, Object> task = repository.requiredTask(taskId);
         validateStart(action);
+        if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateMysqlStartupMode(task, action);
         SubmissionSpec spec = spec(effectiveTask(task, action, debug), null, null, action, debug ? "DEBUG" : "PRODUCTION");
         return preview(spec);
     }
@@ -88,7 +89,8 @@ public class RealtimeRuntimeService {
         task.put("sourceServerId", request.getSourceServerId()); task.put("targetDatabase", request.getTargetDatabase());
         Map<String, Object> config = repository.validatePreview(request, excludeTaskId);
         task.put("taskConfig", config);
-        return preview(spec(task, null, null, new TaskActionRequest(), "PRODUCTION"));
+        TaskActionRequest action = new TaskActionRequest();
+        return preview(spec(effectiveTask(task, action, false), null, null, action, "PRODUCTION"));
     }
 
     public Map<String, Object> previewUnifiedRequest(UnifiedTaskRequest request, Long taskId) {
@@ -117,10 +119,7 @@ public class RealtimeRuntimeService {
         }
         Map<String, Object> effectiveTask = effectiveTask(task, action, debug);
         validateStart(action);
-        if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))
-                && action.getSourceStartupTimestampMillis() != null) {
-            throw new IllegalArgumentException("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复");
-        }
+        if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateMysqlStartupMode(task, action);
         validateStatePath(taskId, action);
         if (!debug && "sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateRequiredRecovery(taskId, action);
         if (debug && repository.hasActiveManagedDebugInstance(taskId)) {
@@ -175,8 +174,12 @@ public class RealtimeRuntimeService {
         Map<String, Object> source = requireRecoverableSource(taskId, sourceInstanceId);
         String taskType = text(task.get("taskType"), "sync");
         List<Map<String, Object>> strategies = new ArrayList<>();
+        Map<String, Object> sourceTask = objectMap(source.get("config"));
+        boolean incremental = "incremental".equals(text(objectMap(sourceTask.get("taskConfig")).get("syncMode")));
+        Map<String, Object> policy = repository.editPolicy(taskId);
         boolean syncDirectBlocked = "sync".equalsIgnoreCase(taskType)
-                && Boolean.TRUE.equals(repository.editPolicy(taskId).get("productionLocked"));
+                && (Boolean.TRUE.equals(policy.get("syncTableSetChanged"))
+                || (!incremental && Boolean.TRUE.equals(policy.get("productionLocked"))));
         strategies.add(recoveryOption("direct", !syncDirectBlocked, null,
                 syncDirectBlocked ? "同步任务已有正式实例，不能重新首次全量启动" : null));
         String sourceJobId = text(source.get("jobId"));
@@ -201,8 +204,9 @@ public class RealtimeRuntimeService {
         Map<String, Object> source = requireRecoverableSource(taskId, sourceInstanceId);
         @SuppressWarnings("unchecked") Map<String, Object> sourceConfig = (Map<String, Object>) source.get("config");
         if (sourceConfig == null || sourceConfig.isEmpty()) throw new IllegalStateException("来源实例缺少不可变配置快照");
-        Map<String, Object> effectiveTask = new LinkedHashMap<>(sourceConfig);
+        Map<String, Object> effectiveTask = effectiveTask(sourceConfig, action, false);
         validateStart(action); validateStatePath(taskId, action);
+        if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateMysqlStartupMode(effectiveTask, action);
         if ("sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) validateRequiredRecovery(taskId, action);
         if (repository.hasActiveManagedInstance(taskId)) throw new IllegalStateException("任务已有本平台管理的活动实例，禁止重复恢复");
         if (repository.hasActiveImportedInstance(taskId)) throw new IllegalStateException("任务存在历史导入的活动实例，禁止恢复后双跑");
@@ -1267,20 +1271,25 @@ public class RealtimeRuntimeService {
         else config.remove("statePath");
         if (!"sync".equalsIgnoreCase(text(task.get("taskType"), "sync"))) { result.put("taskConfig", config); return result; }
         Map<String, Object> cdc = new LinkedHashMap<>(objectMap(config.get("cdcConfig")));
-        if (action.getSourceStartupTimestampMillis() != null) {
-            Map<String, Object> mysql = new LinkedHashMap<>(objectMap(cdc.get("mysqlConfOverrides")));
-            mysql.put("scan.startup.mode", "timestamp");
-            mysql.put("scan.startup.timestamp-millis", String.valueOf(action.getSourceStartupTimestampMillis()));
-            cdc.put("mysqlConfOverrides", mysql);
-            config.put("sourceStartupTimestampMillis", action.getSourceStartupTimestampMillis());
+        Map<String, Object> mysql = new LinkedHashMap<>(objectMap(cdc.get("mysqlConfOverrides")));
+        if (action.getMysqlConfOverrides() != null) {
+            mysql.putAll(action.getMysqlConfOverrides());
+        }
+        mysql.remove("scan.startup.mode");
+        mysql.remove("scan.startup.timestamp-millis");
+        if ("direct".equalsIgnoreCase(text(action.getStartType(), "direct"))) {
+            String mode = mysqlStartupMode(config, action);
+            mysql.put("scan.startup.mode", mode);
+            config.put("mysqlStartupMode", mode);
+            if ("timestamp".equals(mode)) {
+                mysql.put("scan.startup.timestamp-millis", String.valueOf(action.getSourceStartupTimestampMillis()));
+                config.put("sourceStartupTimestampMillis", action.getSourceStartupTimestampMillis());
+            } else config.remove("sourceStartupTimestampMillis");
         } else {
             config.remove("sourceStartupTimestampMillis");
+            config.remove("mysqlStartupMode");
         }
-        if (action.getMysqlConfOverrides() != null) {
-            Map<String, Object> mysql = new LinkedHashMap<>(objectMap(cdc.get("mysqlConfOverrides")));
-            mysql.putAll(action.getMysqlConfOverrides());
-            cdc.put("mysqlConfOverrides", mysql);
-        }
+        cdc.put("mysqlConfOverrides", mysql);
         if (action.getTableConfOverrides() != null) cdc.put("tableConfOverrides", action.getTableConfOverrides());
         config.put("cdcConfig", cdc); result.put("taskConfig", config);
         if (debug) applyDebugTarget(result, config, cdc);
@@ -1899,9 +1908,6 @@ public class RealtimeRuntimeService {
     }
     private void validateRequiredRecovery(long taskId, TaskActionRequest action) {
         Map<String, Object> policy = repository.editPolicy(taskId);
-        if (action.getSourceStartupTimestampMillis() != null) {
-            throw new IllegalArgumentException("同步任务已禁用时间戳启动，请使用首次全量同步或从 Checkpoint / Savepoint 恢复");
-        }
         if (List.of("checkpoint", "savepoint").contains(text(action.getStartType()).toLowerCase(Locale.ROOT))) {
             return;
         }
@@ -1909,7 +1915,41 @@ public class RealtimeRuntimeService {
             throw new IllegalStateException("增删同步表后必须从有效的 Savepoint 或 Checkpoint 恢复");
         }
         if (Boolean.TRUE.equals(policy.get("productionLocked"))) {
-            throw new IllegalArgumentException("任务已存在正式实例，不能再次首次全量同步；请从 Savepoint 或 Checkpoint 启动");
+            if (action.isAllowIncrementalRestart()
+                    && List.of("earliest-offset", "latest-offset", "timestamp")
+                            .contains(text(action.getMysqlStartupMode()))) return;
+            throw new IllegalArgumentException("任务已存在正式实例；请从 Savepoint / Checkpoint 恢复，或明确选择仅增量重新启动");
+        }
+    }
+
+    private String mysqlStartupMode(Map<String, Object> config, TaskActionRequest action) {
+        String syncMode = text(config.get("syncMode"), "full_incremental");
+        String selected = text(action.getMysqlStartupMode());
+        return selected.isEmpty() ? ("incremental".equals(syncMode) ? "latest-offset" : "initial") : selected;
+    }
+
+    private void validateMysqlStartupMode(Map<String, Object> task, TaskActionRequest action) {
+        Map<String, Object> config = objectMap(task.get("taskConfig"));
+        String syncMode = text(config.get("syncMode"), "full_incremental");
+        String start = text(action.getStartType(), "direct").toLowerCase(Locale.ROOT);
+        String selected = text(action.getMysqlStartupMode());
+        Long timestamp = action.getSourceStartupTimestampMillis();
+        if (!"direct".equals(start)) {
+            if (!selected.isEmpty() || timestamp != null || action.isAllowIncrementalRestart()) {
+                throw new IllegalArgumentException("状态恢复不能同时指定 MySQL 起始消费点");
+            }
+            return;
+        }
+        String mode = mysqlStartupMode(config, action);
+        if ("full_incremental".equals(syncMode)) {
+            if (!"initial".equals(mode)) throw new IllegalArgumentException("全量及增量同步必须从首次全量启动");
+        } else if ("incremental".equals(syncMode)) {
+            if (!List.of("earliest-offset", "latest-offset", "timestamp").contains(mode)) {
+                throw new IllegalArgumentException("仅增量同步必须选择最早、最新或指定时间戳消费点");
+            }
+        } else throw new IllegalArgumentException("不支持的同步类型：" + syncMode);
+        if ("timestamp".equals(mode) != (timestamp != null)) {
+            throw new IllegalArgumentException("仅指定时间戳启动时需要提供消费点时间戳");
         }
     }
     private boolean pathContainsSegment(String path, String segment) {

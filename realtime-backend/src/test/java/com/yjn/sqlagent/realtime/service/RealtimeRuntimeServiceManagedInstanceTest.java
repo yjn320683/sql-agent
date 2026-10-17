@@ -322,6 +322,25 @@ class RealtimeRuntimeServiceManagedInstanceTest {
     }
 
     @Test
+    void syncStartupModeRejectsInvalidConsumptionPointsBeforeSubmission() {
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "sync",
+                "taskStatus", 1, "taskConfig", Map.of("syncMode", "full_incremental", "cdcConfig", Map.of())));
+        TaskActionRequest fullWithTimestamp = new TaskActionRequest();
+        fullWithTimestamp.setMysqlStartupMode("timestamp");
+        fullWithTimestamp.setSourceStartupTimestampMillis(1L);
+        assertThrows(IllegalArgumentException.class,
+                () -> service.start(8L, fullWithTimestamp, "tester", false));
+
+        when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "taskType", "sync",
+                "taskStatus", 1, "taskConfig", Map.of("syncMode", "incremental", "cdcConfig", Map.of())));
+        TaskActionRequest missingTimestamp = new TaskActionRequest();
+        missingTimestamp.setMysqlStartupMode("timestamp");
+        assertThrows(IllegalArgumentException.class,
+                () -> service.start(8L, missingTimestamp, "tester", false));
+        verify(repository, never()).startOperation(anyLong(), any(), anyString(), anyString(), anyString());
+    }
+
+    @Test
     void yarnNamePrefixPreflightBlocksUntrackedProductionJob() {
         RealtimeRuntimeService guarded = spy(service);
         when(repository.requiredTask(8L)).thenReturn(Map.of("id", 8L, "name", "sync_orders", "taskStatus", 1));
@@ -813,6 +832,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         when(repository.requiredTask(8L)).thenReturn(Map.of(
                 "id", 8L, "name", "debug_sync", "sourceServerId", 3L, "targetDatabase", "ods",
                 "taskConfig", Map.of("sourceServerId", 3L, "parallelism", 1,
+                        "syncMode", "incremental",
                         "checkpointInterval", 60, "taskManagerMemory", "2GB", "jobManagerMemory", "1GB",
                         "cdcConfig", Map.of("targetDatabase", "ods", "domainPrefix", "trade",
                                 "selectedTables", java.util.List.of("orders")))));
@@ -822,6 +842,7 @@ class RealtimeRuntimeServiceManagedInstanceTest {
         TaskActionRequest action = new TaskActionRequest();
         action.setParallelism(4); action.setCheckpointInterval(90);
         action.setSourceStartupTimestampMillis(1_700_000_000_000L);
+        action.setMysqlStartupMode("timestamp");
         action.setMysqlConfOverrides(Map.of("scan.snapshot.fetch.size", "2048"));
         action.setTaskManagerMemory("4GB"); action.setJobManagerMemory("3GB");
 

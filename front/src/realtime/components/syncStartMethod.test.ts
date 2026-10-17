@@ -8,6 +8,8 @@ describe('syncStartMethodLabel', () => {
     expect(syncStartMethodLabel('direct', 1)).toBe('从指定时间戳开始消费');
     expect(syncStartMethodLabel('direct', undefined, 'timestamp')).toBe('从指定时间戳开始消费');
     expect(syncStartMethodLabel('direct', undefined, 'initial')).toBe('首次全量同步');
+    expect(syncStartMethodLabel('direct', undefined, 'earliest-offset')).toBe('从最早消费点同步');
+    expect(syncStartMethodLabel('direct', undefined, 'latest-offset')).toBe('从最新消费点同步');
     expect(syncStartMethodLabel('direct')).toBe('未记录');
   });
 });
@@ -36,5 +38,10 @@ describe('syncStartMethodOptions', () => {
     const options = syncStartMethodOptions({ productionLocked: true, canResetConsumptionPoint: true });
     expect(options.find((item) => item.value === 'direct')?.disabled).toBe(true);
     expect(options.find((item) => item.value === 'checkpoint')?.disabled).toBe(false);
+  });
+
+  it('allows an explicit incremental restart when the table set is unchanged', () => {
+    const options = syncStartMethodOptions({ productionLocked: true }, 'incremental');
+    expect(options.find((item) => item.value === 'direct')?.disabled).toBe(false);
   });
 });

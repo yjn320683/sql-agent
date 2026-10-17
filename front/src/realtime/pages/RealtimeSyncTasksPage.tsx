@@ -99,7 +99,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [statusLoadingIds, setStatusLoadingIds] = useState<Set<number>>(() => new Set());
   const [mappingTask, setMappingTask] = useState<SyncTaskListItem>();
   const [mappingRows, setMappingRows] = useState<TaskMapping[]>([]);
-  const [actionTask, setActionTask] = useState<{ row: SyncTaskListItem; startPolicy?: SyncTaskStartPolicy }>();
+  const [actionTask, setActionTask] = useState<{ row: SyncTaskListItem; startPolicy?: SyncTaskStartPolicy; syncMode: 'full_incremental' | 'incremental' }>();
   const [actionLoading, setActionLoading] = useState(false);
   const [debugTask, setDebugTask] = useState<SyncTask>();
   const [debugServers, setDebugServers] = useState<RealtimeServer[]>([]);
@@ -110,6 +110,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
   const [actionForm] = Form.useForm();
   const actionStartType = Form.useWatch('startType', actionForm);
   const actionStatePath = Form.useWatch('statePath', actionForm);
+  const allowIncrementalRestart = Form.useWatch('allowIncrementalRestart', actionForm);
   const actionRecoveryFallbackMode = Form.useWatch('recoveryFallbackMode', actionForm);
   const [resetFailedStateRecovery, setResetFailedStateRecovery] = useState(false);
   const [stateHistory, setStateHistory] = useState<Record<string, unknown>[]>([]);
@@ -125,8 +126,10 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     && (!actionRecoveryFallbackMode
       || (actionRecoveryFallbackMode === 'checkpoint' && !actionStatePath)),
   );
-  const actionConfirmationDisabled = actionRecoveryFallbackIncomplete
-    || (actionStartType !== 'direct' && !actionStatePath);
+  const directIncrementalRestart = actionStartType === 'direct' && actionTask?.syncMode === 'incremental';
+  const actionConfirmationDisabled = (actionRecoveryFallbackIncomplete && !directIncrementalRestart)
+    || (actionStartType !== 'direct' && !actionStatePath)
+    || (directIncrementalRestart && Boolean(actionTask?.startPolicy?.productionLocked) && !allowIncrementalRestart);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -237,7 +240,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
     actionForm.resetFields();
     try {
       setActionLoading(true);
-      const qualification = await canEnableSyncTask(row.id);
+      const [qualification, fullTask] = await Promise.all([canEnableSyncTask(row.id), getSyncTask(row.id)]);
       if (sequence !== actionRequestRef.current) return;
       if (!qualification.canEnable) {
         message.warning(qualification.message || qualification.reason || '当前任务不满足启动条件');
@@ -286,7 +289,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
           initialStartType = 'direct';
           initialStatePath = undefined;
           initialHistory = [];
-          requiresManualStartSelection = true;
+          requiresManualStartSelection = fullTask.taskConfig.syncMode !== 'incremental';
         }
       }
       setResetFailedStateRecovery(requiresManualStartSelection);
@@ -294,8 +297,9 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       actionForm.setFieldsValue({
         startType: initialStartType, statePath: initialStatePath,
         recoveryFallbackMode: initialFallbackMode,
+        mysqlStartupMode: fullTask.taskConfig.syncMode === 'incremental' ? 'latest-offset' : 'initial',
       });
-      setActionTask({ row, startPolicy: policy });
+      setActionTask({ row, startPolicy: policy, syncMode: fullTask.taskConfig.syncMode ?? 'full_incremental' });
     } catch (error) {
       if (sequence === actionRequestRef.current) message.error((error as Error).message);
     } finally {
@@ -318,6 +322,12 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
       await startSyncTask(actionTask.row.id, {
         startType: values.startType,
         ...(values.startType !== 'direct' && values.statePath ? { statePath: values.statePath } : {}),
+        ...(values.startType === 'direct' ? {
+          mysqlStartupMode: values.mysqlStartupMode,
+          allowIncrementalRestart: Boolean(values.allowIncrementalRestart),
+          sourceStartupTimestampMillis: values.mysqlStartupMode === 'timestamp'
+            ? new Date(values.startupDateTime).getTime() : undefined,
+        } : {}),
       }, false);
       message.success('同步任务已提交');
       setActionTask(undefined); await load();
@@ -403,7 +413,7 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
 
   const columns = useMemo(() => [
     { title: '任务 ID', dataIndex: 'id', width: 100, fixed: 'left' as const, sorter: true },
-    { title: '任务名称', dataIndex: 'name', width: 220, fixed: 'left' as const, ellipsis: true, sorter: true, render: (value: string) => <Typography.Link>{value}</Typography.Link> },
+    { title: '任务名称', dataIndex: 'name', width: 250, fixed: 'left' as const, ellipsis: true, sorter: true, render: (value: string, row: SyncTaskListItem) => <><Tag color={row.syncMode === 'incremental' ? 'purple' : 'blue'}>{row.syncMode === 'incremental' ? '增量' : '全量'}</Tag><Typography.Link>{value}</Typography.Link></> },
     { title: '任务描述', dataIndex: 'description', width: 260, ellipsis: { showTitle: false }, render: (value: string) => <Tooltip title={value}><span>{value || '-'}</span></Tooltip> },
     { title: '任务状态', dataIndex: 'taskStatus', width: 120, sorter: true, render: (_: unknown, row: SyncTaskListItem) => {
       const active = ACTIVE.includes(row.instanceStatus ?? row.status) || ACTIVE.includes(row.runtimeStatus ?? '');
@@ -525,11 +535,19 @@ export default function RealtimeSyncTasksPage({ workspace = false }: Props) {
                 ? undefined : actionStartType}
               placeholder="请选择启动方式"
               loading={actionLoading}
-              disabled={actionLoading || (actionShowStateRecoveryReset && !resetFailedStateRecovery)}
+              disabled={actionLoading || (actionShowStateRecoveryReset && !resetFailedStateRecovery && actionTask?.syncMode !== 'incremental')}
               onChange={(value) => void selectStartMethod(value)}
-              options={syncStartMethodOptions(actionTask?.startPolicy)}
+              options={syncStartMethodOptions(actionTask?.startPolicy, actionTask?.syncMode)}
             />
           </Form.Item>
+          {actionStartType === 'direct' && actionTask?.syncMode === 'incremental' && <>
+            <Form.Item name="mysqlStartupMode" label="MySQL 起始消费点" rules={[{ required: true, message: '请选择起始消费点' }]}>
+              <Select options={[{ label: '最早消费点', value: 'earliest-offset' }, { label: '最新消费点', value: 'latest-offset' }, { label: '指定时间戳', value: 'timestamp' }]} />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(before, after) => before.mysqlStartupMode !== after.mysqlStartupMode}>{({ getFieldValue }) => getFieldValue('mysqlStartupMode') === 'timestamp' &&
+              <Form.Item name="startupDateTime" label="开始时间" rules={[{ required: true, message: '请选择开始时间' }]}><Input type="datetime-local" /></Form.Item>}</Form.Item>
+            {actionTask.startPolicy?.productionLocked && <Form.Item name="allowIncrementalRestart" valuePropName="checked"><Checkbox>确认从所选消费点重新开始增量同步</Checkbox></Form.Item>}
+          </>}
           {actionShowStateRecoveryReset && (
             <Form.Item label="恢复失败处理">
               <Checkbox checked={resetFailedStateRecovery} onChange={(event) => toggleStateRecoveryFallback(event.target.checked)}>

@@ -6,6 +6,8 @@ public class TaskActionRequest {
     private String startType = "direct";
     private String statePath;
     private Long sourceStartupTimestampMillis;
+    private String mysqlStartupMode;
+    private boolean allowIncrementalRestart;
     private String stopType;
     private boolean dryRun;
     private Integer parallelism;
@@ -22,6 +24,10 @@ public class TaskActionRequest {
     public void setStatePath(String value) { statePath = value; }
     public Long getSourceStartupTimestampMillis() { return sourceStartupTimestampMillis; }
     public void setSourceStartupTimestampMillis(Long value) { sourceStartupTimestampMillis = value; }
+    public String getMysqlStartupMode() { return mysqlStartupMode; }
+    public void setMysqlStartupMode(String value) { mysqlStartupMode = value; }
+    public boolean isAllowIncrementalRestart() { return allowIncrementalRestart; }
+    public void setAllowIncrementalRestart(boolean value) { allowIncrementalRestart = value; }
     public String getStopType() { return stopType; }
     public void setStopType(String value) { stopType = value; }
     public boolean isDryRun() { return dryRun; }

@@ -33,7 +33,7 @@ const options = (param?: TaskParam) => {
   } catch { return []; }
 };
 
-const defaultValue = (param: TaskParam) => {
+export const defaultParamValue = (param: TaskParam) => {
   if (!param.paramValue) return '';
   try {
     const parsed = JSON.parse(param.paramValue) as unknown;
@@ -124,7 +124,7 @@ export default function SyncMoreConfigRows({ paramType, formNamePath, taskParams
       onOpenChange={(value) => { setOpen(value); if (!value) setSearch(''); }}
       content={<div className="sync-more-config-picker">
         <Input allowClear autoFocus prefix={<SearchOutlined />} placeholder="搜索配置 key / 描述" value={search} onChange={(event) => setSearch(event.target.value)} />
-        <div className="sync-more-config-options">{available.length ? available.map((param) => <button type="button" key={param.paramKey} onClick={() => { update({ ...current, [param.paramKey]: defaultValue(param) }); setOpen(false); setSearch(''); }}>
+        <div className="sync-more-config-options">{available.length ? available.map((param) => <button type="button" key={param.paramKey} onClick={() => { update({ ...current, [param.paramKey]: defaultParamValue(param) }); setOpen(false); setSearch(''); }}>
           <span>{param.paramKey}</span><small>{param.keyDesc}</small>
         </button>) : <div className="sync-more-config-empty">暂无匹配配置</div>}</div>
       </div>}

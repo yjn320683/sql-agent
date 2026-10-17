@@ -19,14 +19,20 @@ export interface RealtimeServerSave extends Omit<RealtimeServer, 'id' | 'type' |
   password?: string;
 }
 
+export interface MysqlTimeFilter { version: 1; field: string; sourceType: string; start: string; timeZone: string }
+
 export interface TablePrivateConfig {
+  bucket?: number;
   primaryKeys?: string[];
   partitionKeys?: string[];
   computedColumns?: string[];
+  partitionDefaults?: { version: 1; values: Record<string, string> };
+  timeFilter?: MysqlTimeFilter;
 }
 
 export interface SyncTaskConfig {
   sourceServerId: number;
+  syncMode?: 'full_incremental' | 'incremental';
   parallelism?: number;
   taskManagerMemory?: string;
   jobManagerMemory?: string;
@@ -112,6 +118,7 @@ export interface SyncDdlException {
 }
 
 export interface SyncTaskListItem {
+  syncMode?: 'full_incremental' | 'incremental';
   id: number;
   name: string;
   status: RealtimeTaskStatus;

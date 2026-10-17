@@ -25,6 +25,7 @@ import { recoverProposals, validateProposal } from './proposalRegistry';
 interface Props {
   open: boolean;
   context: AiContext;
+  prefillRequest?: { id: string; text: string; intent: AiIntent };
   onClose: () => void;
   onApplyProposal?: (proposal: AiProposal) => ProposalActionResult;
 }
@@ -87,7 +88,7 @@ function ProposalDiff({ before, after }: { before: string; after: string }) {
   );
 }
 
-export default function AiAssistantDrawer({ open, context, onClose, onApplyProposal }: Props) {
+export default function AiAssistantDrawer({ open, context, prefillRequest, onClose, onApplyProposal }: Props) {
   const contextKey = useMemo(
     () => `${context.contextType}:${context.parentId ?? ''}:${context.entityId ?? 'list'}:${context.versionNo ?? ''}`,
     [context.contextType, context.entityId, context.parentId, context.versionNo],
@@ -131,6 +132,12 @@ export default function AiAssistantDrawer({ open, context, onClose, onApplyPropo
   }, [contextKey, storageKey]); // sessionId 仅用于终止上一个上下文中的流式请求
 
   useEffect(() => () => abortRef.current?.abort(), []);
+
+  useEffect(() => {
+    if (!open || !prefillRequest) return;
+    setIntent(prefillRequest.intent);
+    setInput(prefillRequest.text);
+  }, [open, prefillRequest?.id]);
 
   const updateAssistant = (patch: (message: ChatMessage) => ChatMessage) => {
     setMessages((current) => {

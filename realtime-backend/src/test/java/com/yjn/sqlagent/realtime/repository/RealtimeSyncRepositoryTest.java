@@ -27,6 +27,27 @@ import org.springframework.jdbc.datasource.DriverManagerDataSource;
 class RealtimeSyncRepositoryTest {
 
     @Test
+    void serverCapacityKeepsModesIndependentAndAllowsExistingTaskEdits() {
+        JdbcTemplate jdbc = mock(JdbcTemplate.class);
+        when(jdbc.queryForList(anyString())).thenAnswer(invocation -> List.of(
+                new LinkedHashMap<>(Map.of("serverId", 3L, "syncMode", "full_incremental", "currentTaskCount", 9L, "maxTaskCount", 1)),
+                new LinkedHashMap<>(Map.of("serverId", 3L, "syncMode", "incremental", "currentTaskCount", 0L, "maxTaskCount", 1))));
+        when(jdbc.queryForList(anyString(), eq(8L))).thenReturn(List.of(
+                Map.of("serverId", 3L, "configJson", "{}")));
+        RealtimeSyncRepository repository = new RealtimeSyncRepository(jdbc, new ObjectMapper(), new RealtimeProperties());
+        List<Map<String, Object>> create = repository.sourceServerAvailability(null);
+        assertEquals(false, create.get(0).get("available"));
+        assertEquals(true, create.get(1).get("available"));
+        List<Map<String, Object>> edit = repository.sourceServerAvailability(8L);
+        assertEquals(true, edit.get(0).get("available"));
+        assertEquals(true, edit.get(1).get("available"));
+        ArgumentCaptor<String> sql = ArgumentCaptor.forClass(String.class);
+        verify(jdbc, org.mockito.Mockito.times(2)).queryForList(sql.capture());
+        assertTrue(sql.getValue().contains("t.deleted_flag=0"));
+        assertTrue(sql.getValue().contains("l.sync_mode=m.sync_mode"));
+    }
+
+    @Test
     void mysqlBitBooleanIsNormalizedAsOne() {
         assertEquals(1, RealtimeSyncRepository.integer(Boolean.TRUE));
         assertEquals(0, RealtimeSyncRepository.integer(Boolean.FALSE));

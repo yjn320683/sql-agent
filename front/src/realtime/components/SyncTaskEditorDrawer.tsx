@@ -23,6 +23,7 @@ import {
   getMysqlSchema,
   listSyncSourceTables,
   listServers,
+  getSyncServerAvailability,
   listTaskParams,
   listSyncDdlExceptions,
   previewSyncTask,
@@ -42,6 +43,9 @@ import { MYSQL_METADATA_COLUMN_PREFIX, type
 import SyncMoreConfigRows from './SyncMoreConfigRows';
 import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
 import ComputedColumnEditorModal from './ComputedColumnEditorModal';
+import SyncTableOptionsModal from './SyncTableOptionsModal';
+import { partitionDefaultsSummary } from './partitionDefaults';
+import { timeFilterSummary } from './timeFilter';
 import MysqlTableDdlDrawer from './MysqlTableDdlDrawer';
 import SyncSectionNav from './SyncSectionNav';
 import { snapshotParams } from './syncSnapshotParams';
@@ -162,6 +166,8 @@ const paramPath = (param: TaskParam): string[] => param.paramType === 'mysql_con
 export default function SyncTaskEditorDrawer({ open, task, readOnly = false, snapshotMode = false, snapshotKey, snapshotStart, onSaved }: Props) {
   const [form] = Form.useForm();
   const [servers, setServers] = useState<RealtimeServer[]>([]);
+  const [serverAvailability, setServerAvailability] = useState<Awaited<ReturnType<typeof getSyncServerAvailability>>>([]);
+  const syncMode = Form.useWatch(['taskConfig', 'syncMode'], form) ?? 'full_incremental';
   const [domains, setDomains] = useState<PaimonTablePrefixOption[]>([]);
   const [params, setParams] = useState<TaskParam[]>([]);
   const [tables, setTables] = useState<SyncSourceTableOption[]>([]);
@@ -180,9 +186,11 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
   const [preview, setPreview] = useState('');
   const [previewLoading, setPreviewLoading] = useState(false);
   const [computedColumnTable, setComputedColumnTable] = useState<string>();
+  const [tableOptionsTable, setTableOptionsTable] = useState<string>();
   const [mysqlDdlOpen, setMysqlDdlOpen] = useState(false);
   const [mysqlDdlInitialTable, setMysqlDdlInitialTable] = useState<string>();
   const [defaultProjectId, setDefaultProjectId] = useState<number>();
+  const [mysqlServerTimeZone, setMysqlServerTimeZone] = useState('');
   const initializedKeyRef = useRef('');
   const schemasRef = useRef<Record<string, MysqlTableSchema>>({});
   const schemaErrorsRef = useRef<Set<string>>(new Set());
@@ -251,6 +259,7 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
     const config = task?.taskConfig;
     const normalizedConfig = snapshotMode ? config : config ? {
       ...config,
+      syncMode: config.syncMode ?? 'full_incremental',
       cdcConfig: {
         ...config.cdcConfig,
         ignoreIncompatible: booleanValue(config.cdcConfig.ignoreIncompatible),
@@ -273,6 +282,7 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
     } : {
       flinkVersion: '2.2.1',
       taskConfig: {
+        syncMode: 'full_incremental',
         parallelism: 3,
         taskManagerMemory: '3GB',
         jobManagerMemory: '1GB',
@@ -299,7 +309,9 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
       return;
     }
     setSupportLoading(true);
-    void Promise.allSettled([listServers(), getCdcOptions(), listTaskParams()]).then(([serverResult, optionResult, paramResult]) => {
+    void Promise.allSettled([listServers(), getCdcOptions(), listTaskParams(), getSyncServerAvailability(task?.id)]).then(([serverResult, optionResult, paramResult, availabilityResult]) => {
+      if (availabilityResult.status === 'fulfilled') setServerAvailability(availabilityResult.value);
+      else setSupportError('Server 任务限额加载失败，请刷新后重试');
       if (serverResult.status === 'fulfilled') setServers(serverResult.value);
       if (paramResult.status === 'fulfilled') {
         const taskParams = paramResult.value;
@@ -317,6 +329,7 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
       if (optionResult.status === 'fulfilled') {
         setDomains(optionResult.value.tablePrefixes);
         setDefaultProjectId(optionResult.value.defaultProjectId);
+        setMysqlServerTimeZone(optionResult.value.mysqlServerTimeZone ?? '');
         if (!task) {
           form.setFieldValue('targetDatabase', optionResult.value.targetDatabase);
           form.setFieldValue(['taskConfig', 'cdcConfig', 'targetDatabase'], optionResult.value.targetDatabase);
@@ -445,9 +458,9 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
 
   const setPrivate = (table: string, key: keyof TablePrivateConfig, value: string[]) => {
     const next = { ...(tableConfigs[table] ?? emptyTableConfig()), [key]: value };
-    const errors = syncPrivateKeyErrors(table, next, schemas[table],
-      form.getFieldValue(['taskConfig', 'cdcConfig', 'tableConfOverrides']) ?? {});
-    if (errors.length) { message.error(errors[0]); return; }
+    if (key === 'partitionKeys' && !sameOrderedValues(value, tableConfigs[table]?.partitionKeys)) {
+      delete next.partitionDefaults;
+    }
     setTableConfigs((current) => ({ ...current, [table]: next }));
   };
 
@@ -457,7 +470,8 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
     const taskConfig = values.taskConfig ?? {};
     for (const table of taskConfig.cdcConfig?.selectedTables ?? []) {
       const configured = tableConfigs[table] ?? emptyTableConfig();
-      const errors = syncPrivateKeyErrors(table, configured, schemas[table], taskConfig.cdcConfig?.tableConfOverrides ?? {});
+      const errors = syncPrivateKeyErrors(table, configured, schemas[table], taskConfig.cdcConfig?.tableConfOverrides ?? {}, taskConfig.cdcConfig?.typeMappings ?? []);
+      if (taskConfig.syncMode === 'incremental' && configured.timeFilter) throw new Error(table + '：历史快照时间过滤仅支持全量任务，请清除时间过滤');
       if (errors.length) throw new Error(errors[0]);
     }
     taskConfig.sourceServerId = values.sourceServerId;
@@ -467,9 +481,12 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
       }
       const current = tableConfigs[name] ?? emptyTableConfig();
       const normalized: TablePrivateConfig = {};
+      if (current.bucket !== undefined) normalized.bucket = current.bucket;
       if (current.primaryKeys?.length && !sameOrderedValues(current.primaryKeys, schemas[name]?.primaryKeys)) normalized.primaryKeys = current.primaryKeys;
       if (current.partitionKeys?.length) normalized.partitionKeys = current.partitionKeys;
       if (current.computedColumns?.length) normalized.computedColumns = current.computedColumns;
+      if (current.partitionDefaults) normalized.partitionDefaults = current.partitionDefaults;
+      if (current.timeFilter) normalized.timeFilter = current.timeFilter;
       return Object.keys(normalized).length ? [[name, normalized]] : [];
     }));
     taskConfig.cdcConfig = {
@@ -606,6 +623,15 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
         return <Select disabled={readOnly || lockedTables.includes(row.table)} mode="multiple" value={tableConfigs[row.table]?.partitionKeys} onChange={(value) => setPrivate(row.table, 'partitionKeys', value)} options={primaryKeys.map((name) => ({ label: name, value: name }))} style={{ width: '100%' }} />;
       },
     },
+    {
+      title: '逐表配置', width: 240,
+      render: (_: unknown, row: { table: string }) => <Space direction="vertical" size={2}>
+        <Typography.Text type="secondary">Bucket：{tableConfigs[row.table]?.bucket ?? '继承'} · 默认分区：{partitionDefaultsSummary(tableConfigs[row.table])}</Typography.Text>
+        <Typography.Text type="secondary">快照过滤：{timeFilterSummary(tableConfigs[row.table]?.timeFilter)}</Typography.Text>
+        <Button size="small" aria-label={`配置 ${row.table} 同步选项`} disabled={readOnly || lockedTables.includes(row.table) || !schemas[row.table]}
+          onClick={() => setTableOptionsTable(row.table)}>配置</Button>
+      </Space>,
+    },
   ];
 
   function dynamicParam(param: TaskParam, disabled = false) {
@@ -651,7 +677,11 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
             ? <><Form.Item name="sourceServerId" hidden rules={[{ required: true, message: '请选择 Server' }]}><Input /></Form.Item>
                 <Input disabled value={task?.sourceServerName ?? servers.find((item) => item.id === serverId)?.name ?? ''} /></>
             : <Form.Item name="sourceServerId" rules={[{ required: true, message: '请选择 Server' }]} noStyle>
-                <Select showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => ({ label: item.name, value: item.id }))} />
+                <Select showSearch optionFilterProp="label" placeholder="请选择 Server" options={servers.map((item) => {
+                  const capacity = serverAvailability.find(row => row.serverId === item.id && row.syncMode === syncMode);
+                  return { label: capacity ? `${item.name}（${syncMode === 'incremental' ? '增量' : '全量'} ${capacity.currentTaskCount}/${capacity.maxTaskCount}）` : item.name,
+                    value: item.id, disabled: !capacity?.available };
+                })} />
               </Form.Item>}
         </Descriptions.Item>
       </Descriptions>
@@ -666,6 +696,12 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
         <span>公共配置</span>
       </div>}
       <Descriptions bordered size="small" column={1} colon={false} className="realtime-config-table realtime-sync-common-table">
+        <Descriptions.Item label="同步类型"><Form.Item name={['taskConfig', 'syncMode']} noStyle><Select disabled={readOnly || structureLocked}
+          onChange={mode => {
+            if (mode === 'incremental') setTableConfigs(current => Object.fromEntries(Object.entries(current).map(([name, value]) => [name, { ...value, timeFilter: undefined }])));
+            if (!serverAvailability.find(row => row.serverId === serverId && row.syncMode === mode)?.available) form.setFieldValue('sourceServerId', undefined);
+          }}
+          options={[{ label: '全量', value: 'full_incremental' }, { label: '增量', value: 'incremental' }]} /></Form.Item></Descriptions.Item>
         {!snapshotMode && activeDdlTables.length > 0 && <Descriptions.Item label="DDL 异常">
           <Alert type="error" showIcon message="以下源表发生破坏性 DDL，请剔除后保存配置"
             description={<Space wrap>{activeDdlTables.map((tableName) =>
@@ -737,7 +773,7 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
         <span>私有配置</span>
       </div>}
       <div className="realtime-mapping-table">
-        <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 900 }} />
+        <Table size="small" pagination={false} rowKey="table" dataSource={(selectedTables ?? []).map((table) => ({ table }))} columns={mappingColumns} scroll={{ x: 1100 }} />
       </div>
     </div>
   );
@@ -872,6 +908,7 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
       tableName={computedColumnTable}
       expressions={computedColumnTable ? tableConfigs[computedColumnTable]?.computedColumns ?? [] : []}
       columns={computedColumnTable ? schemas[computedColumnTable]?.columns ?? [] : []}
+      typeMappings={form.getFieldValue(['taskConfig', 'cdcConfig', 'typeMappings']) ?? []}
       protectedKeys={computedColumnTable ? [
         ...(tableConfigs[computedColumnTable]?.primaryKeys?.length
           ? tableConfigs[computedColumnTable].primaryKeys!
@@ -885,6 +922,17 @@ export default function SyncTaskEditorDrawer({ open, task, readOnly = false, sna
       }}
       onCancel={() => setComputedColumnTable(undefined)}
     />}
+    <SyncTableOptionsModal table={tableOptionsTable} config={tableOptionsTable ? tableConfigs[tableOptionsTable] : undefined}
+      syncMode={form.getFieldValue(['taskConfig', 'syncMode'])}
+      typeMappings={form.getFieldValue(['taskConfig', 'cdcConfig', 'typeMappings']) ?? []}
+      schema={tableOptionsTable ? schemas[tableOptionsTable] : undefined} disabled={readOnly}
+      timeZone={form.getFieldValue(['taskConfig', 'cdcConfig', 'mysqlConfOverrides', 'server-time-zone']) || mysqlServerTimeZone}
+      onCancel={() => setTableOptionsTable(undefined)} onSave={(changes) => {
+        if (tableOptionsTable) setTableConfigs((current) => ({ ...current,
+          [tableOptionsTable]: { ...(current[tableOptionsTable] ?? emptyTableConfig()), ...changes } }));
+        setTableOptionsTable(undefined);
+        setPreview('');
+      }} />
     <MysqlTableDdlDrawer
       open={mysqlDdlOpen}
       serverId={serverId}

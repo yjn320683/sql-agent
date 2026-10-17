@@ -16,6 +16,28 @@ import org.junit.jupiter.api.Test;
 class PaimonSyncCommandBuilderTest {
 
     @Test
+    void emitsIndependentBucketsAndRejectsIncrementalSnapshotFiltering() {
+        SubmissionSpec spec = validSpec();
+        Map<String, Object> config = new LinkedHashMap<>(spec.getTask().getTaskConfig());
+        Map<String, Object> cdc = map(config.get("cdcConfig"));
+        cdc.put("tableConfigs", Map.of("orders", Map.of("bucket", 8), "order_item", Map.of("bucket", 2)));
+        config.put("cdcConfig", cdc);
+        spec.getTask().setTaskConfig(config);
+        List<String> args = new PaimonSyncCommandBuilder().build(spec).getArguments();
+        assertTrue(args.contains("orders=8"));
+        assertTrue(args.contains("order_item=2"));
+        assertEquals(2, args.stream().filter("--multiple_table_bucket"::equals).count());
+        cdc.put("tableConfigs", Map.of("orders", Map.of("bucket", 101)));
+        assertThrows(IllegalArgumentException.class, () -> new PaimonSyncCommandBuilder().build(spec));
+        config.put("syncMode", "incremental");
+        spec.getTask().setTaskConfig(config);
+        cdc.put("tableConfigs", Map.of("orders", Map.of("timeFilter", Map.of(
+                "version", 1, "field", "created_at", "sourceType", "datetime",
+                "start", "2026-10-01 00:00:00", "timeZone", "Asia/Shanghai"))));
+        assertThrows(IllegalArgumentException.class, () -> new PaimonSyncCommandBuilder().build(spec));
+    }
+
+    @Test
     void buildsCompleteMysqlCdcCommandAndMasksPassword() {
         SubmissionSpec spec = validSpec();
         PaimonSyncCommandBuilder.Command command = new PaimonSyncCommandBuilder().build(spec);
@@ -81,6 +103,26 @@ class PaimonSyncCommandBuilderTest {
         spec.getTask().setTaskConfig(config);
 
         assertThrows(IllegalArgumentException.class, () -> new PaimonSyncCommandBuilder().build(spec));
+    }
+
+    @Test
+    void emitsTypedPartitionDefaultsAndSnapshotTimeFilter() {
+        SubmissionSpec spec = validSpec();
+        Map<String, Object> task = spec.getTask().getTaskConfig();
+        Map<String, Object> cdc = map(task.get("cdcConfig"));
+        Map<String, Object> orders = map(map(cdc.get("tableConfigs")).get("orders"));
+        orders.put("partitionDefaults", Map.of("version", 1, "values", Map.of("dt", "2099-01-01")));
+        orders.put("timeFilter", Map.of("version", 1, "field", "created_at", "sourceType", "timestamp",
+                "start", "2026-10-01 00:00:00", "timeZone", "Asia/Shanghai"));
+        cdc.put("tableConfigs", Map.of("orders", orders));
+        task.put("cdcConfig", cdc);
+        spec.getTask().setTaskConfig(task);
+
+        List<String> args = new PaimonSyncCommandBuilder().build(spec).getArguments();
+        assertOption(args, "--multiple_table_partition_defaults",
+                "{\"table\":\"orders\",\"version\":1,\"values\":{\"dt\":\"2099-01-01\"}}");
+        assertOption(args, "--multiple_table_time_filter",
+                "{\"table\":\"orders\",\"version\":1,\"field\":\"created_at\",\"sourceType\":\"timestamp\",\"start\":\"2026-10-01 00:00:00\",\"timeZone\":\"Asia/Shanghai\"}");
     }
 
     @Test

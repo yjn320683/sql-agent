@@ -24,6 +24,8 @@ public class UnifiedTaskRequest {
     private String startType = "direct";
     private String statePath;
     private Long sourceStartupTimestampMillis;
+    private String mysqlStartupMode;
+    private boolean allowIncrementalRestart;
     @NotNull(message = "告警配置不能为空")
     private Map<String, Object> alarmConfig = new LinkedHashMap<>();
     @NotNull(message = "Flink 配置不能为空")
@@ -65,6 +67,8 @@ public class UnifiedTaskRequest {
         TaskActionRequest request = new TaskActionRequest();
         request.setStartType(startType); request.setStatePath(statePath);
         request.setSourceStartupTimestampMillis(sourceStartupTimestampMillis);
+        request.setMysqlStartupMode(mysqlStartupMode);
+        request.setAllowIncrementalRestart(allowIncrementalRestart);
         request.setParallelism(integer(flinkConf.get("parallelism")));
         request.setCheckpointInterval(integer(flinkConf.get("checkpointIntervalSeconds")));
         request.setTaskManagerMemory(memoryOrNull(flinkConf.get("taskManagerMemoryGb")));
@@ -115,6 +119,10 @@ public class UnifiedTaskRequest {
     public String getStatePath() { return statePath; } public void setStatePath(String value) { statePath = value; }
     public Long getSourceStartupTimestampMillis() { return sourceStartupTimestampMillis; }
     public void setSourceStartupTimestampMillis(Long value) { sourceStartupTimestampMillis = value; }
+    public String getMysqlStartupMode() { return mysqlStartupMode; }
+    public void setMysqlStartupMode(String value) { mysqlStartupMode = value; }
+    public boolean isAllowIncrementalRestart() { return allowIncrementalRestart; }
+    public void setAllowIncrementalRestart(boolean value) { allowIncrementalRestart = value; }
     public Map<String, Object> getAlarmConfig() { return alarmConfig; } public void setAlarmConfig(Map<String, Object> value) { alarmConfig = copy(value); }
     public Map<String, Object> getFlinkConf() { return flinkConf; } public void setFlinkConf(Map<String, Object> value) { flinkConf = copy(value); }
     public Map<String, Object> getTaskConfig() { return taskConfig; } public void setTaskConfig(Map<String, Object> value) { taskConfig = copy(value); }

@@ -131,9 +131,11 @@ export default function App() {
           <Route path="/realtime/compute" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
           <Route path="/realtime/compute/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
           <Route path="/realtime/compute/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
+          <Route path="/realtime/compute/:taskId/view" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="compute" /></Suspense>} />
           <Route path="/realtime/export" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="/realtime/export/new" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="/realtime/export/:taskId/edit" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
+          <Route path="/realtime/export/:taskId/view" element={<Suspense fallback={<div className="route-loading"><Spin /></div>}><RealtimeManagedTaskWorkspacePage taskType="export" /></Suspense>} />
           <Route path="*" element={<Navigate to="/overview" replace />} />
         </Route>
       </Routes>

@@ -40,6 +40,7 @@ public class RealtimeSupportController {
                 "targetDatabase", properties.getTargetDatabase(),
                 "debugTargetDatabase", properties.getPaimonDebugTargetDatabase(),
                 "defaultProjectId", properties.getDefaultProjectId(),
+                "mysqlServerTimeZone", properties.getMysqlDefaultConf().getOrDefault("server-time-zone", ""),
                 "tablePrefixes", tablePrefixes));
     }
     @GetMapping("/alerts") public RealtimeResponse<List<Map<String,Object>>> alerts(

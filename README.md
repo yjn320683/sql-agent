@@ -15,7 +15,16 @@ SQL Agent 是数开平台 Claude Code Agent 项目，包含前端、后端、Age
 - `realtime-common`：实时任务提交协议与共享校验逻辑。
 - `realtime-task-submit`：独立 Flink 任务提交 JAR。
 
-实时同步任务参考 `/opt/project/gs/realtime-data-dev`。近期启停与状态恢复逻辑对照参考项目 `0f51d85d`：正式 Savepoint 停止通过 Flink CLI `stop -p` 执行；同步任务从任务状态目录选择有效的 Checkpoint/Savepoint，禁用时间戳启动。CLI 未返回路径时，只有停止前基线之外出现唯一完整 Savepoint，才补记恢复路径。
+实时同步任务参考 `/opt/project/gs/realtime-data-dev`，本次对齐版本 `0ffb1818`：
+
+- 默认分区逐表配置，支持 NULL、空字符串和纯空白值兜底，按字段类型和计算列日期格式推荐与校验；默认分区需覆盖全部分区键，保留完整源物理主键及确定性计算列主键。
+- 全量任务（`full_incremental`）首次全量后持续增量；增量任务可选最早、最新或指定时间戳消费点。已有正式实例时优先从 Savepoint / Checkpoint 恢复，直接重新消费增量需明确确认。
+- 每个 Server 的两类任务独立计数与限额，默认各 1 个；`rt_sync_server_task_limit(source_server_id,sync_mode,max_task_count)` 可分别配置。旧任务保持相同 Server 和同步类型时不因超额阻断编辑。
+- Bucket 可逐表设置 1～100；未设置时继承公共配置。
+- 快照时间过滤逐表指定时间字段、开始时间和 MySQL 源端时区，仅允许全量任务，严格大于开始时间；Binlog 数据不受影响。
+- 计算列支持常量 cast、按顺序引用前置计算列、日期格式预设与校验，以及整数/数字字符串时间戳精度 0/3/6/9。
+
+逐表选项保存在原有配置 JSON 中。部署时执行 `bash scripts/db_migrate.sh migrate`，迁移 `V20261016_01__sync_server_type_limits.sql` 创建独立限额表。运行端 CDC 包必须支持 `--multiple_table_bucket`、`--multiple_table_partition_defaults` 和 `--multiple_table_time_filter`。本地已验证的 CDC 包 SHA-256：`28b7c4f6d40726237a789a0abca923ab405bb66c22059de13332034f4d8415e9`；升级包后，新提交任务使用新能力，正在运行的 Flink 作业保留原包。
 
 实时任务主表的状态列按参考项目使用 `task_status`（上下线）、`instance_status`（运行态）和 `deleted_flag`（逻辑删除）。已部署旧表先执行 `realtime-backend/src/main/resources/db/upgrade-20261010-task-online-status.sql`，再执行 `realtime-backend/src/main/resources/db/upgrade-20261010-align-task-status.sql`；第二个脚本也支持尚未执行第一个脚本的旧表。新建库使用 `realtime_sync_schema.sql`。
 已部署的实时库还需先执行 `realtime-backend/src/main/resources/db/upgrade-20261012-sync-param-editable.sql`，再执行 `realtime-backend/src/main/resources/db/upgrade-20261012-sync-ddl-exception.sql`，然后部署新版后端和前端。前者通过 `rt_task_param.editable_flag` 控制动态参数是否可编辑，后者创建 DDL 异常表；缺少后者时同步任务编辑页会因无法读取异常状态而禁用保存。两个脚本均可重复执行；新建库使用 `realtime_sync_schema.sql`，已包含对应结构。

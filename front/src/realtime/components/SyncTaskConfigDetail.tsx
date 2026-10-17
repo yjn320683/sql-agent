@@ -3,6 +3,9 @@ import { isValidElement, type ReactNode } from 'react';
 import { StructuredKeyValueTable } from './InstanceInspectorModal';
 import SyncSectionNav from './SyncSectionNav';
 import { syncStartMethodLabel } from './syncStartMethod';
+import type { TablePrivateConfig } from '../types';
+import { partitionDefaultsSummary } from './partitionDefaults';
+import { timeFilterSummary } from './timeFilter';
 
 const asRecord = (value: unknown): Record<string, unknown> => value && typeof value === 'object' && !Array.isArray(value)
   ? value as Record<string, unknown> : {};
@@ -107,6 +110,7 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
       <Descriptions bordered size="small" column={columns}>
         {item('源端类型', (root.sourceType ?? taskConfig.sourceType) === 'mysql-cdc' ? 'Mysql CDC' : root.sourceType ?? taskConfig.sourceType, ['taskConfig.sourceType'])}
         {item('Server', root.sourceServerName ?? root.sourceServerId ?? taskConfig.sourceServerId, ['taskConfig.sourceServerId'])}
+        {item('同步类型', taskConfig.syncMode === 'incremental' ? '增量' : '全量', ['taskConfig.syncMode'])}
       </Descriptions>
       <Descriptions bordered size="small" column={1} className="realtime-cdc-detail-table">
         {item('源库', cdc.databaseName, ['taskConfig.cdcConfig.databaseName'])}
@@ -132,6 +136,9 @@ export default function SyncTaskConfigDetail({ value, highlightPaths, compareMod
         { title: '计算列', width: 300, ellipsis: true, render: (_: unknown, row: { config: Record<string, unknown> }) => Array.isArray(row.config.computedColumns) && row.config.computedColumns.length ? row.config.computedColumns.join('；') : '未配置' },
         { title: '主键', width: 300, render: (_: unknown, row: { config: Record<string, unknown> }) => Array.isArray(row.config.primaryKeys) && row.config.primaryKeys.length ? row.config.primaryKeys.join(', ') : '继承源表' },
         { title: '分区键', width: 250, render: (_: unknown, row: { config: Record<string, unknown> }) => Array.isArray(row.config.partitionKeys) && row.config.partitionKeys.length ? row.config.partitionKeys.join(', ') : '不分区' },
+        { title: 'Bucket', width: 100, render: (_: unknown, row: { config: TablePrivateConfig }) => row.config.bucket ?? '继承' },
+        { title: '默认分区', width: 180, render: (_: unknown, row: { config: TablePrivateConfig }) => partitionDefaultsSummary(row.config) },
+        { title: '快照时间过滤', width: 250, render: (_: unknown, row: { config: TablePrivateConfig }) => timeFilterSummary(row.config.timeFilter) },
         { title: '状态', width: 100, align: 'center' as const, render: (_: unknown, row: { config: Record<string, unknown> }) => Object.values(row.config).some((entry) => Array.isArray(entry) && entry.length) ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
       ]} />, changed('taskConfig.cdcConfig.tableConfigs') ? 'task-detail-section-changed' : '')}
 

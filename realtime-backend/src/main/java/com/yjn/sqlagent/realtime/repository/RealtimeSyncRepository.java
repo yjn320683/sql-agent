@@ -142,6 +142,7 @@ public class RealtimeSyncRepository {
     }
 
     private void fillConfiguredResource(Map<String, Object> item, Map<String, Object> config) {
+        item.put("syncMode", syncMode(config));
         int parallelism = integer(config.get("parallelism"));
         Integer taskManagerMemory = memoryMb(config.get("taskManagerMemory"));
         Integer jobManagerMemory = memoryMb(config.get("jobManagerMemory"));
@@ -239,6 +240,7 @@ public class RealtimeSyncRepository {
 
     @Transactional
     public long createTask(SyncTaskRequest request, String actor) {
+        validateServerCapacity(request, null, true);
         long totalStartedAt = System.nanoTime();
         long stageStartedAt = totalStartedAt;
         Map<String, Object> config = normalizedConfig(request);
@@ -279,6 +281,7 @@ public class RealtimeSyncRepository {
 
     @Transactional
     public void updateTask(long taskId, SyncTaskRequest request, String actor) {
+        validateServerCapacity(request, taskId, true);
         long totalStartedAt = System.nanoTime();
         long stageStartedAt = totalStartedAt;
         lockTaskForDdl(taskId);
@@ -1039,8 +1042,50 @@ public class RealtimeSyncRepository {
         jdbc.update("DELETE FROM rt_server WHERE id=?", id);
     }
 
+    private String syncMode(Map<String, Object> config) {
+        return text(config.get("syncMode"), "full_incremental");
+    }
+
+    /** 与任务创建/更新处于同一事务；锁 Server 行避免同类任务并发超额。 */
+    private void validateServerCapacity(SyncTaskRequest request, Long taskId, boolean lock) {
+        Long serverId = request.getSourceServerId();
+        if (serverId == null) throw new IllegalArgumentException("请选择 MySQL Server");
+        if (lock) jdbc.queryForList("SELECT id FROM rt_server WHERE id=? FOR UPDATE", serverId);
+        String mode = syncMode(request.getTaskConfig());
+        Map<String, Object> availability = sourceServerAvailability(taskId).stream()
+                .filter(row -> serverId.equals(((Number) row.get("serverId")).longValue()) && mode.equals(row.get("syncMode")))
+                .findFirst().orElseThrow(() -> new IllegalArgumentException("MySQL Server 不存在"));
+        if (!Boolean.TRUE.equals(availability.get("available"))) {
+            throw new IllegalArgumentException(("incremental".equals(mode) ? "增量" : "全量")
+                    + "任务数量已达到该 Server 限额（" + availability.get("currentTaskCount")
+                    + "/" + availability.get("maxTaskCount") + "）");
+        }
+    }
+
+    public List<Map<String, Object>> sourceServerAvailability(Long taskId) {
+        List<Map<String, Object>> current = taskId == null ? List.of() : jdbc.queryForList(
+                "SELECT source_server_id serverId,config_json configJson FROM rt_sync_task_config WHERE task_id=?", taskId);
+        Long currentServer = current.isEmpty() ? null : ((Number) current.get(0).get("serverId")).longValue();
+        String currentMode = current.isEmpty() ? "" : syncMode(jsonMap(current.get(0).get("configJson")));
+        List<Map<String, Object>> result = jdbc.queryForList(
+                "SELECT s.id serverId,m.sync_mode syncMode,COALESCE(l.max_task_count,1) maxTaskCount,"
+                + "(SELECT COUNT(*) FROM rt_sync_task_config c JOIN rt_task t ON t.id=c.task_id"
+                + " WHERE t.deleted_flag=0 AND t.task_type='sync' AND c.source_server_id=s.id"
+                + " AND COALESCE(NULLIF(JSON_UNQUOTE(JSON_EXTRACT(c.config_json,'$.syncMode')),''),'full_incremental')=m.sync_mode) currentTaskCount"
+                + " FROM rt_server s CROSS JOIN (SELECT 'full_incremental' sync_mode UNION ALL SELECT 'incremental') m"
+                + " LEFT JOIN rt_sync_server_task_limit l ON l.source_server_id=s.id AND l.sync_mode=m.sync_mode"
+                + " WHERE s.type='mysql'");
+        for (Map<String, Object> row : result) {
+            boolean same = currentServer != null && currentServer.equals(((Number) row.get("serverId")).longValue())
+                    && currentMode.equals(row.get("syncMode"));
+            row.put("available", same || ((Number) row.get("currentTaskCount")).longValue() < ((Number) row.get("maxTaskCount")).longValue());
+        }
+        return result;
+    }
+
     private Map<String, Object> normalizedConfig(SyncTaskRequest request) {
         Map<String, Object> config = new LinkedHashMap<>(request.getTaskConfig());
+        config.put("syncMode", syncMode(config));
         Object parallelism = config.get("parallelism");
         if (parallelism != null && (integer(parallelism) < 1 || integer(parallelism) > 4)) {
             throw new IllegalArgumentException("同步任务并行度必须在 1 到 4 之间");
@@ -1098,6 +1143,7 @@ public class RealtimeSyncRepository {
     }
 
     public Map<String, Object> validatePreview(SyncTaskRequest request, Long excludeTaskId) {
+        validateServerCapacity(request, excludeTaskId, false);
         Map<String, Object> config = normalizedConfig(request);
         if (excludeTaskId != null) validateDdlTables(excludeTaskId, request.getSourceServerId(), config);
         validateMappingConflicts(excludeTaskId == null ? 0L : excludeTaskId,
@@ -1664,6 +1710,7 @@ public class RealtimeSyncRepository {
                 "targetTable", "mergeShards", "tableSuffix", "tableMapping", "metadataColumns",
                 "typeMappings", "tableConfOverrides");
         List<String> changes = new ArrayList<>();
+        if (!syncMode(current).equals(syncMode(next))) changes.add("同步类型");
         if (!java.util.Objects.equals(longValue(currentTask.get("sourceServerId")), request.getSourceServerId())) changes.add("MySQL Server");
         for (String name : lockedNames) if (!jsonEquals(currentCdc.get(name), nextCdc.get(name))) changes.add(name);
         Map<String, Object> nextTableConfigs = objectMap(nextCdc.get("tableConfigs"));

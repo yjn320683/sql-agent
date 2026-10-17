@@ -2,7 +2,7 @@ import { Empty, Modal, Table, Typography, message } from 'antd';
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { getChangeLogDetail, getInstanceInfo, getVersionConfig, listAlerts, listChangeLogs, listInstances, listVersions, stopInstance } from '../api';
 import type { ManagedTask, RealtimeAlert, TaskChangeLog, TaskInstance } from '../types';
-import InstanceInspectorModal, { InstanceConfigView, StructuredKeyValueTable, type InstanceInspectorKind } from './InstanceInspectorModal';
+import InstanceInspectorModal, { StructuredKeyValueTable, type InstanceInspectorKind } from './InstanceInspectorModal';
 import RealtimeRuntimeMonitor from './RealtimeRuntimeMonitor';
 import RealtimeDiagnosticPanel from './RealtimeDiagnosticPanel';
 import RealtimeRecoveryModal from './RealtimeRecoveryModal';
@@ -14,7 +14,7 @@ import RealtimeInstanceStopModal from './RealtimeInstanceStopModal';
 import RealtimeInstanceList from './RealtimeInstanceList';
 import RealtimeChangeLogTable from './RealtimeChangeLogTable';
 
-interface Props { task?: ManagedTask; loading?: boolean; initialTab?: 'instances' | 'detail' | 'runtime' | 'debug-report' | 'diagnostics' | 'alerts' | 'changes' | 'versions'; onClose: () => void }
+interface Props { task?: ManagedTask; loading?: boolean; initialTab?: 'instances' | 'runtime' | 'debug-report' | 'diagnostics' | 'alerts' | 'changes' | 'versions'; onClose: () => void }
 
 const ACTIVE = ['submitting', 'running', 'stopping', 'restarting'];
 export default function RealtimeManagedTaskDetailModal({ task, loading, initialTab = 'instances', onClose }: Props) {
@@ -108,7 +108,7 @@ export default function RealtimeManagedTaskDetailModal({ task, loading, initialT
 
   return <>
     <RealtimeTaskDetailDrawer title={task.name} loading={loading} activeKey={activeTab} onTabChange={setActiveTab} onClose={onClose} tabs={[
-        { key: 'instances', label: `实例列表（${instances.length}）`, children: instanceContent }, { key: 'detail', label: '任务详情', children: <div className="task-detail-sections"><InstanceConfigView value={task} /></div> },
+        { key: 'instances', label: `实例列表（${instances.length}）`, children: instanceContent },
         { key: 'runtime', label: '运行监控', children: <RealtimeRuntimeMonitor taskId={task.id} taskType={task.taskType} instance={runtimeInstance} active={activeTab === 'runtime'} checkpointIntervalSeconds={task.flinkConf.checkpointIntervalSeconds} /> },
         { key: 'debug-report', label: '调试报告', children: <RealtimeDebugReportPanel taskId={task.id} instances={instances} /> },
         { key: 'diagnostics', label: '诊断', children: <RealtimeDiagnosticPanel taskId={task.id} instances={instances} onRecover={setRecoverySource} /> },

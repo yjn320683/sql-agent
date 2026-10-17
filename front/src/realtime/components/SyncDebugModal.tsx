@@ -23,6 +23,9 @@ import {
 } from '../api';
 import { MYSQL_METADATA_COLUMN_PREFIX, type RealtimeServer, type SyncTask, type TaskParam } from '../types';
 import SyncMoreConfigRows from './SyncMoreConfigRows';
+import type { TablePrivateConfig } from '../types';
+import { partitionDefaultsSummary } from './partitionDefaults';
+import { timeFilterSummary } from './timeFilter';
 import SyncSectionNav from './SyncSectionNav';
 import SyncTopologyConfigRows, { mergeSyncTopologyOverrides } from './SyncTopologyConfigRows';
 
@@ -102,6 +105,7 @@ export default function SyncDebugModal({ task, open, params, servers, supportLoa
     form.resetFields();
     form.setFieldsValue({
       startType: 'direct',
+      mysqlStartupMode: task.taskConfig.syncMode === 'incremental' ? 'latest-offset' : 'initial',
       parallelism: task.taskConfig.parallelism ?? 3,
       checkpointInterval: task.taskConfig.checkpointInterval ?? 60,
       taskManagerMemory: task.taskConfig.taskManagerMemory || '3GB',
@@ -138,6 +142,9 @@ export default function SyncDebugModal({ task, open, params, servers, supportLoa
   const buildAction = (values: Record<string, unknown>) => ({
     ...values,
     statePath: values.startType === 'direct' ? undefined : values.statePath,
+    mysqlStartupMode: values.startType === 'direct' ? values.mysqlStartupMode : undefined,
+    sourceStartupTimestampMillis: values.startType === 'direct' && values.mysqlStartupMode === 'timestamp'
+      ? new Date(String(values.startupDateTime)).getTime() : undefined,
     mysqlConfOverrides: normalizeOverrides(values.mysqlConfOverrides as Record<string, unknown>),
     tableConfOverrides: mergeSyncTopologyOverrides(
       normalizeOverrides(values.tableConfOverrides as Record<string, unknown>),
@@ -237,6 +244,9 @@ export default function SyncDebugModal({ task, open, params, servers, supportLoa
           { title: '计算列', width: 300, ellipsis: true, render: (_: unknown, row: { config?: { computedColumns?: string[] } }) => row.config?.computedColumns?.join('；') || '未配置' },
           { title: '主键', width: 220, render: (_: unknown, row: { config?: { primaryKeys?: string[] } }) => row.config?.primaryKeys?.join('、') || '继承源表' },
           { title: '分区键', width: 220, render: (_: unknown, row: { config?: { partitionKeys?: string[] } }) => row.config?.partitionKeys?.join('、') || '不分区' },
+          { title: 'Bucket', width: 100, render: (_: unknown, row: { config?: TablePrivateConfig }) => row.config?.bucket ?? '继承' },
+          { title: '默认分区', width: 180, render: (_: unknown, row: { config?: TablePrivateConfig }) => partitionDefaultsSummary(row.config) },
+          { title: '快照时间过滤', width: 250, render: (_: unknown, row: { config?: TablePrivateConfig }) => timeFilterSummary(row.config?.timeFilter) },
           { title: '状态', width: 110, render: (_: unknown, row: { config?: { computedColumns?: string[]; primaryKeys?: string[]; partitionKeys?: string[] } }) => row.config?.computedColumns?.length || row.config?.primaryKeys?.length || row.config?.partitionKeys?.length ? <Tag color="blue">已覆盖</Tag> : <Tag>继承源表</Tag> },
         ]} />
         <Typography.Title id="sync-debug-config-startup" level={5} className="realtime-detail-title sync-config-anchor-section">启动设置</Typography.Title>
@@ -253,6 +263,13 @@ export default function SyncDebugModal({ task, open, params, servers, supportLoa
                 { label: '从 Checkpoint 恢复', value: 'checkpoint' },
               ]} />
           </Descriptions.Item>
+          {startType === 'direct' && task.taskConfig.syncMode === 'incremental' && <Descriptions.Item label="MySQL 起始消费点" span={2}>
+            <Form.Item name="mysqlStartupMode" noStyle rules={[{ required: true }]}>
+              <Select options={[{ label: '最早消费点', value: 'earliest-offset' }, { label: '最新消费点', value: 'latest-offset' }, { label: '指定时间戳', value: 'timestamp' }]} />
+            </Form.Item>
+            <Form.Item noStyle shouldUpdate={(before, after) => before.mysqlStartupMode !== after.mysqlStartupMode}>{({ getFieldValue }) => getFieldValue('mysqlStartupMode') === 'timestamp'
+              && <Form.Item name="startupDateTime" rules={[{ required: true, message: '请选择开始时间' }]}><Input type="datetime-local" aria-label="消费点开始时间" /></Form.Item>}</Form.Item>
+          </Descriptions.Item>}
           <Descriptions.Item label="历史状态"><Form.Item noStyle shouldUpdate={(previous, current) => previous.startType !== current.startType}>{({ getFieldValue }) => getFieldValue('startType') !== 'direct' ? <Form.Item name="statePath" noStyle rules={[{ required: true, message: '请选择历史状态' }]}><Select aria-label="历史状态" loading={stateHistoryLoading} notFoundContent={stateHistoryLoading ? '加载中…' : '暂无可用状态'} options={stateHistory.map((item) => ({ label: String(item.label ?? item.path), value: String(item.path) }))} /></Form.Item> : <Typography.Text type="secondary">全量同步不需要恢复点</Typography.Text>}</Form.Item></Descriptions.Item>
         </Descriptions>
         <Typography.Title id="sync-debug-config-runtime" level={5} className="realtime-detail-title sync-config-anchor-section">运行资源</Typography.Title>

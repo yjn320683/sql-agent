@@ -4,6 +4,7 @@ import { RobotOutlined } from '@ant-design/icons';
 import { useLocation } from 'react-router-dom';
 import type { AiContext, AiContextType, AiProposal, ProposalActionResult } from '../../types';
 import AiAssistantDrawer from './AiAssistantDrawer';
+import { AI_DIAGNOSTIC_HANDOFF_EVENT, diagnosticAiContext, diagnosticInterpretationPrompt, type AiDiagnosticHandoff } from './diagnosticHandoff';
 import { inspectProposal } from './proposalRegistry';
 
 interface RouteContext {
@@ -62,16 +63,29 @@ export default function RouteAiAssistant() {
   const location = useLocation();
   const [open, setOpen] = useState(false);
   const [pageContext, setPageContext] = useState<Partial<AiContext>>({});
+  const [diagnosticHandoff, setDiagnosticHandoff] = useState<(AiDiagnosticHandoff & { requestId: string }) | undefined>();
   const resolved = useMemo(() => resolveRouteAiContext(location.pathname, location.search), [location.pathname, location.search]);
   useEffect(() => {
     setPageContext({});
+    setDiagnosticHandoff(undefined);
     const receive = (rawEvent: Event) => setPageContext((rawEvent as CustomEvent<Partial<AiContext>>).detail || {});
     window.addEventListener('sql-agent:ai-context-update', receive);
     window.dispatchEvent(new Event('sql-agent:ai-context-request'));
     return () => window.removeEventListener('sql-agent:ai-context-update', receive);
   }, [location.pathname, location.search]);
+  useEffect(() => {
+    const receive = (event: Event) => {
+      const detail = (event as CustomEvent<AiDiagnosticHandoff>).detail;
+      if (!detail || !Number.isInteger(detail.taskId) || !Number.isInteger(detail.instanceId)
+          || detail.report?.targetKind !== 'REALTIME_INSTANCE' || detail.report.targetId !== detail.instanceId) return;
+      setDiagnosticHandoff({ ...detail, requestId: crypto.randomUUID() });
+      setOpen(true);
+    };
+    window.addEventListener(AI_DIAGNOSTIC_HANDOFF_EVENT, receive);
+    return () => window.removeEventListener(AI_DIAGNOSTIC_HANDOFF_EVENT, receive);
+  }, []);
   if (!resolved) return null;
-  const context: AiContext = {
+  const routeContext: AiContext = {
     contextType: pageContext.contextType ?? resolved.type,
     entityId: pageContext.entityId ?? resolved.entityId,
     parentId: pageContext.parentId ?? resolved.parentId,
@@ -80,6 +94,7 @@ export default function RouteAiAssistant() {
     revision: pageContext.revision,
     draft: pageContext.draft,
   };
+  const context: AiContext = diagnosticHandoff ? diagnosticAiContext(diagnosticHandoff) : routeContext;
   return (
     <>
       <Tooltip title="打开页面 AI">
@@ -88,7 +103,12 @@ export default function RouteAiAssistant() {
       <AiAssistantDrawer
         open={open}
         context={context}
-        onClose={() => setOpen(false)}
+        prefillRequest={diagnosticHandoff ? {
+          id: diagnosticHandoff.requestId,
+          text: diagnosticInterpretationPrompt(diagnosticHandoff.instanceId, diagnosticHandoff.report.revision),
+          intent: 'DIAGNOSE',
+        } : undefined}
+        onClose={() => { setOpen(false); setDiagnosticHandoff(undefined); }}
         onApplyProposal={(proposal: AiProposal): ProposalActionResult => {
           const inspected = inspectProposal(proposal, context);
           if (inspected.status !== 'APPLIED') return inspected;
